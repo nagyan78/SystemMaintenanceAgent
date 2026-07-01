@@ -8,8 +8,8 @@ from typing import Any
 import pandas as pd
 from pydantic import BaseModel, Field
 
-from config import Settings, settings
-from prompts import PARENT_CHILD_JUDGE_PROMPT, SYNONYM_JUDGE_PROMPT
+from .config import Settings, settings
+from .prompts import PARENT_CHILD_JUDGE_PROMPT, SYNONYM_JUDGE_PROMPT
 
 try:
     from langchain.chat_models import init_chat_model

@@ -1,5 +1,0 @@
-@echo off
-chcp 65001 >nul
-setlocal
-cd /d "%~dp0"
-call ".\start_upload_frontend.bat"

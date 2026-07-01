@@ -16,18 +16,12 @@
 
 ```text
 .
-├── main.py                    # 完整诊断入口，支持 CSV/XLSX、LLM 语义检查和版本对比
-├── config.py                  # 环境变量和规则阈值配置
-├── data_loader.py             # CSV/XLSX 数据读取与字段标准化
-├── rule_checker.py            # 规则检查
-├── evaluator.py               # 体系质量评估
-├── report_writer.py           # Markdown/JSON 报告输出
-├── version_compare.py         # 版本对比
+├── main.py                    # 完整诊断命令行入口
 ├── src/
-│   ├── main.py                # 第一轮结构诊断命令行入口
+│   ├── advanced/              # 完整诊断流水线：规则检查、LLM 判断、版本对比、报告输出
+│   ├── main.py                # 第一轮结构诊断入口
 │   ├── web_app.py             # 本地上传诊断网页
-│   ├── structure_checker.py   # 结构问题检查
-│   └── report_generator.py    # Markdown/HTML 报告生成
+│   └── report_generator.py    # Markdown/HTML 看板生成
 ├── data/
 │   └── sample_products.csv    # 示例数据
 ├── tests/                     # 单元测试
@@ -59,7 +53,7 @@ pip install -r requirements.txt
 
 ## 数据格式
 
-完整诊断入口 `main.py` 支持 `.csv`、`.xlsx`、`.xls` 文件。
+完整诊断入口 `main.py` 调用 `src/advanced/` 中的诊断流水线，支持 `.csv`、`.xlsx`、`.xls` 文件。
 
 基础必需字段：
 

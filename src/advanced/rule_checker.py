@@ -8,7 +8,7 @@ from typing import Any
 
 import pandas as pd
 
-from tree_builder import ROOT_PARENT_VALUES
+from .tree_builder import ROOT_PARENT_VALUES
 
 
 Issue = dict[str, Any]
