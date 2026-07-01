@@ -1,6 +1,38 @@
-.venv
-__pycache__
-.pyc
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python cache and test artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local environment variables
 .env
-output
-outputs
+.env.*
+!.env.example
+
+# Generated reports and runtime outputs
+output/
+outputs/
+*.log
+
+# IDE and local workspace files
+.vscode/
+.idea/
+.obsidian/
+
+# Codex/local assistant metadata
+.agents/
+.codex/
+
+# Course/reference material outside the project source
+docs/
+reference/
+
+# Temporary leftover folder after moving project files to the repository root
+standard_product_maintenance/
