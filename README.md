@@ -19,7 +19,12 @@
 ├── main.py                    # 完整诊断命令行入口
 ├── src/
 │   ├── advanced/              # 完整诊断流水线：规则检查、LLM 判断、版本对比、报告输出
+│   ├── common.py              # 第一轮诊断共享常量和问题数据结构
 │   ├── main.py                # 第一轮结构诊断入口
+│   ├── data_loader.py         # Excel 数据读取与字段标准化
+│   ├── structure_checker.py   # 父节点、深度、宽度等结构规则检查
+│   ├── tree_builder.py        # 生成树路径、深度、子节点数量等辅助字段
+│   ├── tree_analyzer.py       # 汇总树结构指标
 │   ├── web_app.py             # 本地上传诊断网页
 │   └── report_generator.py    # Markdown/HTML 看板生成
 ├── data/

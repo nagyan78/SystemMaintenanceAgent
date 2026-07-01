@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.models import IssueResult
+from src.common import IssueResult
 from src.report_generator import generate_html_dashboard
 
 

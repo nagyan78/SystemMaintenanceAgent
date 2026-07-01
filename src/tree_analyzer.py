@@ -1,4 +1,4 @@
-"""Summaries and aggregate statistics for taxonomy trees."""
+"""产品分类树的汇总统计函数。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import pandas as pd
 
 
 def summarize_tree(df: pd.DataFrame) -> dict[str, int]:
-    """输出树结构统计信息。"""
+    """输出报告首页需要的核心树结构指标。"""
 
     if df.empty:
         return {
@@ -27,7 +27,7 @@ def summarize_tree(df: pd.DataFrame) -> dict[str, int]:
 
 
 def compute_depth_distribution(df: pd.DataFrame) -> pd.DataFrame:
-    """统计深度分布。"""
+    """按深度统计节点数量，便于观察分类树是否过深或分布不均。"""
 
     return (
         df.groupby("depth", dropna=False)
@@ -39,7 +39,7 @@ def compute_depth_distribution(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_top_wide_nodes(df: pd.DataFrame, top_n: int = 20) -> pd.DataFrame:
-    """返回直接子节点最多的节点。"""
+    """返回直接子节点最多的若干节点，用于定位“节点过宽”的风险位置。"""
 
     columns = ["category_id", "category_name", "path", "depth", "child_count"]
     return (
@@ -48,4 +48,3 @@ def get_top_wide_nodes(df: pd.DataFrame, top_n: int = 20) -> pd.DataFrame:
         .head(top_n)
         .reset_index(drop=True)
     )
-

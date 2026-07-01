@@ -1,18 +1,26 @@
-"""Rule-based structural issue checks for taxonomy trees."""
+"""基于规则的产品分类树结构问题检查。"""
 
 from __future__ import annotations
 
 import pandas as pd
 
-from .config import DEFAULT_DEPTH_THRESHOLD, DEFAULT_WIDTH_THRESHOLD
-from .models import IssueResult
+from .common import DEFAULT_DEPTH_THRESHOLD, DEFAULT_WIDTH_THRESHOLD, IssueResult
 
 
 def check_missing_parent(df: pd.DataFrame) -> list[IssueResult]:
-    """检测父节点缺失。"""
+    """检查父节点缺失问题。
 
+    如果某个节点的 `parent_id` 指向了一个不存在的 `category_id`，说明树的
+    祖先路径不完整。这个问题优先级较高，因为它会影响路径展示、层级统计和
+    后续维护建议。
+    """
+
+    # 先把所有节点 ID 放入集合，后续判断父节点是否存在时就是 O(1) 查询。
     existing_ids = set(df["category_id"].astype(str))
     issues: list[IssueResult] = []
+
+    # 顶层节点的 parent_id 是空值，不需要检查；非空 parent_id 才需要确认
+    # 是否能在现有节点集合中找到。
     for row in df[df["parent_id"].notna()].itertuples(index=False):
         parent_id = str(row.parent_id)
         if parent_id not in existing_ids:
@@ -32,8 +40,15 @@ def check_missing_parent(df: pd.DataFrame) -> list[IssueResult]:
     return issues
 
 
-def check_depth_too_deep(df: pd.DataFrame, threshold: int = DEFAULT_DEPTH_THRESHOLD) -> list[IssueResult]:
-    """检测层级过深。"""
+def check_depth_too_deep(
+    df: pd.DataFrame,
+    threshold: int = DEFAULT_DEPTH_THRESHOLD,
+) -> list[IssueResult]:
+    """检查层级过深问题。
+
+    层级过深通常意味着分类体系不够扁平，用户查找成本较高，也可能存在不必要
+    的中间层级。默认阈值来自 `common.py`。
+    """
 
     issues: list[IssueResult] = []
     for row in df[df["depth"] > threshold].itertuples(index=False):
@@ -53,8 +68,15 @@ def check_depth_too_deep(df: pd.DataFrame, threshold: int = DEFAULT_DEPTH_THRESH
     return issues
 
 
-def check_width_too_large(df: pd.DataFrame, threshold: int = DEFAULT_WIDTH_THRESHOLD) -> list[IssueResult]:
-    """检测节点过宽。"""
+def check_width_too_large(
+    df: pd.DataFrame,
+    threshold: int = DEFAULT_WIDTH_THRESHOLD,
+) -> list[IssueResult]:
+    """检查节点过宽问题。
+
+    如果一个节点下面直接挂了太多子节点，说明这一层可能缺少中间分组。过宽的
+    节点会降低浏览和维护效率。
+    """
 
     issues: list[IssueResult] = []
     for row in df[df["child_count"] > threshold].itertuples(index=False):
@@ -75,11 +97,13 @@ def check_width_too_large(df: pd.DataFrame, threshold: int = DEFAULT_WIDTH_THRES
 
 
 def check_structure_issues(df: pd.DataFrame) -> list[IssueResult]:
-    """汇总所有结构问题。"""
+    """汇总所有结构问题。
+
+    规则顺序保持固定，报告输出就会稳定，方便多次运行后对比结果变化。
+    """
 
     return [
         *check_missing_parent(df),
         *check_depth_too_deep(df),
         *check_width_too_large(df),
     ]
-

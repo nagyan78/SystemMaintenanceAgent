@@ -1,4 +1,4 @@
-"""Command-line entry point for first-round structure diagnosis."""
+"""第一轮产品分类树结构诊断命令行入口。"""
 
 from __future__ import annotations
 
@@ -18,9 +18,9 @@ from .tree_builder import add_tree_fields
 
 
 def main() -> None:
-    """Run the first-round structure diagnosis from command-line arguments."""
+    """从命令行参数读取 Excel，生成 Markdown 报告和 HTML 看板。"""
 
-    parser = argparse.ArgumentParser(description="标准产品体系首轮结构诊断")
+    parser = argparse.ArgumentParser(description="标准产品体系第一轮结构诊断")
     parser.add_argument("--input", required=True, help="输入 .xlsx 文件路径")
     parser.add_argument(
         "--output",
@@ -34,6 +34,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # 诊断流程分为四步：
+    # 1. 读取并清洗 Excel；
+    # 2. 补充树结构派生字段；
+    # 3. 运行结构规则检查；
+    # 4. 分别生成 Markdown 和 HTML 报告。
     raw_df = load_product_data(args.input)
     tree_df = add_tree_fields(raw_df)
     summary = summarize_tree(tree_df)

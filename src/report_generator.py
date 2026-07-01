@@ -6,7 +6,7 @@ from collections import Counter
 from html import escape
 from pathlib import Path
 
-from .models import IssueResult
+from .common import IssueResult
 
 
 def generate_markdown_report(summary: dict[str, object], issues: list[IssueResult]) -> str:
