@@ -14,11 +14,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from .data_loader import load_product_data
+from .advanced.data_loader import load_product_data
+from .advanced.diagnostics import calculate_health_score, run_rule_diagnostics
+from .advanced.ollama_analyzer import run_ai_analysis
+from .advanced.tree_builder import enrich_tree_fields
 from .report_generator import generate_html_dashboard
-from .structure_checker import check_structure_issues
-from .tree_analyzer import summarize_tree
-from .tree_builder import add_tree_fields
 
 
 MAX_UPLOAD_BYTES = 80 * 1024 * 1024
@@ -35,7 +35,7 @@ class UploadedFile:
 class UploadDiagnosisHandler(BaseHTTPRequestHandler):
     """Serve a drag-and-drop upload page and return diagnosis results."""
 
-    server_version = "StandardProductDiagnosis/0.3"
+    server_version = "StandardProductDiagnosis/0.4"
 
     def do_GET(self) -> None:
         """Render the upload page or health endpoint."""
@@ -85,9 +85,7 @@ class UploadDiagnosisHandler(BaseHTTPRequestHandler):
         if not upload.content:
             raise ValueError("上传文件内容为空。")
         if not _is_xlsx_content(upload.content):
-            raise ValueError(
-                "当前文件不是标准 .xlsx 工作簿。请在 Excel/WPS 中选择“另存为”，保存成 .xlsx 后再上传。"
-            )
+            raise ValueError("当前文件不是标准 .xlsx 工作簿，请另存为 .xlsx 后再上传。")
         return upload
 
     def _send_html(self, html: str, status: HTTPStatus = HTTPStatus.OK) -> None:
@@ -144,11 +142,11 @@ def _diagnose_uploaded_file(filename: str, content: bytes) -> str:
 
     temp_path = _write_temp_excel(content)
     try:
-        raw_df = load_product_data(str(temp_path))
-        tree_df = add_tree_fields(raw_df)
-        summary = summarize_tree(tree_df)
-        issues = check_structure_issues(tree_df)
-        dashboard = generate_html_dashboard(summary, issues)
+        df = enrich_tree_fields(load_product_data(str(temp_path)))
+        issues, summary = run_rule_diagnostics(df)
+        issues = run_ai_analysis(df, issues, summary)
+        health_score = calculate_health_score(issues)
+        dashboard = generate_html_dashboard(summary, issues, health_score=health_score)
         return _inject_upload_actions(dashboard, filename)
     finally:
         temp_path.unlink(missing_ok=True)
@@ -178,18 +176,19 @@ def _is_xlsx_content(content: bytes) -> bool:
 
     if not content.startswith(b"PK"):
         return False
+    temp_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as file:
             file.write(content)
             temp_path = Path(file.name)
-        try:
-            with zipfile.ZipFile(temp_path) as archive:
-                names = set(archive.namelist())
-                return "[Content_Types].xml" in names and "xl/workbook.xml" in names
-        finally:
-            temp_path.unlink(missing_ok=True)
+        with zipfile.ZipFile(temp_path) as archive:
+            names = set(archive.namelist())
+            return "[Content_Types].xml" in names and "xl/workbook.xml" in names
     except zipfile.BadZipFile:
         return False
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 def _extract_boundary(content_type: str) -> bytes:
@@ -404,13 +403,13 @@ def _render_upload_page() -> str:
   <main>
     <header>
       <h1>标准产品体系上传诊断</h1>
-      <p>把 Excel 文件拖进上传区域，系统会在本地临时读取并生成结构诊断看板。</p>
+      <p>上传 .xlsx 文件后，系统会在本地运行完整规则诊断，并生成带健康分的结果看板。</p>
     </header>
     <form id="uploadForm" action="/analyze" method="post" enctype="multipart/form-data">
       <div id="dropZone" class="drop-zone" tabindex="0" role="button" aria-label="拖入或选择 xlsx 文件">
         <input id="fileInput" class="file-input" type="file" name="file" accept=".xlsx" required>
         <div>
-          <div class="drop-icon">↓</div>
+          <div class="drop-icon">+</div>
           <p class="drop-title">拖拽 .xlsx 文件到这里</p>
           <p class="drop-subtitle">也可以点击这个区域选择文件。请使用 Excel/WPS 另存为的标准 .xlsx 工作簿。</p>
         </div>
@@ -426,7 +425,7 @@ def _render_upload_page() -> str:
         <button id="submitButton" class="submit-button" type="submit" disabled>开始诊断</button>
         <span id="statusText" class="status">等待上传 Excel 文件</span>
       </div>
-      <p class="note">当前首轮只检测父节点缺失、层级过深、节点过宽。上传文件只会被临时读取，不会写回修改。</p>
+      <p class="note">当前会检查结构深度、节点宽度、重复命名、父子同名、孤立节点和异常同义词；未接入大模型时不会显示高噪声的语义预筛问题。</p>
     </form>
   </main>
   <script>

@@ -31,7 +31,6 @@ outputs/
 .codex/
 
 # Course/reference material outside the project source
-docs/
 reference/
 
 # Temporary leftover folder after moving project files to the repository root

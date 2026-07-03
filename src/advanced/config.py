@@ -21,6 +21,9 @@ class Settings:
 
     model_provider: str = os.getenv("MODEL_PROVIDER", "").strip()
     model_name: str = os.getenv("MODEL_NAME", "").strip()
+    ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").strip()
+    enable_ai_analysis: bool = os.getenv("ENABLE_AI_ANALYSIS", "false").strip().lower() in {"1", "true", "yes", "on"}
+    ai_max_items: int = int(os.getenv("AI_MAX_ITEMS", "30"))
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "").strip()
     google_api_key: str = os.getenv("GOOGLE_API_KEY", "").strip()
     max_depth: int = int(os.getenv("MAX_DEPTH", "8"))
@@ -33,6 +36,8 @@ class Settings:
         if not self.model_provider or not self.model_name:
             return False
         provider = self.model_provider.lower()
+        if provider == "ollama":
+            return bool(self.model_name)
         if provider in {"openai", "azure_openai"}:
             return bool(self.openai_api_key)
         if provider in {"google_genai", "google_vertexai", "google"}:

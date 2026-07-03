@@ -9,7 +9,7 @@ import pandas as pd
 from pydantic import BaseModel, Field
 
 from .config import Settings, settings
-from .prompts import PARENT_CHILD_JUDGE_PROMPT, SYNONYM_JUDGE_PROMPT
+from .prompts import COMMON_OUTPUT_RULES, PARENT_CHILD_JUDGE_PROMPT, SYNONYM_JUDGE_PROMPT
 
 try:
     from langchain.chat_models import init_chat_model
@@ -23,11 +23,12 @@ logger = logging.getLogger(__name__)
 class LLMJudgement(BaseModel):
     """Structured output schema expected from the model."""
 
-    is_problem: bool = Field(description="Whether the checked item is a real problem.")
-    problem_type: str = Field(description="Problem category, such as wrong_parent or wrong_synonym.")
-    reason: str = Field(description="Short reason for the judgement.")
-    suggestion: str = Field(description="Concrete maintenance suggestion.")
+    is_problem: bool = Field(description="Whether the node names reveal a real semantic structure problem.")
     confidence: float = Field(ge=0, le=1, description="Confidence between 0 and 1.")
+    relevant_nodes: list[str] = Field(default_factory=list, description="Only the node names needed for semantic analysis.")
+    semantic_relation: str = Field(description="Semantic relationship among the relevant nodes.")
+    reason: str = Field(description="Short semantic analysis based on node names.")
+    suggestion: str = Field(description="Concrete maintenance suggestion.")
 
 
 def judge_parent_child_issues(
@@ -86,6 +87,7 @@ def _judge_issues(
             synonyms=row.get("synonyms", ""),
             path=issue.get("path", ""),
             evidence=issue.get("evidence", ""),
+            output_rules=COMMON_OUTPUT_RULES,
         )
         try:
             judgement = model.invoke(prompt)

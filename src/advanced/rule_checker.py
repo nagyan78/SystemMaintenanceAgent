@@ -12,7 +12,7 @@ from .tree_builder import ROOT_PARENT_VALUES
 
 
 Issue = dict[str, Any]
-SYNONYM_SPLIT_RE = re.compile(r"[,，、;；|/]+")
+SYNONYM_SPLIT_RE = re.compile(r"[,，、；;/]+")
 
 
 def make_issue(
@@ -194,7 +194,7 @@ def detect_suspicious_parent_child_by_rule(df: pd.DataFrame) -> list[Issue]:
                 "medium",
                 row,
                 f"父类“{parent_name}”与子类“{name}”缺少明显词面关联。",
-                "建议调用 LLM 或人工复核该节点是否挂载到更合适的父类下。",
+                "建议调用 LLM 或人工复核该节点是否应挂载到更合适的父类下。",
             ))
     return issues
 
