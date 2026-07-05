@@ -195,6 +195,7 @@ def diagnosis_planning_node(state: TaxonomyGraphState) -> StateUpdate:
 def content_diagnosis_node(state: TaxonomyGraphState) -> StateUpdate:
     version_id = _require_current_version_id(state)
     plan = DiagnosisPlan.model_validate(state.diagnosis_plan or {})
+    plan.estimated_candidates = min(plan.estimated_candidates, 50)  # hard cap to prevent excessive API calls
     issues = ContentDiagnosisAgent(_runtime_settings).run(version_id, plan)
     return _complete_step(
         state,

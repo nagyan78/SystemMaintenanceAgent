@@ -54,6 +54,18 @@ class QdrantStore:
             )
         return len(qdrant_points)
 
+    def version_indexed(self, version_id: int) -> bool:
+        """Check whether any points for this version already exist in the collection."""
+        if not self.client.collection_exists(self.collection_name):
+            return False
+        count = self.client.count(
+            collection_name=self.collection_name,
+            count_filter=Filter(
+                must=[FieldCondition(key="version_id", match=MatchValue(value=version_id))]
+            ),
+        )
+        return count.count > 0
+
     def search_similar(
         self,
         version_id: int,

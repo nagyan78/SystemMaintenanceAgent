@@ -79,6 +79,9 @@ class FakeVectorStore:
         self.indexed_points.extend(points)
         return len(points)
 
+    def version_indexed(self, version_id: int) -> bool:  # noqa: ARG002
+        return len(self.indexed_points) > 0
+
 
 def test_settings_reads_deepseek_and_dashscope_keys_from_environment(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")

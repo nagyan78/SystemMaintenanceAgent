@@ -67,6 +67,7 @@ class DiagnosisPlanningAgent:
             base_url=self.settings.deepseek_base_url,
             api_key=self.settings.deepseek_api_key,
             temperature=0.1,
+            request_timeout=60,
         )
 
 
@@ -168,6 +169,7 @@ class ContentDiagnosisAgent:
             base_url=self.settings.deepseek_base_url,
             api_key=self.settings.deepseek_api_key,
             temperature=0.1,
+            request_timeout=60,
         )
 
     def _trace(self, message: str) -> None:

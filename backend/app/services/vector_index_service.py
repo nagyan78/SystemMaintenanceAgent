@@ -29,6 +29,8 @@ class VectorIndexService:
         if embeddings is None:
             return IndexResult(version_id=version_id, status="skipped", indexed_count=0)
         store = self.store or QdrantStore(self.settings, embeddings=embeddings)
+        if store.version_indexed(version_id):
+            return IndexResult(version_id=version_id, status="skipped", indexed_count=0)
         nodes = TaxonomyRepository(self.settings).list_nodes(version_id)
         texts = [_node_text(node) for node in nodes]
         vectors = self._embed_documents(embeddings, texts)
