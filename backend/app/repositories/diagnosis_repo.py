@@ -45,6 +45,50 @@ class DiagnosisRepository:
                 values,
             )
 
+    def create_issue(
+        self,
+        *,
+        version_id: int,
+        issue: DiagnosisIssueRecord,
+    ) -> int:
+        with connect(self.settings) as connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO diagnosis_issue (
+                    version_id, issue_type, node_id, node_name, description,
+                    reason, risk_level, confidence, status
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    version_id,
+                    issue.issue_type,
+                    issue.node_id,
+                    issue.node_name,
+                    issue.description,
+                    issue.reason,
+                    issue.risk_level,
+                    issue.confidence,
+                    issue.status,
+                ),
+            )
+            if cursor.lastrowid:
+                return int(cursor.lastrowid)
+            row = connection.execute(
+                """
+                SELECT id
+                FROM diagnosis_issue
+                WHERE version_id = ?
+                  AND issue_type = ?
+                  AND IFNULL(node_id, -1) = IFNULL(?, -1)
+                  AND description = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (version_id, issue.issue_type, issue.node_id, issue.description),
+            ).fetchone()
+            return int(row["id"]) if row else 0
+
     def count_by_type(self, version_id: int) -> dict[str, int]:
         with connect(self.settings) as connection:
             rows = connection.execute(

@@ -18,6 +18,8 @@ def _settings(tmp_path):
         upload_dir=tmp_path / "uploads",
         report_dir=tmp_path / "reports",
         export_dir=tmp_path / "exports",
+        deepseek_api_key="",
+        dashscope_api_key="",
     )
 
 

@@ -30,6 +30,7 @@ data/app.db
 data/uploads/
 data/exports/
 data/reports/
+data/qdrant/
 data/qdrant_storage/
 
 # IDE and local workspace files
@@ -42,6 +43,7 @@ data/qdrant_storage/
 # Codex/local assistant metadata
 .agents/
 .codex/
+.workbuddy/
 
 # Course/reference material outside the project source
 reference/

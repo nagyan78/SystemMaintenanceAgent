@@ -20,6 +20,8 @@ def _settings(tmp_path):
         upload_dir=tmp_path / "uploads",
         report_dir=tmp_path / "reports",
         export_dir=tmp_path / "exports",
+        deepseek_api_key="",
+        dashscope_api_key="",
     )
 
 
@@ -66,7 +68,7 @@ def test_graph_runs_m1_deterministic_workflow_to_report(tmp_path):
     assert Path(result["report_path"]).exists()
 
 
-def test_graph_m1_skips_human_review_and_agent_placeholders(tmp_path):
+def test_graph_m2_runs_content_diagnosis_without_human_review(tmp_path):
     settings = _settings(tmp_path)
     create_app(settings)
     file_id = _create_sample_file_record(settings)
@@ -80,6 +82,10 @@ def test_graph_m1_skips_human_review_and_agent_placeholders(tmp_path):
     result = graph.invoke(state, config={"configurable": {"thread_id": state.thread_id}})
 
     assert "__interrupt__" not in result
-    assert "content_diagnosis_node" not in result["completed_steps"]
+    assert result["vector_index_status"] == "skipped"
+    assert result["vector_index_count"] == 0
+    assert "diagnosis_planning_node" in result["completed_steps"]
+    assert "content_diagnosis_node" in result["completed_steps"]
+    assert result["diagnosis_plan"]["sample_strategy"] == "focused"
     assert "generate_suggestion_node" not in result["completed_steps"]
     assert "wait_human_review_node" not in result["completed_steps"]

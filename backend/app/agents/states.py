@@ -39,8 +39,12 @@ class TaxonomyGraphState(BaseModel):
     node_count: int = 0
     max_depth: int = 0
     max_children_count: int = 0
+    vector_index_status: str | None = None
+    vector_index_count: int = 0
     structure_issue_count: int = 0
+    structure_issue_summary: dict[str, int] = Field(default_factory=dict)
     content_issue_count: int = 0
+    diagnosis_plan: dict[str, Any] | None = None
     suggestion_count: int = 0
     approved_action_count: int = 0
     executed_action_count: int = 0

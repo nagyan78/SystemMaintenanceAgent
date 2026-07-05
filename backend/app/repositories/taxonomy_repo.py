@@ -60,6 +60,94 @@ class TaxonomyRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_node_detail(self, version_id: int, category_id: int) -> dict | None:
+        with connect(self.settings) as connection:
+            row = connection.execute(
+                """
+                SELECT id, version_id, category_id, category_name, parent_id,
+                       level, path_ids, path_names, category_group_id,
+                       category_pids, category_group_name, syn_list, is_leaf
+                FROM category_node
+                WHERE version_id = ? AND category_id = ?
+                """,
+                (version_id, category_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_node_path(self, version_id: int, category_id: int) -> str:
+        node = self.get_node_detail(version_id, category_id)
+        return str(node["path_names"]) if node else ""
+
+    def get_children(self, version_id: int, parent_id: int) -> list[dict]:
+        with connect(self.settings) as connection:
+            rows = connection.execute(
+                """
+                SELECT category_id, category_name, path_names, syn_list, level, is_leaf
+                FROM category_node
+                WHERE version_id = ? AND parent_id = ?
+                ORDER BY category_id
+                """,
+                (version_id, parent_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_root_overview(self, version_id: int, limit: int = 20) -> list[dict]:
+        with connect(self.settings) as connection:
+            rows = connection.execute(
+                """
+                SELECT parent.category_id,
+                       parent.category_name,
+                       parent.path_names,
+                       COUNT(child.category_id) AS child_count
+                FROM category_node parent
+                LEFT JOIN category_node child
+                  ON child.version_id = parent.version_id
+                 AND child.parent_id = parent.category_id
+                WHERE parent.version_id = ? AND parent.parent_id IS NULL
+                GROUP BY parent.category_id, parent.category_name, parent.path_names
+                ORDER BY parent.category_id
+                LIMIT ?
+                """,
+                (version_id, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_content_diagnosis_candidates(
+        self,
+        version_id: int,
+        *,
+        priority_subtrees: list[str] | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        subtree_filter = ""
+        params: list[object] = [version_id]
+        if priority_subtrees:
+            clauses = []
+            for subtree in priority_subtrees:
+                clauses.append("path_names LIKE ?")
+                params.append(f"%{subtree}%")
+            subtree_filter = f" AND ({' OR '.join(clauses)})"
+        params.append(limit)
+        with connect(self.settings) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT category_id, category_name, parent_id, level, path_names,
+                       syn_list, is_leaf
+                FROM category_node
+                WHERE version_id = ?
+                  AND syn_list IS NOT NULL
+                  AND TRIM(syn_list) NOT IN ('', '[]')
+                  {subtree_filter}
+                ORDER BY
+                  LENGTH(syn_list) DESC,
+                  level DESC,
+                  category_id
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def count_nodes(self, version_id: int) -> int:
         with connect(self.settings) as connection:
             return int(

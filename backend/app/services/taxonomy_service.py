@@ -43,6 +43,13 @@ class TaxonomyService:
             synonym_non_empty_count=counts["synonym_non_empty_count"],
         )
 
+    def get_planning_overview(self, version_id: int) -> dict:
+        overview = self.get_overview(version_id).model_dump()
+        overview["root_categories"] = TaxonomyRepository(
+            self.settings
+        ).list_root_overview(version_id)
+        return overview
+
     def parse_tree_nodes(self, file_id: int) -> list[TaxonomyNodeRecord]:
         file_record = FileRepository(self.settings).get_file(file_id)
         if file_record is None:

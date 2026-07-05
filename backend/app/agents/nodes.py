@@ -8,10 +8,16 @@ from langgraph.types import interrupt
 from backend.app.agents.states import TaxonomyGraphState
 from backend.app.config import Settings, get_settings
 from backend.app.repositories.task_repo import TaskRepository
+from backend.app.schemas.issue import DiagnosisPlan
+from backend.app.services.content_diagnosis_service import (
+    ContentDiagnosisAgent,
+    DiagnosisPlanningAgent,
+)
 from backend.app.services.diagnosis_service import DiagnosisService
 from backend.app.services.excel_service import ExcelService
 from backend.app.services.report_service import ReportService
 from backend.app.services.taxonomy_service import TaxonomyService
+from backend.app.services.vector_index_service import VectorIndexService
 from backend.app.services.version_service import VersionService
 
 
@@ -144,12 +150,16 @@ def save_initial_version_node(state: TaxonomyGraphState) -> StateUpdate:
 
 
 def index_vector_node(state: TaxonomyGraphState) -> StateUpdate:
-    _require_current_version_id(state)
+    result = VectorIndexService(_runtime_settings).index_version(
+        _require_current_version_id(state)
+    )
     return _complete_step(
         state,
         "index_vector_node",
         current_step="index_vector",
         progress=40,
+        vector_index_status=result.status,
+        vector_index_count=result.indexed_count,
     )
 
 
@@ -167,14 +177,31 @@ def structure_diagnosis_node(state: TaxonomyGraphState) -> StateUpdate:
     )
 
 
+def diagnosis_planning_node(state: TaxonomyGraphState) -> StateUpdate:
+    version_id = _require_current_version_id(state)
+    plan = DiagnosisPlanningAgent(_runtime_settings).run(
+        structure_stats=state.structure_issue_summary,
+        tree_overview=TaxonomyService(_runtime_settings).get_planning_overview(version_id),
+    )
+    return _complete_step(
+        state,
+        "diagnosis_planning_node",
+        current_step="diagnosis_planning",
+        progress=62,
+        diagnosis_plan=plan.model_dump(),
+    )
+
+
 def content_diagnosis_node(state: TaxonomyGraphState) -> StateUpdate:
-    _require_current_version_id(state)
+    version_id = _require_current_version_id(state)
+    plan = DiagnosisPlan.model_validate(state.diagnosis_plan or {})
+    issues = ContentDiagnosisAgent(_runtime_settings).run(version_id, plan)
     return _complete_step(
         state,
         "content_diagnosis_node",
         current_step="content_diagnosis",
         progress=68,
-        content_issue_count=0,
+        content_issue_count=len(issues),
     )
 
 
@@ -325,6 +352,10 @@ index_vector_node = node_guard("index_vector_node", index_vector_node)
 structure_diagnosis_node = node_guard(
     "structure_diagnosis_node",
     structure_diagnosis_node,
+)
+diagnosis_planning_node = node_guard(
+    "diagnosis_planning_node",
+    diagnosis_planning_node,
 )
 content_diagnosis_node = node_guard("content_diagnosis_node", content_diagnosis_node)
 generate_suggestion_node = node_guard(

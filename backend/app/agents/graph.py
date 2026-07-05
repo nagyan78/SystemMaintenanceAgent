@@ -8,6 +8,7 @@ from backend.app.agents.nodes import (
     build_tree_node,
     configure_workflow_runtime,
     content_diagnosis_node,
+    diagnosis_planning_node,
     execute_action_node,
     generate_report_node,
     generate_suggestion_node,
@@ -75,6 +76,7 @@ def build_taxonomy_graph(checkpointer=None, settings: Settings | None = None):
     builder.add_node("save_initial_version_node", save_initial_version_node)
     builder.add_node("index_vector_node", index_vector_node)
     builder.add_node("structure_diagnosis_node", structure_diagnosis_node)
+    builder.add_node("diagnosis_planning_node", diagnosis_planning_node)
     builder.add_node("content_diagnosis_node", content_diagnosis_node)
     builder.add_node("generate_suggestion_node", generate_suggestion_node)
     builder.add_node("wait_human_review_node", wait_human_review_node)
@@ -88,7 +90,9 @@ def build_taxonomy_graph(checkpointer=None, settings: Settings | None = None):
     builder.add_edge("build_tree_node", "save_initial_version_node")
     builder.add_edge("save_initial_version_node", "index_vector_node")
     builder.add_edge("index_vector_node", "structure_diagnosis_node")
-    builder.add_edge("structure_diagnosis_node", "generate_report_node")
+    builder.add_edge("structure_diagnosis_node", "diagnosis_planning_node")
+    builder.add_edge("diagnosis_planning_node", "content_diagnosis_node")
+    builder.add_edge("content_diagnosis_node", "generate_report_node")
     builder.add_conditional_edges(
         "wait_human_review_node",
         route_after_review,

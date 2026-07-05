@@ -1,9 +1,24 @@
 # LangGraph 智能体工作流开发设计
 
-> 功能编号：F10  
-> 独立测试目标：系统能通过 LangGraph 编排 Excel 解析、分类树构建、结构诊断、内容诊断、建议生成、人工审核、动作执行、版本保存和报告生成，支持中断、恢复、状态查询、流式进度、人工审核和失败重试。  
-> 相关源需求：PRD 2、6、8.4-8.10、10、11、12；技术架构 3、5、6.2、6.3、6.4、10、11、12、15。  
+> 功能编号：F10
+> 里程碑归属：M1-M5 全程（编排文档）
+> 独立测试目标：系统能通过 LangGraph 编排 Excel 解析、分类树构建、结构诊断、诊断规划、内容诊断、建议生成、人工审核、动作执行、版本保存和报告生成，支持中断、恢复、状态查询、流式进度、人工审核和失败重试。
+> 相关源需求：PRD 2、6、8.4-8.10、10、11、12；技术架构 3、5、6.2、6.3、6.4、10、11、12、15。
 > 官方定位参考：[LangGraph overview](https://docs.langchain.com/oss/python/langgraph/overview)、[LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence)、[LangGraph interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts)、[LangChain overview](https://docs.langchain.com/oss/javascript/langchain/overview)。
+
+---
+
+## 0. 修订说明（2026-07-05）
+
+基于架构评审报告，本文件做以下修订：
+1. 新增 `diagnosis_planning_node`（🤖智能体·LLM 规划），位于结构诊断后、内容诊断前
+2. `content_diagnosis_node` 从单次 service 调用改为 Agent Loop（ReAct + tool calling）
+3. `generate_suggestion_node` 从单次 service 调用改为 Agent Loop（ReAct + 自校验）
+4. 节点性质分为 9 个工作流节点 + 3 个智能体节点 + 1 个新增规划节点 = 13 节点
+5. 补充 8 个 `@tool` 函数定义
+6. 修订 Mermaid 拓扑图
+7. §17 开发顺序替换为 M1-M5 里程碑制
+8. §18/§20 验收标准按里程碑分阶段定义，消除一刀切矛盾
 
 ---
 
@@ -41,19 +56,41 @@ LangChain 在本系统中承担高层模型与工具抽象：
 把 01-08 号功能文档中的离散能力编排成一个可运行的维护智能体流程：
 
 ```mermaid
-flowchart LR
-    A[parse_excel_node] --> B[build_tree_node]
-    B --> C[save_initial_version_node]
-    C --> D[index_vector_node]
-    D --> E[structure_diagnosis_node]
-    E --> F[content_diagnosis_node]
-    F --> G[generate_suggestion_node]
-    G --> H[wait_human_review_node]
-    H --> I[validate_action_node]
-    I --> J[execute_action_node]
-    J --> K[save_new_version_node]
-    K --> L[generate_report_node]
+flowchart TD
+    A[parse_excel_node<br/>工作流·确定性] --> B[build_tree_node<br/>工作流·确定性]
+    B --> C[save_initial_version_node<br/>工作流·确定性]
+    C --> D[index_vector_node<br/>工作流·确定性]
+    D --> E[structure_diagnosis_node<br/>工作流·规则]
+    E --> P[diagnosis_planning_node<br/>🤖智能体·LLM规划]
+    P --> F[content_diagnosis_node<br/>🤖智能体·ReAct loop]
+    F --> G[generate_suggestion_node<br/>🤖智能体·ReAct loop]
+    G --> H[wait_human_review_node<br/>工作流·interrupt]
+    H --> I[validate_action_node<br/>工作流·规则]
+    I --> J[execute_action_node<br/>工作流·确定性]
+    J --> K[save_new_version_node<br/>工作流·确定性]
+    K --> L[generate_report_node<br/>🤖智能体·LLM生成]
+    H -.->|reject/skip| L
 ```
+
+### 节点性质划分
+
+| 节点 | 性质 | 理由 |
+|------|------|------|
+| `parse_excel_node` | 工作流·确定性 | Excel 解析是确定性操作，不需要 LLM |
+| `build_tree_node` | 工作流·确定性 | 树构建是算法操作，不需要 LLM |
+| `save_initial_version_node` | 工作流·确定性 | 数据库写入，不需要 LLM |
+| `index_vector_node` | 工作流·确定性 | 向量索引是批处理操作，不需要 LLM |
+| `structure_diagnosis_node` | 工作流·规则 | 结构诊断是纯规则，PRD 明确"规则能解决的不交给大模型" |
+| `diagnosis_planning_node` | 🤖智能体·LLM 规划 | LLM 根据结构诊断结果规划内容诊断范围和优先级（新增） |
+| `content_diagnosis_node` | 🤖智能体·ReAct loop | 召回→LLM判断→补充查询→再判断，需要 LLM 迭代推理 |
+| `generate_suggestion_node` | 🤖智能体·ReAct loop | 问题分析→工具查询→LLM生成→自校验→重试，需要 LLM + tool calling |
+| `wait_human_review_node` | 工作流·interrupt | 流程暂停，不是智能体行为 |
+| `validate_action_node` | 工作流·规则 | 动作校验是纯规则 |
+| `execute_action_node` | 工作流·确定性 | 动作执行是程序操作 |
+| `save_new_version_node` | 工作流·确定性 | 版本保存是数据库操作 |
+| `generate_report_node` | 🤖智能体·LLM 生成 | 报告内容需要 LLM 组织语言 |
+
+**9 个工作流节点 + 3 个智能体节点 + 1 个新增规划节点 = 13 节点**
 
 工作流必须支持：
 
@@ -246,6 +283,9 @@ class TaxonomyGraphState(BaseModel):
     # error
     error_code: str | None = None
     error_message: str | None = None
+
+    # diagnosis plan (新增, 来自 diagnosis_planning_node)
+    diagnosis_plan: dict | None = None
 ```
 
 ### 5.2 thread_id 规则
@@ -312,7 +352,8 @@ stateDiagram-v2
     build_tree_node --> save_initial_version_node
     save_initial_version_node --> index_vector_node
     index_vector_node --> structure_diagnosis_node
-    structure_diagnosis_node --> content_diagnosis_node
+    structure_diagnosis_node --> diagnosis_planning_node
+    diagnosis_planning_node --> content_diagnosis_node
     content_diagnosis_node --> generate_suggestion_node
     generate_suggestion_node --> wait_human_review_node
     wait_human_review_node --> validate_action_node: approved_or_edited
@@ -481,47 +522,146 @@ def structure_diagnosis_node(state: TaxonomyGraphState) -> TaxonomyGraphState:
     })
 ```
 
-### 8.6 content_diagnosis_node
+### 8.6 diagnosis_planning_node（新增·🤖智能体·LLM 规划）
 
 职责：
 
-1. 调 `diagnosis_service.run_content_diagnosis(version_id)`。
-2. 使用 Qdrant 召回相似节点。
-3. 对疑似问题调用 LangChain LLM chain。
-4. 写入内容诊断问题。
+1. 读取结构诊断统计（44 个缺失父节点、225 个过宽子节点等）+ 12 个一级类目概览。
+2. 调 `DiagnosisPlanningAgent.run(structure_stats, tree_overview)`。
+3. LLM 决定内容诊断的优先级和范围。
+4. 输出 `DiagnosisPlan`，指导后续 `content_diagnosis_node`。
+
+节点示例：
+
+```python
+def diagnosis_planning_node(state: TaxonomyGraphState) -> TaxonomyGraphState:
+    plan = diagnosis_planning_service.run_plan(
+        structure_stats=state.structure_issue_count,
+        tree_overview=taxonomy_service.get_overview(state.current_version_id),
+    )
+    return state.model_copy(update={
+        "diagnosis_plan": plan.model_dump(),
+        "current_step": "diagnosis_planning",
+        "progress": 50,
+        "completed_steps": [*state.completed_steps, "diagnosis_planning_node"],
+    })
+```
+
+DiagnosisPlan 输出结构：
+
+```python
+class DiagnosisPlan(BaseModel):
+    priority_subtrees: list[str] = Field(default_factory=list)
+    sample_strategy: Literal["focused", "full_scan", "sampling"] = "focused"
+    focus_issues: list[str] = Field(default_factory=list)
+    estimated_candidates: int = 200
+```
+
+> 详见 `00_开发里程碑索引.md` §5.5
+
+### 8.7 content_diagnosis_node（修订·🤖智能体·ReAct loop）
+
+> **修订说明**（2026-07-05）：从单次 service 调用改为 Agent Loop。原设计 `content_diagnosis_node → service.run_content_diagnosis(version_id) → return count` 已废弃。
+
+职责：
+
+1. 调 `ContentDiagnosisAgent.run(version_id, plan)`。
+2. Agent 内部通过 ReAct 循环：召回→LLM判断→补充查询→再判断。
+3. LLM 通过 tool calling 自主决定查询哪些信息。
+4. 输出内容诊断问题列表。
 
 节点示例：
 
 ```python
 def content_diagnosis_node(state: TaxonomyGraphState) -> TaxonomyGraphState:
-    result = diagnosis_service.run_content_diagnosis(state.current_version_id)
+    result = content_diagnosis_service.run_agent(
+        version_id=state.current_version_id,
+        plan=state.diagnosis_plan,
+    )
     return state.model_copy(update={
         "content_issue_count": result.issue_count,
         "current_step": "content_diagnosis",
         "progress": 68,
+        "completed_steps": [*state.completed_steps, "content_diagnosis_node"],
     })
 ```
 
-### 8.7 generate_suggestion_node
+Agent Loop 内部 ReAct 循环伪代码：
+
+```
+ContentDiagnosisAgent：
+  1. 从结构诊断结果 + 同义词非空节点中选候选
+  2. 对每个候选用 ReAct loop：
+     - [Thought] 分析候选节点
+     - [Action] 调用 search_similar_nodes(version_id, node_text, top_k) 工具
+     - [Observation] 获得相似节点列表
+     - [Thought] 判断是否需要查父节点路径
+     - [Action] 调用 get_node_path(version_id, category_id) 工具
+     - [Observation] 获得完整路径
+     - [Thought] 综合判断是否存在语义问题
+     - [Action] 调用 submit_diagnosis(issue) 工具
+     - [Observation] 确认已记录
+  3. 如果还有候选节点，回到步骤 1
+  4. 返回 issue 列表
+```
+
+关键变化：
+- service 层实现 agent loop（用 LangChain `create_react_agent` 或手写 while 循环）
+- LLM 通过 tool calling 自主决定查询哪些信息
+- 不是一次性全量扫描，而是 LLM 根据候选重要性决定诊断深度
+
+> 详细的 ReAct 伪代码、tool 列表、Prompt 模板、结构化输出 schema 见 `04_向量索引与内容诊断开发设计.md` §11"内容诊断 Agent Loop 设计"
+
+### 8.8 generate_suggestion_node（修订·🤖智能体·ReAct loop）
+
+> **修订说明**（2026-07-05）：从单次 service 调用改为 Agent Loop。原设计 `generate_suggestion_node → service.generate_suggestions(version_id) → return count` 已废弃。
 
 职责：
 
-1. 调 `suggestion_service.generate_suggestions(version_id)`。
-2. 将诊断问题转成结构化 action JSON。
-3. 所有建议状态为 `pending_review`。
+1. 调 `SuggestionAgent.run(version_id, issues)`。
+2. Agent 内部通过 ReAct 循环：分析→工具查询→生成→自校验→重试。
+3. LLM 通过 tool calling 查询上下文 + 预校验建议合法性。
+4. 所有建议状态为 `pending_review`。
 
 节点示例：
 
 ```python
 def generate_suggestion_node(state: TaxonomyGraphState) -> TaxonomyGraphState:
-    result = suggestion_service.generate_suggestions(state.current_version_id)
+    result = suggestion_service.run_agent(
+        version_id=state.current_version_id,
+        issues=diagnosis_service.list_open_issues(state.current_version_id),
+    )
     return state.model_copy(update={
         "suggestion_count": result.suggestion_count,
         "review_batch_id": result.review_batch_id,
         "current_step": "generate_suggestion",
         "progress": 78,
+        "completed_steps": [*state.completed_steps, "generate_suggestion_node"],
     })
 ```
+
+Agent Loop 内部 ReAct 循环伪代码（对每条 issue）：
+
+```
+SuggestionAgent：
+  1. [Thought] 分析 issue 类型和目标节点
+  2. [Action] 调用 get_node_detail(version_id, category_id) 获取节点上下文
+  3. [Action] 调用 get_node_path(version_id, category_id) 获取路径上下文
+  4. [Action] 调用 search_similar_nodes(version_id, node_text, top_k) 获取相似节点
+  5. [Thought] 生成建议 JSON
+  6. [Action] 调用 validate_action(action_json) 预校验动作合法性
+  7. [Observation] 校验通过/失败
+  8. [Thought] 如果校验失败，调整建议内容
+  9. [Action] 调用 submit_suggestion(suggestion) 提交建议
+  10. 如果还有 issue，回到步骤 1
+```
+
+关键变化：
+- LLM 在生成建议时可以主动查询上下文（tool calling）
+- 生成后立即调用 `validate_action` 工具自校验
+- 校验失败则 LLM 自动调整并重试（ReAct 循环）
+
+> 详细的 ReAct 伪代码、tool 列表、自校验规则、结构化输出 schema 见 `05_智能建议生成开发设计.md` §12"建议生成 Agent Loop 设计"
 
 ### 8.8 wait_human_review_node
 
@@ -718,6 +858,7 @@ from backend.app.agents.nodes import (
     save_initial_version_node,
     index_vector_node,
     structure_diagnosis_node,
+    diagnosis_planning_node,      # 新增
     content_diagnosis_node,
     generate_suggestion_node,
     wait_human_review_node,
@@ -736,6 +877,7 @@ def build_taxonomy_graph(checkpointer):
     builder.add_node("save_initial_version_node", save_initial_version_node)
     builder.add_node("index_vector_node", index_vector_node)
     builder.add_node("structure_diagnosis_node", structure_diagnosis_node)
+    builder.add_node("diagnosis_planning_node", diagnosis_planning_node)  # 新增
     builder.add_node("content_diagnosis_node", content_diagnosis_node)
     builder.add_node("generate_suggestion_node", generate_suggestion_node)
     builder.add_node("wait_human_review_node", wait_human_review_node)
@@ -749,7 +891,8 @@ def build_taxonomy_graph(checkpointer):
     builder.add_edge("build_tree_node", "save_initial_version_node")
     builder.add_edge("save_initial_version_node", "index_vector_node")
     builder.add_edge("index_vector_node", "structure_diagnosis_node")
-    builder.add_edge("structure_diagnosis_node", "content_diagnosis_node")
+    builder.add_edge("structure_diagnosis_node", "diagnosis_planning_node")  # 新增
+    builder.add_edge("diagnosis_planning_node", "content_diagnosis_node")     # 新增
     builder.add_edge("content_diagnosis_node", "generate_suggestion_node")
     builder.add_edge("generate_suggestion_node", "wait_human_review_node")
     builder.add_conditional_edges("wait_human_review_node", route_after_review)
@@ -926,25 +1069,109 @@ LangChain 只用于模型相关能力：
 2. 建议生成 chain。
 3. 结构化输出解析。
 4. Tool calling 子流程。
-5. 可选智能问答 agent。
+5. Agent loop（ReAct 循环）。
+6. 可选智能问答 agent。
 
-示例：
+### 13.1 Tool 定义（8 个 @tool 函数）
+
+给 LLM 暴露以下 tools（用 `@tool` 装饰器或 `StructuredTool` 封装）：
+
+| Tool 名称 | 功能 | 供哪个 Agent 使用 | 文件位置 |
+|-----------|------|------------------|---------|
+| `get_node_detail(version_id, category_id)` | 查询单个节点详情 | 内容诊断 / 建议生成 | `tools/tree_tools.py` |
+| `get_node_path(version_id, category_id)` | 查询节点完整路径 | 内容诊断 / 建议生成 | `tools/tree_tools.py` |
+| `get_children(version_id, parent_id)` | 查询直接子节点 | 内容诊断 / 建议生成 | `tools/tree_tools.py` |
+| `search_similar_nodes(version_id, node_text, top_k)` | Qdrant 语义召回 | 内容诊断 / 建议生成 | `tools/tree_tools.py` |
+| `validate_action(action_json)` | 预校验建议动作合法性 | 建议生成 | `tools/validation_tools.py` |
+| `submit_diagnosis(issue)` | 提交一条诊断结果 | 内容诊断 | `tools/validation_tools.py` |
+| `submit_suggestion(suggestion)` | 提交一条维护建议 | 建议生成 | `tools/validation_tools.py` |
+| `get_tree_overview(version_id)` | 获取树整体统计 | 诊断规划 | `tools/tree_tools.py` |
+
+Tool 定义示例：
 
 ```python
-class SuggestionService:
-    def generate_suggestions(self, version_id: int) -> SuggestionResult:
-        issues = self.diagnosis_repo.list_open_issues(version_id)
-        suggestions = []
-        for issue in issues:
-            context = self.context_builder.build_issue_context(issue)
-            suggestion = self.suggestion_chain.invoke(context)
-            validated = self.output_parser.parse(suggestion)
-            suggestions.append(validated)
-        self.suggestion_repo.bulk_create(suggestions)
-        return SuggestionResult(suggestion_count=len(suggestions))
+from langchain_core.tools import tool
+
+@tool
+def get_node_detail(version_id: int, category_id: int) -> dict:
+    """查询单个节点详情：名称、路径、同义词、层级、是否叶子"""
+    node = taxonomy_repo.get_node(version_id, category_id)
+    return {
+        "category_id": node.category_id,
+        "category_name": node.category_name,
+        "parent_id": node.parent_id,
+        "level": node.level,
+        "path_names": node.path_names,
+        "syn_list": node.syn_list,
+        "is_leaf": node.is_leaf,
+    }
+
+@tool
+def search_similar_nodes(version_id: int, node_text: str, top_k: int = 10) -> list[dict]:
+    """Qdrant 语义召回，返回相似节点列表"""
+    results = qdrant_store.search_similar(version_id, node_text, top_k)
+    return [
+        {"category_id": r.category_id, "category_name": r.category_name,
+         "path_names": r.path_names, "score": r.score}
+        for r in results
+    ]
+
+@tool
+def validate_action(action_json: str) -> dict:
+    """预校验建议动作合法性，返回 {valid: bool, reason: str}"""
+    action = AdjustmentAction.model_validate_json(action_json)
+    result = action_service.validate_single_action(action)
+    return {"valid": result.is_valid, "reason": result.reason}
+
+@tool
+def submit_diagnosis(issue: dict) -> str:
+    """提交一条诊断结果，返回 issue_id"""
+    issue_id = diagnosis_repo.create_issue(issue)
+    return f"issue_{issue_id}"
+
+@tool
+def submit_suggestion(suggestion: dict) -> str:
+    """提交一条维护建议，返回 suggestion_id"""
+    suggestion_id = suggestion_repo.create_suggestion(suggestion)
+    return f"suggestion_{suggestion_id}"
 ```
 
-LangGraph node 不关心 prompt，也不关心模型细节。
+### 13.2 Agent Loop 实现方式
+
+推荐两种方式（选其一）：
+
+**方式 A：LangChain `create_react_agent`**
+
+```python
+from langchain.agents import create_react_agent
+
+agent = create_react_agent(
+    llm=ChatOllama(model="qwen2.5"),
+    tools=[get_node_detail, get_node_path, search_similar_nodes, submit_diagnosis],
+    prompt=content_diagnosis_system_prompt,
+)
+```
+
+**方式 B：手写 ReAct while 循环**
+
+```python
+def react_loop(llm, tools, prompt, input_data, max_iter=10):
+    messages = [SystemMessage(prompt), HumanMessage(input_data)]
+    for _ in range(max_iter):
+        response = llm.invoke(messages)
+        if is_final_answer(response):
+            return parse_output(response)
+        tool_call = extract_tool_call(response)
+        if tool_call:
+            observation = execute_tool(tool_call, tools)
+            messages.append(AIMessage(response))
+            messages.append(ToolMessage(observation))
+    raise AgentLoopExhausted()
+```
+
+### 13.3 结构化输出
+
+LangGraph node 不关心 prompt，也不关心模型细节。LangGraph node 只调 service。
 
 ---
 
@@ -1067,103 +1294,105 @@ def test_structure_diagnosis_node_updates_state(fake_diagnosis_service):
 
 ---
 
-## 17. 开发顺序
+## 17. 开发顺序（M1-M5 里程碑制）
 
-### 阶段 1：LangGraph 骨架
+> **修订说明**（2026-07-05）：原"阶段 1-6"已替换为 M1-M5 里程碑制。详见 `00_开发里程碑索引.md`。
 
-1. 安装 LangGraph 依赖。
-2. 扩展 `TaxonomyGraphState`。
-3. 实现 `graph.py`。
-4. 实现薄 node，占位 service 返回固定结构。
+### M1：工作流骨架接真实数据（确定性闭环）
+
+1. 扩展 `TaxonomyGraphState`（30+ 字段）。
+2. 扩展 `task_record` + 新增 `workflow_event`。
+3. 实现 4 个 service + 3 个 repo，替换 5 个节点的硬编码。
+4. 实现 `api/workflows.py`（start + status）。
 5. 使用 MemorySaver 通过 graph 集成测试。
 
-验收：
+验收：上传样例 Excel 后，workflow 自动生成 v1.0，结构诊断检测到 44 个父节点缺失（真实数据），生成模板化报告。
 
-```text
-graph 能从 parse_excel_node 跑到 wait_human_review_node，并产生 interrupt。
-```
+### M2：向量索引 + 内容诊断智能体（🤖 ReAct loop）
 
-### 阶段 2：持久化与任务 API
+1. 启动 Qdrant Docker，添加 `qdrant-client` 依赖。
+2. 实现 `qdrant_store.py` + `vector_index_service.py`。
+3. 实现 `tools/tree_tools.py` 的 4 个 `@tool` 函数。
+4. 编写 `agents/prompts.py`（内容诊断 system prompt）。
+5. 实例化 `ChatOllama` + `OllamaEmbeddings`。
+6. 实现 `content_diagnosis_service.py`（Agent Loop）。
+7. 新增 `diagnosis_planning_node`。
+8. 替换 `index_vector_node` 和 `content_diagnosis_node` 硬编码。
 
-1. 扩展 `task_record`。
-2. 增加 `workflow_event`。
-3. 接入 SQLite checkpointer。
-4. 实现 start/status/resume/events API。
+验收：Qdrant 索引 21090 节点，内容诊断日志可见 ReAct 循环，识别"苹果"同义词污染。
 
-验收：
+### M3：建议生成智能体 + 人工审核（🤖 tool calling + interrupt）
 
-```text
-后端重启后，同一个 task_id/thread_id 可以查询状态并恢复。
-```
+1. 实现 `tools/validation_tools.py`（validate_action + submit_suggestion）。
+2. 实现 `suggestion_service.py`（SuggestionAgent，Agent Loop）。
+3. 实现 `review_service.py` + `action_service.py`（validate 逻辑）。
+4. 替换 `generate_suggestion_node` / `wait_human_review_node` / `validate_action_node`。
+5. 实现 `POST /api/workflows/{task_id}/resume` + `GET /api/reviews/{id}`。
 
-### 阶段 3：接入 01-03 服务
+验收：建议由 LLM 生成，日志可见 tool calling + 自校验，interrupt 后可 resume。
 
-1. 接入 Excel 解析。
-2. 接入树构建。
-3. 保存初始版本。
-4. 运行结构诊断。
+### M4：动作执行 + 版本管理 + 报告（🤖 LLM 报告生成）
 
-验收：
+1. 补全 `action_service.execute_actions` + `version_service.save_new_version`。
+2. 报告接入 LLM 生成。
+3. 实现 `api/versions.py`（列表/diff/rollback/export）。
+4. checkpointer 从 MemorySaver 换成 SQLite 持久化。
 
-```text
-上传样例 Excel 后，workflow 自动生成 v1.0，并检测 44 个父节点缺失问题。
-```
+验收：v1.1 保存成功，可查 diff，报告由 LLM 生成，SQLite checkpointer 重启可恢复。
 
-### 阶段 4：接入 Qdrant 与内容诊断
+### M5：前端工作台 + 端到端演示
 
-1. 接入向量索引。
-2. 接入相似节点召回。
-3. 接入 LangChain 内容诊断 chain。
+1. 实现 SSE `GET /api/workflows/{task_id}/events`。
+2. 前端串联完整流程。
+3. 展示 Agent Loop 过程（Thought-Action-Observation）。
+4. 课程演示闭环。
 
-验收：
-
-```text
-能识别“苹果”同义词污染等内容问题，并保存 diagnosis_issue。
-```
-
-### 阶段 5：建议、审核、执行、版本
-
-1. 生成结构化建议。
-2. interrupt 等待人工审核。
-3. resume 后校验动作。
-4. 执行动作。
-5. 保存新版本。
-
-验收：
-
-```text
-用户审核建议后，workflow 恢复执行，生成 v1.1，且可查看版本差异和操作日志。
-```
-
-### 阶段 6：报告与前端联动
-
-1. 生成 Markdown 报告。
-2. 前端显示实时进度。
-3. 前端处理 waiting_review。
-4. 前端展示 completed 结果。
-
-验收：
-
-```text
-课程演示中能清晰展示 LangGraph 节点流转、人工中断、恢复执行和版本保存。
-```
+验收：前端上传 → SSE 实时进度 → 审核交互 → 版本/报告展示。
 
 ---
 
-## 18. 验收标准
+## 18. 验收标准（按里程碑分阶段）
+
+> **修订说明**（2026-07-05）：原 §18 要求 12 节点全部薄节点化，与 §20 最小版本 4 节点矛盾。已替换为按 M1-M5 分阶段验收标准。
+
+### M1 验收标准
 
 1. 后端存在明确的 LangGraph `StateGraph`。
-2. 后端存在上述 12 个节点。
-3. 每个节点都是薄节点，只调 service 并更新 state。
-4. workflow 支持 `thread_id`。
-5. workflow 使用 checkpointer。
-6. workflow 至少在 `wait_human_review_node` 中断。
-7. workflow 可通过 `/resume` 恢复。
-8. workflow 状态可通过 API 查询。
-9. workflow 事件可被前端消费。
-10. 上传样例 Excel 后，能启动智能体 workflow。
-11. 诊断、建议、审核、执行、版本保存串成一个闭环。
-12. 所有修改动作可审核、可追踪、可回滚。
+2. `parse_excel_node`、`build_tree_node`、`save_initial_version_node`、`structure_diagnosis_node`、`generate_report_node`（模板化）可运行。
+3. workflow 支持 `thread_id` + MemorySaver checkpointer。
+4. `POST /api/workflows/taxonomy/start` 返回 task_id。
+5. `GET /api/workflows/{task_id}` 返回真实进度。
+6. 结构诊断检测到 44 个父节点缺失（真实数据）。
+
+### M2 验收标准
+
+7. `index_vector_node` 可运行，Qdrant 索引 21090 节点。
+8. `diagnosis_planning_node` 可运行，输出 `DiagnosisPlan`。
+9. `content_diagnosis_node` 是 Agent Loop，日志可见 ReAct Thought-Action-Observation 链。
+10. LLM 通过 tool calling 自主查询节点信息。
+11. `content_issue_count` 来自真实 LLM 判断（非硬编码）。
+
+### M3 验收标准
+
+12. `generate_suggestion_node` 是 Agent Loop，日志可见 tool calling + 自校验。
+13. `wait_human_review_node` 使用 `interrupt()`。
+14. `POST /api/workflows/{task_id}/resume` 可恢复执行。
+15. `validate_action_node` 能拒绝非法动作。
+
+### M4 验收标准
+
+16. `execute_action_node` 执行已审核动作，生成新版本。
+17. `save_new_version_node` 保存 v1.1，可查看 diff。
+18. `generate_report_node` 接入 LLM 生成报告。
+19. SQLite checkpointer 替换 MemorySaver，重启可恢复。
+20. 所有修改有 `operation_log` 记录。
+
+### M5 验收标准
+
+21. workflow 事件可通过 SSE 被前端消费。
+22. 前端展示实时进度和 Agent Loop 过程。
+23. 前端处理 waiting_review 并可 resume。
+24. 课程演示闭环。
 
 ---
 
@@ -1176,7 +1405,7 @@ graph 能从 parse_excel_node 跑到 wait_human_review_node，并产生 interrup
 | 01 Excel 上传与导入 | `parse_excel_node` 的前置输入和部分 service |
 | 02 分类树解析 | `build_tree_node`、`save_initial_version_node` |
 | 03 结构诊断 | `structure_diagnosis_node` |
-| 04 向量索引与内容诊断 | `index_vector_node`、`content_diagnosis_node` |
+| 04 向量索引与内容诊断 | `index_vector_node`、`diagnosis_planning_node`、`content_diagnosis_node` |
 | 05 智能建议生成 | `generate_suggestion_node` |
 | 06 人工审核 | `wait_human_review_node` |
 | 07 动作执行与版本管理 | `validate_action_node`、`execute_action_node`、`save_new_version_node` |
@@ -1185,15 +1414,18 @@ graph 能从 parse_excel_node 跑到 wait_human_review_node，并产生 interrup
 
 ---
 
-## 20. 最小可交付版本
+## 20. 最小可交付版本（M1 标准）
 
-最小版本必须体现 LangGraph，而不只是普通后端任务：
+> **修订说明**（2026-07-05）：原 §20 要求 4 节点可运行 + 前端可见。现明确为 M1 里程碑标准。
+
+M1 最小版本必须体现 LangGraph，而不只是普通后端任务：
 
 1. `StateGraph` 存在。
-2. `parse_excel_node`、`build_tree_node`、`structure_diagnosis_node`、`wait_human_review_node` 至少可运行。
-3. `wait_human_review_node` 使用 interrupt。
-4. 使用 checkpointer 和 thread_id。
-5. 前端可以看到 task 当前节点。
-6. 用户可以提交审核并 resume。
+2. `parse_excel_node`、`build_tree_node`、`save_initial_version_node`、`structure_diagnosis_node`、`generate_report_node`（模板化）至少可运行。
+3. 使用 checkpointer 和 thread_id。
+4. `POST /api/workflows/taxonomy/start` + `GET /api/workflows/{task_id}` 可用。
+5. 上传样例 Excel 后能启动 workflow，生成 v1.0 和真实结构诊断。
 
-如果没有以上 6 点，就不能称为基于 LangGraph 的智能体平台。
+如果没有以上 5 点，就不能称为基于 LangGraph 的智能体平台。
+
+> M2-M5 的验收标准见 §18。
