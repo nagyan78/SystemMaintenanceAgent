@@ -124,3 +124,40 @@ class DiagnosisRepository:
                 (version_id, limit),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    _STRUCTURE_TYPES = {"missing_parent", "deep_level", "wide_node", "duplicate_name", "orphan"}
+
+    def count_content_issues(self, version_id: int) -> int:
+        with connect(self.settings) as connection:
+            row = connection.execute(
+                f"""
+                SELECT COUNT(*) AS cnt FROM diagnosis_issue
+                WHERE version_id = ?
+                  AND issue_type NOT IN ({','.join('?' * len(self._STRUCTURE_TYPES))})
+                """,
+                (version_id, *self._STRUCTURE_TYPES),
+            ).fetchone()
+        return int(row["cnt"]) if row else 0
+
+    def list_content_examples(self, version_id: int, limit: int = 3) -> list[dict]:
+        with connect(self.settings) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT issue_type, node_id, node_name, description, reason,
+                       risk_level, confidence
+                FROM diagnosis_issue
+                WHERE version_id = ?
+                  AND issue_type NOT IN ({','.join('?' * len(self._STRUCTURE_TYPES))})
+                ORDER BY
+                    CASE risk_level
+                        WHEN 'high' THEN 0
+                        WHEN 'medium' THEN 1
+                        ELSE 2
+                    END,
+                    confidence DESC,
+                    id ASC
+                LIMIT ?
+                """,
+                (version_id, *self._STRUCTURE_TYPES, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]

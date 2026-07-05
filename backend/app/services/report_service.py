@@ -23,13 +23,15 @@ class ReportService:
         overview = TaxonomyService(self.settings).get_overview(version_id)
         issue_repo = DiagnosisRepository(self.settings)
         issue_summary = issue_repo.count_by_type(version_id)
+        content_issue_count = issue_repo.count_content_issues(version_id)
         examples = issue_repo.list_examples(version_id, limit=5)
+        content_examples = issue_repo.list_content_examples(version_id, limit=3)
 
         self.settings.report_dir.mkdir(parents=True, exist_ok=True)
         report_name = f"{version['version_no']}_diagnosis_report.md"
         report_path = self.settings.report_dir / report_name
         report_path.write_text(
-            self._render(version, file_record, overview, issue_summary, examples),
+            self._render(version, file_record, overview, issue_summary, content_issue_count, examples, content_examples),
             encoding="utf-8",
         )
         return ReportResult(
@@ -45,13 +47,33 @@ class ReportService:
         file_record: dict,
         overview,
         issue_summary: dict[str, int],
+        content_issue_count: int,
         examples: list[dict],
+        content_examples: list[dict],
     ) -> str:
         created_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
         example_lines = "\n".join(
             f"- [{item['risk_level']}] {item['issue_type']}：{item['description']}"
             for item in examples
         ) or "- 暂无典型结构问题。"
+        content_example_lines = "\n".join(
+            f"- [{item['risk_level']}] {item['issue_type']}：{item['description']}"
+            for item in content_examples
+        ) or "- 暂无典型内容问题。"
+
+        if content_issue_count > 0:
+            content_section = f"""- AI 语义诊断问题总数：{content_issue_count}
+- 诊断方式：DeepSeek ReAct Agent Loop（召回→LLM判断→补充查询→再判断）
+- 诊断范围：由 diagnosis_planning_node 智能规划（非全量扫描）
+
+典型内容问题：
+{content_example_lines}"""
+        else:
+            content_section = "内容诊断 Agent 已运行但未发现语义异常（或 M2 Agent Loop 未在本次执行中激活）。"
+
+        total_issues = sum(issue_summary.values()) + content_issue_count
+        quality_score = _calc_quality_score(overview.node_count, total_issues)
+        quality_label = _quality_label(quality_score)
         return f"""# 产品标准体系诊断报告
 
 ## 1. 基本信息
@@ -81,7 +103,7 @@ class ReportService:
 
 ## 4. 内容诊断结果
 
-M1 阶段未启用内容诊断智能体，内容问题数：0。
+{content_section}
 
 ## 5. 典型问题案例
 
@@ -89,7 +111,7 @@ M1 阶段未启用内容诊断智能体，内容问题数：0。
 
 ## 6. 智能维护建议
 
-M1 阶段未启用建议生成智能体，暂无待审核建议。
+M3 阶段功能（建议生成智能体 + 人工审核），暂未实现。当前已完成 M1（确定性闭环）和 M2（内容诊断智能体）。
 
 ## 7. 版本变更记录
 
@@ -97,7 +119,10 @@ M1 阶段未启用建议生成智能体，暂无待审核建议。
 
 ## 8. 质量评分
 
-M1 阶段暂不计算综合质量评分。
+体系健康度：{quality_label}（{quality_score:.1f}/100）
+
+> 计算公式：基础分 100 - 结构问题扣分 - 内容问题扣分。问题越多扣分越多。
+> 详细规则见 `_calc_quality_score` 函数。
 
 ## 9. 后续优化建议
 
@@ -106,3 +131,20 @@ M1 阶段暂不计算综合质量评分。
 - 对直接子节点过宽的类目增加中间层。
 - 对重复名称节点结合完整路径判断是否需要合并、重命名或保留。
 """
+
+
+def _calc_quality_score(node_count: int, total_issues: int) -> float:
+    """Simple health score: start at 100, penalize per issue, floor at 0."""
+    base = 100.0
+    issue_penalty = min(total_issues * 0.1, 90.0)
+    return max(base - issue_penalty, 0.0)
+
+
+def _quality_label(score: float) -> str:
+    if score >= 90:
+        return "优秀"
+    if score >= 70:
+        return "良好"
+    if score >= 50:
+        return "一般"
+    return "需要重点关注"
