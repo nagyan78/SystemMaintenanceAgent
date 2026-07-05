@@ -37,6 +37,17 @@ class UploadedFileMetadata:
     columns: list[str]
 
 
+@dataclass(frozen=True)
+class ParseExcelResult:
+    file_id: int
+    file_name: str
+    file_path: Path
+    sheet_name: str
+    row_count: int
+    column_count: int
+    columns: list[str]
+
+
 class ExcelService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -82,6 +93,42 @@ class ExcelService:
             file_name=original_name,
             file_path=saved_path,
             file_size=file_size,
+            sheet_name=sheet.title,
+            row_count=max(sheet.max_row - 1, 0),
+            column_count=len(columns),
+            columns=columns,
+        )
+
+    def parse_uploaded_file(self, file_id: int) -> ParseExcelResult:
+        from backend.app.repositories.file_repo import FileRepository
+
+        file_record = FileRepository(self.settings).get_file(file_id)
+        if file_record is None:
+            raise ExcelValidationError("Uploaded file was not found.", "FILE_NOT_FOUND")
+
+        file_path = Path(file_record["file_path"])
+        if not file_path.exists():
+            raise ExcelValidationError("Uploaded file path does not exist.", "FILE_NOT_FOUND")
+
+        try:
+            workbook = load_workbook(file_path, read_only=True, data_only=True)
+        except Exception as exc:
+            raise ExcelValidationError("Excel file could not be read.", "INVALID_EXCEL") from exc
+
+        sheet = workbook.worksheets[0]
+        columns = [
+            "" if value is None else str(value).strip()
+            for value in next(sheet.iter_rows(max_row=1, values_only=True))
+        ]
+        missing_columns = sorted(REQUIRED_COLUMNS.difference(columns))
+        if missing_columns:
+            joined = ", ".join(missing_columns)
+            raise ExcelValidationError(f"Excel missing required columns: {joined}", "INVALID_COLUMNS")
+
+        return ParseExcelResult(
+            file_id=file_id,
+            file_name=file_record["file_name"],
+            file_path=file_path,
             sheet_name=sheet.title,
             row_count=max(sheet.max_row - 1, 0),
             column_count=len(columns),

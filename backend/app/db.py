@@ -124,6 +124,52 @@ def init_db(settings: Settings) -> None:
                 created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (version_id) REFERENCES taxonomy_version(id)
             );
+
+            CREATE TABLE IF NOT EXISTS workflow_event (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workflow_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                task_id TEXT,
+                node_name TEXT,
+                event_type TEXT NOT NULL,
+                status TEXT,
+                progress INTEGER,
+                message TEXT,
+                payload TEXT,
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_category_node_version_category
+            ON category_node(version_id, category_id);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_unique_rule
+            ON diagnosis_issue(version_id, issue_type, node_id, description);
             """
         )
+        _ensure_columns(
+            connection,
+            "task_record",
+            {
+                "workflow_id": "TEXT",
+                "thread_id": "TEXT",
+                "version_id": "INTEGER",
+                "interrupt_payload": "TEXT",
+                "result_payload": "TEXT",
+            },
+        )
 
+
+def _ensure_columns(
+    connection: sqlite3.Connection,
+    table_name: str,
+    columns: dict[str, str],
+) -> None:
+    existing_columns = {
+        row["name"]
+        for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    for column_name, column_type in columns.items():
+        if column_name not in existing_columns:
+            connection.execute(
+                f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
+            )

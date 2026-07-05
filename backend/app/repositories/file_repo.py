@@ -1,9 +1,9 @@
 from datetime import datetime
-from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from backend.app.config import Settings
 from backend.app.db import connect
+from backend.app.repositories.task_repo import TaskRepository
 from backend.app.services.excel_service import UploadedFileMetadata
 
 
@@ -65,27 +65,3 @@ class FileRepository:
                 (file_id,),
             ).fetchone()
         return dict(row) if row else None
-
-
-class TaskRepository:
-    def __init__(self, settings: Settings) -> None:
-        self.settings = settings
-
-    def create_task(self, file_id: int, task_type: str) -> str:
-        task_id = f"{task_type}_{uuid4().hex[:12]}"
-        with connect(self.settings) as connection:
-            connection.execute(
-                """
-                INSERT INTO task_record (
-                    id,
-                    file_id,
-                    task_type,
-                    status,
-                    current_step,
-                    progress
-                )
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (task_id, file_id, task_type, "pending", "uploaded", 0),
-            )
-        return task_id

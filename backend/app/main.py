@@ -1,6 +1,15 @@
 from fastapi import FastAPI
 
-from backend.app.api import chat, diagnosis, files, health, suggestions, taxonomy, versions
+from backend.app.api import (
+    chat,
+    diagnosis,
+    files,
+    health,
+    suggestions,
+    taxonomy,
+    versions,
+    workflows,
+)
 from backend.app.config import Settings, get_settings
 from backend.app.db import init_db
 
@@ -22,6 +31,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(diagnosis.router, prefix="/api")
     app.include_router(suggestions.router, prefix="/api")
     app.include_router(versions.router, prefix="/api")
+    app.include_router(workflows.router, prefix="/api")
     app.include_router(chat.router, prefix="/api")
     return app
 

@@ -6,15 +6,28 @@ from typing import Any
 from langgraph.types import interrupt
 
 from backend.app.agents.states import TaxonomyGraphState
+from backend.app.config import Settings, get_settings
+from backend.app.repositories.task_repo import TaskRepository
+from backend.app.services.diagnosis_service import DiagnosisService
+from backend.app.services.excel_service import ExcelService
+from backend.app.services.report_service import ReportService
+from backend.app.services.taxonomy_service import TaxonomyService
+from backend.app.services.version_service import VersionService
 
 
 StateUpdate = dict[str, Any]
+_runtime_settings: Settings = get_settings()
 
 
 class WorkflowNodeError(RuntimeError):
     def __init__(self, error_code: str, message: str) -> None:
         super().__init__(message)
         self.error_code = error_code
+
+
+def configure_workflow_runtime(settings: Settings) -> None:
+    global _runtime_settings
+    _runtime_settings = settings
 
 
 def _complete_step(
@@ -29,13 +42,15 @@ def _complete_step(
     completed_steps = [*state.completed_steps]
     if node_name not in completed_steps:
         completed_steps.append(node_name)
-    return {
+    update = {
         "status": status,
         "current_step": current_step,
         "progress": progress,
         "completed_steps": completed_steps,
         **updates,
     }
+    _record_progress(state, node_name, update)
+    return update
 
 
 def node_guard(
@@ -46,6 +61,7 @@ def node_guard(
         try:
             return fn(state)
         except WorkflowNodeError as exc:
+            _record_failure(state, node_name, exc.error_code, str(exc))
             return {
                 "status": "failed",
                 "current_step": node_name,
@@ -53,6 +69,7 @@ def node_guard(
                 "error_message": str(exc),
             }
         except Exception as exc:
+            _record_failure(state, node_name, "WORKFLOW_NODE_ERROR", str(exc))
             return {
                 "status": "failed",
                 "current_step": node_name,
@@ -83,42 +100,46 @@ def _require_review_batch_id(state: TaxonomyGraphState) -> str:
 
 def parse_excel_node(state: TaxonomyGraphState) -> StateUpdate:
     file_id = _require_file_id(state)
+    result = ExcelService(_runtime_settings).parse_uploaded_file(file_id)
     return _complete_step(
         state,
         "parse_excel_node",
         current_step="parse_excel",
         progress=10,
-        file_path=f"data/uploads/demo_file_{file_id}.xlsx",
-        file_name=f"demo_file_{file_id}.xlsx",
-        row_count=21090,
-        column_count=6,
+        file_path=str(result.file_path),
+        file_name=result.file_name,
+        row_count=result.row_count,
+        column_count=result.column_count,
+        columns=result.columns,
     )
 
 
 def build_tree_node(state: TaxonomyGraphState) -> StateUpdate:
-    _require_file_id(state)
+    result = TaxonomyService(_runtime_settings).build_tree(_require_file_id(state))
     return _complete_step(
         state,
         "build_tree_node",
         current_step="build_tree",
         progress=20,
-        node_count=21090,
-        max_depth=10,
-        max_children_count=3125,
+        node_count=result.node_count,
+        max_depth=result.max_depth,
+        max_children_count=result.max_children_count,
     )
 
 
 def save_initial_version_node(state: TaxonomyGraphState) -> StateUpdate:
-    file_id = _require_file_id(state)
-    version_id = file_id
+    result = VersionService(_runtime_settings).create_initial_version(_require_file_id(state))
     return _complete_step(
         state,
         "save_initial_version_node",
         current_step="save_initial_version",
         progress=30,
-        base_version_id=version_id,
-        current_version_id=version_id,
-        version_no="v1.0",
+        base_version_id=result.version_id,
+        current_version_id=result.version_id,
+        version_no=result.version_no,
+        node_count=result.node_count,
+        max_depth=result.max_depth,
+        max_children_count=result.max_children_count,
     )
 
 
@@ -133,13 +154,16 @@ def index_vector_node(state: TaxonomyGraphState) -> StateUpdate:
 
 
 def structure_diagnosis_node(state: TaxonomyGraphState) -> StateUpdate:
-    _require_current_version_id(state)
+    result = DiagnosisService(_runtime_settings).run_structure_diagnosis(
+        _require_current_version_id(state)
+    )
     return _complete_step(
         state,
         "structure_diagnosis_node",
         current_step="structure_diagnosis",
         progress=55,
-        structure_issue_count=44,
+        structure_issue_count=result.issue_count,
+        structure_issue_summary=result.summary,
     )
 
 
@@ -150,21 +174,18 @@ def content_diagnosis_node(state: TaxonomyGraphState) -> StateUpdate:
         "content_diagnosis_node",
         current_step="content_diagnosis",
         progress=68,
-        content_issue_count=2,
+        content_issue_count=0,
     )
 
 
 def generate_suggestion_node(state: TaxonomyGraphState) -> StateUpdate:
     _require_current_version_id(state)
-    review_batch_id = f"review_{state.workflow_id}"
     return _complete_step(
         state,
         "generate_suggestion_node",
-        current_step="wait_human_review",
+        current_step="generate_suggestion",
         progress=78,
-        status="waiting_review",
-        suggestion_count=3,
-        review_batch_id=review_batch_id,
+        suggestion_count=0,
     )
 
 
@@ -230,7 +251,10 @@ def save_new_version_node(state: TaxonomyGraphState) -> StateUpdate:
 
 
 def generate_report_node(state: TaxonomyGraphState) -> StateUpdate:
-    version_id = state.current_version_id or state.base_version_id or 0
+    version_id = state.current_version_id or state.base_version_id
+    if version_id is None:
+        raise WorkflowNodeError("MISSING_VERSION_ID", "Workflow requires version_id.")
+    result = ReportService(_runtime_settings).generate_diagnosis_report(version_id)
     return _complete_step(
         state,
         "generate_report_node",
@@ -238,7 +262,56 @@ def generate_report_node(state: TaxonomyGraphState) -> StateUpdate:
         progress=100,
         status="completed",
         report_id=version_id,
-        report_path=f"data/reports/{state.workflow_id}.md",
+        report_path=str(result.report_path),
+    )
+
+
+def _record_progress(
+    state: TaxonomyGraphState,
+    node_name: str,
+    update: StateUpdate,
+) -> None:
+    if not state.task_id:
+        return
+    version_id = update.get("current_version_id") or state.current_version_id
+    task_repo = TaskRepository(_runtime_settings)
+    task_repo.update_task(
+        task_id=state.task_id,
+        status=update["status"],
+        current_step=update["current_step"],
+        progress=update["progress"],
+        version_id=version_id,
+        result_payload=update,
+    )
+    task_repo.record_event(
+        workflow_id=state.workflow_id,
+        thread_id=state.thread_id,
+        task_id=state.task_id,
+        node_name=node_name,
+        event_type="node_completed",
+        status=update["status"],
+        progress=update["progress"],
+        payload=update,
+    )
+
+
+def _record_failure(
+    state: TaxonomyGraphState,
+    node_name: str,
+    error_code: str,
+    message: str,
+) -> None:
+    if not state.task_id:
+        return
+    TaskRepository(_runtime_settings).record_event(
+        workflow_id=state.workflow_id,
+        thread_id=state.thread_id,
+        task_id=state.task_id,
+        node_name=node_name,
+        event_type="node_failed",
+        status="failed",
+        message=message,
+        payload={"error_code": error_code},
     )
 
 
