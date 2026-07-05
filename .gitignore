@@ -11,6 +11,12 @@ __pycache__/
 .coverage
 htmlcov/
 
+# Frontend dependencies and build artifacts
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+
 # Local environment variables
 .env
 .env.*

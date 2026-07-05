@@ -53,22 +53,35 @@ class ExcelService:
         with saved_path.open("wb") as output:
             shutil.copyfileobj(upload_file.file, output)
 
+        file_size = saved_path.stat().st_size
+        if file_size == 0:
+            saved_path.unlink(missing_ok=True)
+            raise ExcelValidationError("Excel file is empty.", "EMPTY_FILE")
+        if file_size > self.settings.max_upload_size_bytes:
+            saved_path.unlink(missing_ok=True)
+            raise ExcelValidationError("Excel file is too large.", "FILE_TOO_LARGE")
+
         try:
             workbook = load_workbook(saved_path, read_only=True, data_only=True)
         except Exception as exc:
+            saved_path.unlink(missing_ok=True)
             raise ExcelValidationError("Excel file could not be read.", "INVALID_EXCEL") from exc
 
         sheet = workbook.worksheets[0]
-        columns = [str(value).strip() for value in next(sheet.iter_rows(max_row=1, values_only=True))]
+        columns = [
+            "" if value is None else str(value).strip()
+            for value in next(sheet.iter_rows(max_row=1, values_only=True))
+        ]
         missing_columns = sorted(REQUIRED_COLUMNS.difference(columns))
         if missing_columns:
+            saved_path.unlink(missing_ok=True)
             joined = ", ".join(missing_columns)
             raise ExcelValidationError(f"Excel missing required columns: {joined}", "INVALID_COLUMNS")
 
         return UploadedFileMetadata(
             file_name=original_name,
             file_path=saved_path,
-            file_size=saved_path.stat().st_size,
+            file_size=file_size,
             sheet_name=sheet.title,
             row_count=max(sheet.max_row - 1, 0),
             column_count=len(columns),
@@ -79,4 +92,3 @@ class ExcelService:
         safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(original_name).name)
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
         return f"{timestamp}_{safe_name}"
-

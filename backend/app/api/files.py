@@ -10,7 +10,7 @@ router = APIRouter(prefix="/files", tags=["files"])
 @router.post(
     "/upload",
     response_model=FileUploadResponse,
-    status_code=status.HTTP_201_CREATED,
+    status_code=status.HTTP_200_OK,
 )
 async def upload_file(request: Request, file: UploadFile = File(...)) -> FileUploadResponse:
     settings = request.app.state.settings
@@ -51,4 +51,3 @@ def get_file(file_id: int, request: Request) -> dict:
     if file_record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found.")
     return file_record
-

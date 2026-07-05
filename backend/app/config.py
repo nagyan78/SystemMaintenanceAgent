@@ -14,6 +14,7 @@ class Settings(BaseModel):
     qdrant_collection: str = "taxonomy_nodes"
     max_tree_depth_threshold: int = 7
     max_children_threshold: int = 80
+    max_upload_size_bytes: int = 50 * 1024 * 1024
     allowed_upload_suffixes: tuple[str, ...] = (".xlsx",)
 
     def ensure_directories(self) -> None:
@@ -26,4 +27,3 @@ class Settings(BaseModel):
 
 def get_settings() -> Settings:
     return Settings()
-

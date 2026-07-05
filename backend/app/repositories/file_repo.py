@@ -1,4 +1,6 @@
+from datetime import datetime
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from backend.app.config import Settings
 from backend.app.db import connect
@@ -10,6 +12,7 @@ class FileRepository:
         self.settings = settings
 
     def create_uploaded_file(self, metadata: UploadedFileMetadata) -> int:
+        upload_time = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
         with connect(self.settings) as connection:
             cursor = connection.execute(
                 """
@@ -20,9 +23,10 @@ class FileRepository:
                     sheet_name,
                     row_count,
                     column_count,
+                    upload_time,
                     status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     metadata.file_name,
@@ -31,6 +35,7 @@ class FileRepository:
                     metadata.sheet_name,
                     metadata.row_count,
                     metadata.column_count,
+                    upload_time,
                     "uploaded",
                 ),
             )
@@ -84,4 +89,3 @@ class TaskRepository:
                 (task_id, file_id, task_type, "pending", "uploaded", 0),
             )
         return task_id
-
