@@ -20,11 +20,18 @@ htmlcov/
 output/
 outputs/
 *.log
+data/app.db
+data/uploads/
+data/exports/
+data/reports/
+data/qdrant_storage/
 
 # IDE and local workspace files
+.DS_Store
 .vscode/
 .idea/
 .obsidian/
+.~*
 
 # Codex/local assistant metadata
 .agents/

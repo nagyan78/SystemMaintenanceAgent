@@ -189,6 +189,22 @@ MAX_CHILDREN=2000
 
 ## 9. 运行方式
 
+### 9.0 启动 FastAPI 后端骨架
+
+当前仓库已新增 `backend/` 后端骨架，可先启动本地 API 网关：
+
+```bash
+python -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+可访问：
+
+- `GET http://127.0.0.1:8000/api/health`
+- `POST http://127.0.0.1:8000/api/files/upload`
+- `GET http://127.0.0.1:8000/docs`
+
 ### 9.1 启动本地上传诊断页面
 
 Windows 可以双击：

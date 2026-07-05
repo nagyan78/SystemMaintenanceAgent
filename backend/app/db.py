@@ -1,0 +1,129 @@
+import sqlite3
+from pathlib import Path
+
+from backend.app.config import Settings
+
+
+def sqlite_path_from_url(database_url: str) -> Path:
+    prefix = "sqlite:///"
+    if not database_url.startswith(prefix):
+        raise ValueError("Only sqlite:/// database URLs are supported.")
+    return Path(database_url.removeprefix(prefix))
+
+
+def connect(settings: Settings) -> sqlite3.Connection:
+    db_path = sqlite_path_from_url(settings.database_url)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def init_db(settings: Settings) -> None:
+    with connect(settings) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS uploaded_file (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_name TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                file_size INTEGER,
+                sheet_name TEXT,
+                row_count INTEGER,
+                column_count INTEGER,
+                upload_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                status TEXT DEFAULT 'uploaded'
+            );
+
+            CREATE TABLE IF NOT EXISTS task_record (
+                id TEXT PRIMARY KEY,
+                file_id INTEGER,
+                task_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                current_step TEXT,
+                progress INTEGER DEFAULT 0,
+                error_message TEXT,
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (file_id) REFERENCES uploaded_file(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS taxonomy_version (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id INTEGER NOT NULL,
+                version_no TEXT NOT NULL,
+                description TEXT,
+                quality_score REAL,
+                snapshot_path TEXT,
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (file_id) REFERENCES uploaded_file(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS category_node (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                version_id INTEGER NOT NULL,
+                category_id INTEGER NOT NULL,
+                category_name TEXT NOT NULL,
+                parent_id INTEGER,
+                level INTEGER,
+                path_ids TEXT,
+                path_names TEXT,
+                category_group_id TEXT,
+                category_pids TEXT,
+                category_group_name TEXT,
+                syn_list TEXT,
+                is_leaf INTEGER DEFAULT 0,
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (version_id) REFERENCES taxonomy_version(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS diagnosis_issue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                version_id INTEGER NOT NULL,
+                issue_type TEXT NOT NULL,
+                node_id INTEGER,
+                node_name TEXT,
+                description TEXT,
+                reason TEXT,
+                risk_level TEXT,
+                confidence REAL,
+                status TEXT DEFAULT 'pending',
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (version_id) REFERENCES taxonomy_version(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS adjustment_suggestion (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                issue_id INTEGER NOT NULL,
+                version_id INTEGER NOT NULL,
+                action_type TEXT NOT NULL,
+                target_node_id INTEGER,
+                target_node_name TEXT,
+                old_parent_id INTEGER,
+                new_parent_id INTEGER,
+                old_name TEXT,
+                new_name TEXT,
+                action_payload TEXT,
+                reason TEXT,
+                suggestion TEXT,
+                risk_level TEXT,
+                confidence REAL,
+                need_confirm INTEGER DEFAULT 1,
+                status TEXT DEFAULT 'pending',
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (issue_id) REFERENCES diagnosis_issue(id),
+                FOREIGN KEY (version_id) REFERENCES taxonomy_version(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS operation_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                version_id INTEGER,
+                operator TEXT,
+                operation_type TEXT,
+                operation_detail TEXT,
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (version_id) REFERENCES taxonomy_version(id)
+            );
+            """
+        )
+
