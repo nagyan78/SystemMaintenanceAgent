@@ -48,6 +48,9 @@ class TaxonomyGraphState(BaseModel):
     suggestion_count: int = 0
     approved_action_count: int = 0
     executed_action_count: int = 0
+    failed_action_count: int = 0
+    action_batch_id: str | None = None
+    executed_nodes: list[dict[str, Any]] = Field(default_factory=list)
 
     review_batch_id: str | None = None
     review_decision: ReviewDecision | None = None

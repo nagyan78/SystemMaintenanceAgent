@@ -2,8 +2,10 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from backend.app.config import Settings
+from backend.app.db import connect
 from backend.app.repositories.diagnosis_repo import DiagnosisRepository
 from backend.app.repositories.file_repo import FileRepository
+from backend.app.repositories.suggestion_repo import SuggestionRepository
 from backend.app.repositories.version_repo import VersionRepository
 from backend.app.schemas.issue import ReportResult
 from backend.app.services.taxonomy_service import TaxonomyService
@@ -19,19 +21,31 @@ class ReportService:
             raise ValueError(f"Taxonomy version {version_id} was not found.")
         file_record = FileRepository(self.settings).get_file(int(version["file_id"]))
         if file_record is None:
-            raise ValueError(f"Uploaded file {version['file_id']} was not found.")
+            file_record = {"file_name": f"file_{version['file_id']}"}
         overview = TaxonomyService(self.settings).get_overview(version_id)
         issue_repo = DiagnosisRepository(self.settings)
         issue_summary = issue_repo.count_by_type(version_id)
         content_issue_count = issue_repo.count_content_issues(version_id)
         examples = issue_repo.list_examples(version_id, limit=5)
         content_examples = issue_repo.list_content_examples(version_id, limit=3)
+        suggestions = SuggestionRepository(self.settings).list_suggestions(version_id=version_id)
+        operation_logs = _list_operation_logs(self.settings, version_id)
 
         self.settings.report_dir.mkdir(parents=True, exist_ok=True)
         report_name = f"{version['version_no']}_diagnosis_report.md"
         report_path = self.settings.report_dir / report_name
         report_path.write_text(
-            self._render(version, file_record, overview, issue_summary, content_issue_count, examples, content_examples),
+            self._render(
+                version,
+                file_record,
+                overview,
+                issue_summary,
+                content_issue_count,
+                examples,
+                content_examples,
+                suggestions,
+                operation_logs,
+            ),
             encoding="utf-8",
         )
         return ReportResult(
@@ -50,6 +64,8 @@ class ReportService:
         content_issue_count: int,
         examples: list[dict],
         content_examples: list[dict],
+        suggestions: list,
+        operation_logs: list[dict],
     ) -> str:
         created_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
         example_lines = "\n".join(
@@ -72,8 +88,14 @@ class ReportService:
             content_section = "内容诊断 Agent 已运行但未发现语义异常（或 M2 Agent Loop 未在本次执行中激活）。"
 
         total_issues = sum(issue_summary.values()) + content_issue_count
-        quality_score = _calc_quality_score(overview.node_count, total_issues)
+        quality_score = (
+            float(version["quality_score"])
+            if version.get("quality_score") is not None
+            else _calc_quality_score(overview.node_count, total_issues)
+        )
         quality_label = _quality_label(quality_score)
+        suggestion_lines = _render_suggestions(suggestions)
+        operation_lines = _render_operations(operation_logs)
         return f"""# 产品标准体系诊断报告
 
 ## 1. 基本信息
@@ -111,11 +133,11 @@ class ReportService:
 
 ## 6. 智能维护建议
 
-M3 阶段功能（建议生成智能体 + 人工审核），暂未实现。当前已完成 M1（确定性闭环）和 M2（内容诊断智能体）。
+{suggestion_lines}
 
 ## 7. 版本变更记录
 
-当前报告基于初始导入版本生成，未执行分类调整动作。
+{operation_lines}
 
 ## 8. 质量评分
 
@@ -131,6 +153,46 @@ M3 阶段功能（建议生成智能体 + 人工审核），暂未实现。当�
 - 对直接子节点过宽的类目增加中间层。
 - 对重复名称节点结合完整路径判断是否需要合并、重命名或保留。
 """
+
+
+def _render_suggestions(suggestions: list) -> str:
+    if not suggestions:
+        return "- 暂无智能维护建议。"
+    lines = []
+    status_counts: dict[str, int] = {}
+    for suggestion in suggestions:
+        status_counts[suggestion.status] = status_counts.get(suggestion.status, 0) + 1
+    counts = "，".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
+    lines.append(f"- 建议总数：{len(suggestions)}（{counts}）")
+    for suggestion in suggestions[:5]:
+        lines.append(
+            f"- [{suggestion.status}] {suggestion.action_type}：{suggestion.suggestion}"
+        )
+    return "\n".join(lines)
+
+
+def _render_operations(operation_logs: list[dict]) -> str:
+    if not operation_logs:
+        return "- 暂无动作执行或版本变更记录。"
+    return "\n".join(
+        f"- {item['operation_type']}：{item['operation_detail'] or '{}'}"
+        for item in operation_logs[:8]
+    )
+
+
+def _list_operation_logs(settings: Settings, version_id: int) -> list[dict]:
+    with connect(settings) as connection:
+        rows = connection.execute(
+            """
+            SELECT operation_type, operation_detail, created_time
+            FROM operation_log
+            WHERE version_id = ?
+            ORDER BY id DESC
+            LIMIT 20
+            """,
+            (version_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def _calc_quality_score(node_count: int, total_issues: int) -> float:

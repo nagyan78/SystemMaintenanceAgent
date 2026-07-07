@@ -9,7 +9,6 @@ def test_planned_api_boundaries_return_not_implemented():
     cases = [
         ("GET", "/api/taxonomy/overview", "taxonomy"),
         ("POST", "/api/diagnosis/run", "diagnosis"),
-        ("GET", "/api/versions", "versions"),
         ("POST", "/api/chat", "chat"),
     ]
 
@@ -18,4 +17,3 @@ def test_planned_api_boundaries_return_not_implemented():
 
         assert response.status_code == 501
         assert response.json()["detail"]["module"] == module
-

@@ -40,6 +40,41 @@ class VersionRepository:
             ).fetchone()
         return dict(row) if row else None
 
+    def list_versions(self, file_id: int | None = None) -> list[dict]:
+        clauses = []
+        params: list[object] = []
+        if file_id is not None:
+            clauses.append("file_id = ?")
+            params.append(file_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with connect(self.settings) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT id, file_id, version_no, description, quality_score,
+                       snapshot_path, created_time
+                FROM taxonomy_version
+                {where}
+                ORDER BY id
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_latest_for_file(self, file_id: int) -> dict | None:
+        with connect(self.settings) as connection:
+            row = connection.execute(
+                """
+                SELECT id, file_id, version_no, description, quality_score,
+                       snapshot_path, created_time
+                FROM taxonomy_version
+                WHERE file_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (file_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
     def get_by_file_and_no(self, file_id: int, version_no: str) -> dict | None:
         with connect(self.settings) as connection:
             row = connection.execute(

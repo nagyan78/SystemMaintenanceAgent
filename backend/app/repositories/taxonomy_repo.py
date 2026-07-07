@@ -61,6 +61,31 @@ class TaxonomyRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_node_records(self, version_id: int) -> list[TaxonomyNodeRecord]:
+        return [
+            TaxonomyNodeRecord.model_validate(
+                {
+                    key: value
+                    for key, value in row.items()
+                    if key
+                    in {
+                        "category_id",
+                        "category_name",
+                        "parent_id",
+                        "level",
+                        "path_ids",
+                        "path_names",
+                        "category_group_id",
+                        "category_pids",
+                        "category_group_name",
+                        "syn_list",
+                        "is_leaf",
+                    }
+                }
+            )
+            for row in self.list_nodes(version_id)
+        ]
+
     def get_node_detail(self, version_id: int, category_id: int) -> dict | None:
         with connect(self.settings) as connection:
             row = connection.execute(

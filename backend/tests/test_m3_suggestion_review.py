@@ -263,7 +263,7 @@ def test_validate_approved_actions_returns_passed_result(tmp_path):
     assert validations[0].suggestion_id == suggestion.id
 
 
-def test_graph_topology_routes_content_to_suggestion_and_m3_report_after_validate(tmp_path):
+def test_graph_topology_routes_content_to_suggestion_and_m4_execution_after_validate(tmp_path):
     from backend.app.agents.graph import build_taxonomy_graph
 
     graph = build_taxonomy_graph(settings=_settings(tmp_path))
@@ -271,5 +271,6 @@ def test_graph_topology_routes_content_to_suggestion_and_m3_report_after_validat
 
     assert ("content_diagnosis_node", "generate_suggestion_node") in edges
     assert ("generate_suggestion_node", "wait_human_review_node") in edges
-    assert ("validate_action_node", "generate_report_node") in edges
-    assert ("validate_action_node", "execute_action_node") not in edges
+    assert ("validate_action_node", "execute_action_node") in edges
+    assert ("execute_action_node", "save_new_version_node") in edges
+    assert ("save_new_version_node", "generate_report_node") in edges

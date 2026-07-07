@@ -56,7 +56,8 @@ def validate_suggestion_action(
     if suggestion.action_type != "add_node" and suggestion.target_node_id is None:
         return _invalid("非 add_node 建议必须包含 target_node_id。")
     if suggestion.target_node_id is not None:
-        node = TaxonomyRepository(runtime_settings).get_node_detail(
+        taxonomy_repo = TaxonomyRepository(runtime_settings)
+        node = taxonomy_repo.get_node_detail(
             suggestion.version_id,
             suggestion.target_node_id,
         )
@@ -69,22 +70,45 @@ def validate_suggestion_action(
             )
             if invalid_terms:
                 return _invalid(f"待删除同义词不存在：{', '.join(invalid_terms)}")
+        if suggestion.action_type == "rename_node":
+            new_name = (suggestion.new_name or suggestion.action_payload.get("new_name") or "").strip()
+            if not new_name:
+                return _invalid("rename_node 必须包含非空 new_name。")
+            siblings = [
+                item
+                for item in taxonomy_repo.list_nodes(suggestion.version_id)
+                if item["parent_id"] == node["parent_id"]
+                and item["category_id"] != suggestion.target_node_id
+            ]
+            if any(item["category_name"] == new_name for item in siblings):
+                return _invalid("同级节点下已存在相同名称。")
     if suggestion.action_type == "move_node":
-        if suggestion.new_parent_id is None:
+        has_parent = suggestion.new_parent_id is not None or "new_parent_id" in suggestion.action_payload
+        new_parent_id = (
+            suggestion.new_parent_id
+            if suggestion.new_parent_id is not None
+            else suggestion.action_payload.get("new_parent_id")
+        )
+        if not has_parent:
             return _invalid("move_node 必须包含 new_parent_id。")
-        if suggestion.target_node_id == suggestion.new_parent_id:
+        if new_parent_id is None:
+            return ActionValidationResult(valid=True)
+        if suggestion.target_node_id == new_parent_id:
             return _invalid("move_node 不能移动到自身下。")
+        if TaxonomyRepository(runtime_settings).get_node_detail(
+            suggestion.version_id,
+            int(new_parent_id),
+        ) is None:
+            return _invalid("new_parent_id 不存在。")
         if TaxonomyRepository(runtime_settings).is_descendant(
             suggestion.version_id,
             suggestion.target_node_id,
-            suggestion.new_parent_id,
+            int(new_parent_id),
         ):
             return _invalid("move_node 不能移动到自身子树下。")
     if suggestion.action_type == "merge_node":
         if not suggestion.action_payload.get("source_node_id") or not suggestion.action_payload.get("target_node_id"):
             return _invalid("merge_node 必须包含 source_node_id 和 target_node_id。")
-    if suggestion.action_type == "move_node" and suggestion.target_node_id == suggestion.new_parent_id:
-        return _invalid("move_node 不能移动到自身下。")
     return ActionValidationResult(valid=True)
 
 

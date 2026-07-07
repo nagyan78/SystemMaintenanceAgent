@@ -283,27 +283,45 @@ def validate_action_node(state: TaxonomyGraphState) -> StateUpdate:
 
 
 def execute_action_node(state: TaxonomyGraphState) -> StateUpdate:
-    _require_current_version_id(state)
-    _require_review_batch_id(state)
+    version_id = _require_current_version_id(state)
+    review_batch_id = _require_review_batch_id(state)
+    result = ActionService(_runtime_settings).execute_actions(version_id, review_batch_id)
     return _complete_step(
         state,
         "execute_action_node",
         current_step="execute_action",
         progress=91,
-        executed_action_count=state.approved_action_count,
+        executed_action_count=result.executed_count,
+        failed_action_count=result.failed_count,
+        action_batch_id=result.action_batch_id,
+        executed_nodes=[node.model_dump() for node in result.nodes],
     )
 
 
 def save_new_version_node(state: TaxonomyGraphState) -> StateUpdate:
     current_version_id = _require_current_version_id(state)
+    review_batch_id = _require_review_batch_id(state)
+    nodes = None
+    if state.executed_nodes:
+        from backend.app.schemas.taxonomy import TaxonomyNodeRecord
+
+        nodes = [TaxonomyNodeRecord.model_validate(item) for item in state.executed_nodes]
+    result = VersionService(_runtime_settings).save_new_version(
+        base_version_id=current_version_id,
+        review_batch_id=review_batch_id,
+        nodes=nodes,
+    )
     return _complete_step(
         state,
         "save_new_version_node",
         current_step="save_new_version",
         progress=96,
-        new_version_id=current_version_id + 1,
-        current_version_id=current_version_id + 1,
-        version_no="v1.1",
+        new_version_id=result.new_version_id,
+        current_version_id=result.new_version_id,
+        version_no=result.new_version_no,
+        node_count=result.node_count,
+        executed_action_count=result.executed_count,
+        failed_action_count=result.failed_count,
     )
 
 

@@ -71,7 +71,7 @@ def route_after_review(state: TaxonomyGraphState) -> str:
 def route_after_validate(state: TaxonomyGraphState) -> str:
     if state.error_code:
         return "generate_report_node"
-    return "generate_report_node"
+    return "execute_action_node"
 
 
 def build_taxonomy_graph(
@@ -129,6 +129,7 @@ def build_taxonomy_graph(
         "validate_action_node",
         route_after_validate,
         {
+            "execute_action_node": "execute_action_node",
             "generate_report_node": "generate_report_node",
         },
     )

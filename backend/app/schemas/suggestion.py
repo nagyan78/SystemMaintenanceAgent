@@ -13,7 +13,7 @@ ActionType = Literal[
     "mark_as_valid",
 ]
 RiskLevel = Literal["low", "medium", "high"]
-SuggestionStatus = Literal["pending", "approved", "rejected", "edited"]
+SuggestionStatus = Literal["pending", "approved", "rejected", "edited", "executed", "failed"]
 
 
 class AdjustmentSuggestion(BaseModel):
