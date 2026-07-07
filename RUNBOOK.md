@@ -1,7 +1,7 @@
 # 演示操作手册
 
 > 适用：从零开始，克隆仓库 → 启动服务 → 上传文件 → 运行诊断 → 查看结果。
-> 当前演示功能：M1 确定性闭环 + M2 内容诊断智能体（DeepSeek + 千问 + Qdrant）。
+> 当前演示功能：M1 确定性闭环 + M2 内容诊断智能体（DeepSeek + 千问 + Qdrant）+ M3 建议生成智能体与人工审核闭环。
 
 ---
 
@@ -151,12 +151,15 @@ curl -X POST http://127.0.0.1:8000/api/workflows/taxonomy/start \
 
 ```
 parse_excel → build_tree → save_initial_version
-  → structure_diagnosis（规则检测：父节点缺失/层级过深/节点过宽/重复名称）
   → index_vector（千问 embedding 写入 Qdrant，21090 个节点）
+  → structure_diagnosis（规则检测：父节点缺失/层级过深/节点过宽/重复名称）
   → diagnosis_planning（DeepSeek 规划诊断范围）
   → content_diagnosis（ReAct Agent Loop：召回→LLM判断→补充查询→再判断）
-  → generate_report（模板化报告）
+  → generate_suggestion（规则建议 + LLM ReAct 建议生成 + validate_action 自校验）
+  → wait_human_review（LangGraph interrupt，等待人工审核）
 ```
+
+M3 会在人工审核节点暂停，不会执行动作、不会生成新版本、不会导出 Excel。
 
 ---
 
@@ -168,28 +171,108 @@ parse_excel → build_tree → save_initial_version
 curl http://127.0.0.1:8000/api/workflows/<你的task_id>
 ```
 
-当 `status` 变为 `"completed"` 时表示完成：
+当 `status` 变为 `"waiting_review"` 时表示 M3 建议已生成，正在等待人工审核：
 
 ```json
 {
-  "task_id": "import_20260705_000001",
-  "status": "completed",
-  "current_step": "completed",
-  "progress": 100,
+  "task_id": "workflow_xxxxxxxxxxxx",
+  "status": "waiting_review",
+  "current_step": "human_review",
+  "progress": 80,
   "file_id": 1,
   "current_version_id": 1,
   "version_no": "v1.0",
   "node_count": 21090,
   "structure_issue_count": 195,
-  "report_path": "/path/to/data/reports/v1.0_diagnosis_report.md"
+  "suggestion_count": 192,
+  "review_batch_id": "review_xxxxxxxxxxxx",
+  "report_path": null
 }
 ```
+
+**记住返回的 `review_batch_id`**，下一步查看待审核建议用。
 
 > 如果 `status` 还是 `"running"`，等 30 秒再查一次。
 
 ---
 
-## 第 8 步：查看诊断报告
+## 第 8 步：查看待审核建议
+
+```bash
+curl http://127.0.0.1:8000/api/reviews/<你的review_batch_id>
+```
+
+返回示例：
+
+```json
+{
+  "review_batch_id": "review_xxxxxxxxxxxx",
+  "suggestion_count": 192,
+  "suggestions": [
+    {
+      "id": 1,
+      "issue_id": 1,
+      "version_id": 1,
+      "action_type": "add_node",
+      "target_node_id": null,
+      "target_node_name": "...",
+      "action_payload": {"source": "missing_parent"},
+      "reason": "...",
+      "suggestion": "建议补齐缺失父节点或中间分类，新增前需人工确认名称与位置。",
+      "risk_level": "medium",
+      "confidence": 0.8,
+      "need_confirm": true,
+      "status": "pending"
+    }
+  ]
+}
+```
+
+也可以按条件查询建议：
+
+```bash
+curl "http://127.0.0.1:8000/api/suggestions?review_batch_id=<你的review_batch_id>&status=pending"
+```
+
+---
+
+## 第 9 步：审核并恢复工作流
+
+M3 支持接受、拒绝、编辑建议。最简单的演示是选择一个建议 ID 并接受：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/workflows/<你的task_id>/resume \
+  -H "Content-Type: application/json" \
+  -d '{
+    "decision": "approve",
+    "approved_suggestion_ids": [1],
+    "operator": "local_user"
+  }'
+```
+
+也可以整批拒绝本轮建议：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/workflows/<你的task_id>/resume \
+  -H "Content-Type: application/json" \
+  -d '{
+    "decision": "reject",
+    "reject_reason": "本次演示不执行建议",
+    "operator": "local_user"
+  }'
+```
+
+恢复后工作流会执行：
+
+```
+wait_human_review → validate_action → generate_report
+```
+
+M3 的 `validate_action` 只校验已审核建议是否合法，不执行任何分类树修改。
+
+---
+
+## 第 10 步：查看诊断报告
 
 ```bash
 cat data/reports/v1.0_diagnosis_report.md
@@ -240,8 +323,11 @@ cat data/reports/v1.0_diagnosis_report.md
 |------|---------|
 | **LLM 决策** | `diagnosis_planning`：DeepSeek 看结构统计后决定重点诊断哪些子树，避免无差别扫描 21090 个节点 |
 | **工具调用** | `content_diagnosis`：LLM 通过 `@tool` 自主调用 `get_node_detail`、`search_similar_nodes`、`get_node_path` 等查询节点上下文 |
-| **ReAct 循环** | LLM 按"思考→行动→观察→再思考"迭代推理，不确定时补充查询再判断 |
+| **ReAct 循环** | 内容诊断和建议生成均按"思考→行动→观察→再思考"迭代推理，不确定时补充查询再判断 |
 | **向量语义召回** | 千问 embedding 将 21090 个节点向量化存入 Qdrant，`search_similar_nodes` 实现语义相似召回 |
+| **建议生成** | `generate_suggestion` 将 `diagnosis_issue` 转换为 `adjustment_suggestion`，包含动作类型、原因、风险、置信度和结构化 `action_payload` |
+| **人工审核** | `wait_human_review` 通过 LangGraph interrupt 暂停，`/api/workflows/{task_id}/resume` 恢复后处理接受/拒绝/编辑决策 |
+| **动作校验** | `validate_action` 校验已审核建议，包含非法动作、缺失节点、同义词不存在、move 到自身子树等规则 |
 | **确定性规则** | `structure_diagnosis`：纯算法检测父节点缺失/层级过深/节点过宽/重复名称，不浪费 API 额度 |
 
 ---
@@ -252,9 +338,11 @@ cat data/reports/v1.0_diagnosis_report.md
 
 演示步骤：
 1. `POST /api/files/upload` → 上传 Excel
-2. `POST /api/workflows/taxonomy/start` → 启动诊断
-3. `GET /api/workflows/{task_id}` → 查询进度
-4. `GET /api/files/{file_id}` → 查看文件信息
+2. `POST /api/workflows/taxonomy/start` → 启动诊断和建议生成
+3. `GET /api/workflows/{task_id}` → 查询进度，等待 `waiting_review`
+4. `GET /api/reviews/{review_batch_id}` → 查看建议批次
+5. `POST /api/workflows/{task_id}/resume` → 提交人工审核决策并恢复工作流
+6. `GET /api/files/{file_id}` → 查看文件信息
 
 ---
 
@@ -269,6 +357,12 @@ brew install sqlite
 # 查看诊断问题
 sqlite3 data/app.db "SELECT issue_type, node_name, description, risk_level FROM diagnosis_issue ORDER BY id DESC LIMIT 10;"
 
+# 查看建议批次
+sqlite3 data/app.db "SELECT review_batch_id, action_type, risk_level, status, COUNT(*) FROM adjustment_suggestion GROUP BY review_batch_id, action_type, risk_level, status;"
+
+# 查看审核日志
+sqlite3 data/app.db "SELECT operator, operation_type, operation_detail, created_time FROM operation_log ORDER BY id DESC LIMIT 10;"
+
 # 查看节点统计
 sqlite3 data/app.db "SELECT level, COUNT(*) FROM category_node WHERE version_id=1 GROUP BY level ORDER BY level;"
 
@@ -280,9 +374,15 @@ sqlite3 data/app.db "SELECT node_name, event_type, created_time FROM workflow_ev
 
 ## 常见问题
 
-### Q: 工作流一直 running 不 completed？
+### Q: 工作流一直 waiting_review？
+这是 M3 的正常暂停点。先调用 `GET /api/reviews/{review_batch_id}` 查看建议，再调用 `POST /api/workflows/{task_id}/resume` 提交审核决策。
+
+### Q: 审核通过后为什么没有新版本？
+M3 只生成、审核并校验建议，不执行动作、不生成新版本。动作执行、版本保存和导出属于 M4。
+
+### Q: 工作流一直 running 不进入 waiting_review？
 - 检查后端日志，看是否有 API 调用报错（DeepSeek/千问 网络不通或额度耗尽）
-- 可能是内容诊断 Agent Loop 卡在某个 API 调用，30 秒超时后会失败并记录错误
+- 可能是内容诊断或建议生成 Agent Loop 卡在某个 API 调用，60 秒超时后会失败并记录错误
 
 ### Q: Qdrant 启动不了？
 ```bash
@@ -310,4 +410,4 @@ Qdrant 有 Python 本地模式：`pip install qdrant-client[fastembed]`，在 `c
 .venv/bin/python -m pytest backend/tests/ -v
 ```
 
-当前 27 个测试全部通过，覆盖 M1（确定性闭环）+ M2（内容诊断智能体）。
+当前 35 个测试全部通过，覆盖 M1（确定性闭环）+ M2（内容诊断智能体）+ M3（建议生成、人工审核、动作校验）。
