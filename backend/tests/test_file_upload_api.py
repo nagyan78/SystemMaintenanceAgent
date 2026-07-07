@@ -148,7 +148,10 @@ def test_file_list_and_detail_return_uploaded_file_metadata(tmp_path):
 
     assert list_response.status_code == 200
     assert list_response.json()[0]["id"] == file_id
+    assert list_response.json()[0]["file_id"] == file_id
     assert list_response.json()[0]["file_name"] == "taxonomy.xlsx"
+    assert list_response.json()[0]["columns"] == EXPECTED_COLUMNS
     assert detail_response.status_code == 200
     assert detail_response.json()["id"] == file_id
     assert detail_response.json()["row_count"] == 1
+    assert detail_response.json()["columns"] == EXPECTED_COLUMNS

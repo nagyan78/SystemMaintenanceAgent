@@ -9,6 +9,23 @@ from backend.app.repositories.taxonomy_repo import TaxonomyRepository
 from backend.app.schemas.suggestion import ActionValidationResult, AdjustmentSuggestion
 
 _runtime_settings: Settings = get_settings()
+REMOVE_SYNONYM_KEYS = (
+    "synonyms_to_remove",
+    "remove_synonyms",
+    "removed_synonyms",
+    "syn_to_remove",
+    "synonyms_to_delete",
+)
+SINGLE_REMOVE_SYNONYM_KEYS = ("remove_synonym", "target_synonym", "synonym_to_remove")
+FINAL_SYNONYM_KEYS = (
+    "new_syn_list",
+    "updated_synonyms",
+    "final_syn_list",
+    "remaining_synonyms",
+    "keep_synonyms",
+    "synonyms",
+)
+MOVE_PARENT_KEYS = ("new_parent_id", "to_parent_id", "destination_parent_id", "target_parent_id")
 
 ALLOWED_ACTION_TYPES = {
     "add_node",
@@ -64,12 +81,10 @@ def validate_suggestion_action(
         if node is None:
             return _invalid("target_node_id 不存在。")
         if suggestion.action_type == "clean_synonym":
-            invalid_terms = _missing_synonyms(
-                node.get("syn_list") or "",
-                suggestion.action_payload.get("synonyms_to_remove", []),
-            )
-            if invalid_terms:
-                return _invalid(f"待删除同义词不存在：{', '.join(invalid_terms)}")
+            try:
+                resolve_clean_synonym_update(node.get("syn_list") or "", suggestion.action_payload)
+            except ValueError as exc:
+                return _invalid(str(exc))
         if suggestion.action_type == "rename_node":
             new_name = (suggestion.new_name or suggestion.action_payload.get("new_name") or "").strip()
             if not new_name:
@@ -82,13 +97,18 @@ def validate_suggestion_action(
             ]
             if any(item["category_name"] == new_name for item in siblings):
                 return _invalid("同级节点下已存在相同名称。")
+    if suggestion.action_type == "add_node":
+        new_name = (suggestion.new_name or suggestion.action_payload.get("new_name") or "").strip()
+        parent_id = suggestion.new_parent_id or suggestion.action_payload.get("parent_id")
+        if not new_name or parent_id is None:
+            return _invalid("add_node 必须包含非空 new_name 和 parent_id。")
+        if TaxonomyRepository(runtime_settings).get_node_detail(
+            suggestion.version_id,
+            int(parent_id),
+        ) is None:
+            return _invalid("add_node 的 parent_id 不存在。")
     if suggestion.action_type == "move_node":
-        has_parent = suggestion.new_parent_id is not None or "new_parent_id" in suggestion.action_payload
-        new_parent_id = (
-            suggestion.new_parent_id
-            if suggestion.new_parent_id is not None
-            else suggestion.action_payload.get("new_parent_id")
-        )
+        has_parent, new_parent_id = extract_move_new_parent_id(suggestion)
         if not has_parent:
             return _invalid("move_node 必须包含 new_parent_id。")
         if new_parent_id is None:
@@ -135,3 +155,80 @@ def _missing_synonyms(syn_list: str, synonyms_to_remove: list[Any]) -> list[str]
 
 def _invalid(reason: str) -> ActionValidationResult:
     return ActionValidationResult(valid=False, reason=reason)
+
+
+def extract_move_new_parent_id(suggestion: AdjustmentSuggestion) -> tuple[bool, Any]:
+    if suggestion.new_parent_id is not None:
+        return True, suggestion.new_parent_id
+    for key in MOVE_PARENT_KEYS:
+        if key in suggestion.action_payload:
+            return True, suggestion.action_payload.get(key)
+    return False, None
+
+
+def resolve_clean_synonym_update(syn_list: str, payload: dict[str, Any]) -> tuple[list[str], list[str]]:
+    current_terms = _split_synonyms(syn_list)
+    final_terms = _extract_final_synonyms(payload)
+    if final_terms is not None:
+        added_terms = [item for item in final_terms if item not in current_terms]
+        if added_terms:
+            raise ValueError(f"clean_synonym 不能新增当前不存在的同义词：{', '.join(added_terms)}")
+        removed_terms = [item for item in current_terms if item not in final_terms]
+        if not removed_terms:
+            raise ValueError("clean_synonym 缺少待移除同义词或目标同义词列表。")
+        return final_terms, removed_terms
+
+    remove_terms = _extract_remove_synonyms(payload)
+    if not remove_terms:
+        raise ValueError("clean_synonym 缺少待移除同义词或目标同义词列表。")
+    missing = [item for item in remove_terms if item not in current_terms]
+    if missing:
+        raise ValueError(f"待删除同义词不存在：{', '.join(missing)}")
+    return [item for item in current_terms if item not in remove_terms], remove_terms
+
+
+def _extract_remove_synonyms(payload: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for key in REMOVE_SYNONYM_KEYS:
+        values.extend(_normalize_synonym_values(payload.get(key)))
+    for key in SINGLE_REMOVE_SYNONYM_KEYS:
+        values.extend(_normalize_synonym_values(payload.get(key)))
+    return _unique_non_empty(values)
+
+
+def _extract_final_synonyms(payload: dict[str, Any]) -> list[str] | None:
+    for key in FINAL_SYNONYM_KEYS:
+        if key in payload:
+            return _unique_non_empty(_normalize_synonym_values(payload.get(key)))
+    return None
+
+
+def _normalize_synonym_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        return _split_synonyms(text)
+    if isinstance(value, (list, tuple, set)):
+        values: list[str] = []
+        for item in value:
+            values.extend(_normalize_synonym_values(item))
+        return values
+    return [str(value).strip()] if str(value).strip() else []
+
+
+def _unique_non_empty(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        item = value.strip()
+        if item and item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
+def _split_synonyms(syn_list: str) -> list[str]:
+    return [item.strip() for item in syn_list.replace("，", ",").split(",") if item.strip()]

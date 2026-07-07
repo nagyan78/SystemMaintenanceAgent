@@ -42,12 +42,30 @@ async def upload_file(request: Request, file: UploadFile = File(...)) -> FileUpl
 
 @router.get("")
 def list_files(request: Request) -> list[dict]:
-    return FileRepository(request.app.state.settings).list_files()
+    settings = request.app.state.settings
+    service = ExcelService(settings)
+    files = FileRepository(settings).list_files()
+    return [_with_columns(service, item) for item in files]
 
 
 @router.get("/{file_id}")
 def get_file(file_id: int, request: Request) -> dict:
-    file_record = FileRepository(request.app.state.settings).get_file(file_id)
+    settings = request.app.state.settings
+    file_record = FileRepository(settings).get_file(file_id)
     if file_record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found.")
-    return file_record
+    return _with_columns(ExcelService(settings), file_record)
+
+
+def _with_columns(service: ExcelService, file_record: dict) -> dict:
+    try:
+        parsed = service.parse_uploaded_file(int(file_record["id"]))
+    except ExcelValidationError:
+        return {**file_record, "columns": []}
+    return {
+        **file_record,
+        "file_id": file_record["id"],
+        "columns": parsed.columns,
+        "row_count": parsed.row_count,
+        "column_count": parsed.column_count,
+    }

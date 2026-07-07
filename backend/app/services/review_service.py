@@ -3,7 +3,10 @@ from typing import Any
 from backend.app.config import Settings
 from backend.app.repositories.operation_log_repo import OperationLogRepository
 from backend.app.repositories.suggestion_repo import SuggestionRepository
+from backend.app.repositories.version_repo import VersionRepository
 from backend.app.schemas.suggestion import AdjustmentSuggestion, SuggestionRecord
+from backend.app.services.action_service import ActionService
+from backend.app.services.version_service import VersionService
 from backend.app.tools.validation_tools import validate_suggestion_action
 
 
@@ -105,6 +108,50 @@ class ReviewService:
                 if suggestion.status in {"pending", "edited"}:
                     self.reject_suggestion(suggestion.id, operator, decision.get("reject_reason"))
         return len(approved_ids)
+
+    def execute_approved_actions(self, review_batch_id: str, operator: str = "local_user") -> dict[str, Any]:
+        suggestions = self.list_review_batch(review_batch_id)
+        if not suggestions:
+            raise ValueError("Review batch not found.")
+        approved = [item for item in suggestions if item.status == "approved"]
+        base_version = VersionRepository(self.settings).get_version(suggestions[0].version_id)
+        if base_version is None:
+            raise ValueError("Review batch base version not found.")
+        latest_version = VersionRepository(self.settings).get_latest_for_file(int(base_version["file_id"]))
+        if latest_version is None:
+            raise ValueError("No version found for review batch file.")
+        latest_version_id = int(latest_version["id"])
+        if not approved:
+            return {
+                "review_batch_id": review_batch_id,
+                "source_version_id": latest_version_id,
+                "new_version_id": None,
+                "new_version_no": None,
+                "executed_count": 0,
+                "failed_count": 0,
+                "message": "没有已批准且待执行的建议。",
+            }
+        action_result = ActionService(self.settings).execute_suggestion_records(
+            version_id=latest_version_id,
+            review_batch_id=review_batch_id,
+            approved=approved,
+            operator=operator,
+        )
+        save_result = VersionService(self.settings).save_new_version(
+            base_version_id=latest_version_id,
+            review_batch_id=review_batch_id,
+            nodes=action_result.nodes,
+        )
+        return {
+            "review_batch_id": review_batch_id,
+            "source_version_id": latest_version_id,
+            "new_version_id": save_result.new_version_id,
+            "new_version_no": save_result.new_version_no,
+            "node_count": save_result.node_count,
+            "executed_count": action_result.executed_count,
+            "failed_count": action_result.failed_count,
+            "quality_score": save_result.quality_score,
+        }
 
     def _require_mutable_suggestion(self, suggestion_id: int) -> SuggestionRecord:
         suggestion = self.suggestion_repo.get_suggestion(suggestion_id)

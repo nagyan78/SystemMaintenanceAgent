@@ -1,10 +1,24 @@
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
+from pydantic import BaseModel, Field
 
 from backend.app.services.review_service import ReviewService
 
 router = APIRouter(prefix="/reviews", tags=["reviews"])
+
+
+class ReviewDecisionRequest(BaseModel):
+    decision: str
+    approved_suggestion_ids: list[int] = Field(default_factory=list)
+    rejected_suggestion_ids: list[int] = Field(default_factory=list)
+    edits: list[dict[str, Any]] = Field(default_factory=list)
+    operator: str = "local_user"
+    reject_reason: str | None = None
+
+
+class ExecuteReviewRequest(BaseModel):
+    operator: str = "local_user"
 
 
 @router.get("/{review_batch_id}")
@@ -17,3 +31,38 @@ def get_review_batch(review_batch_id: str, request: Request) -> dict[str, Any]:
         "suggestion_count": len(suggestions),
         "suggestions": [item.model_dump() for item in suggestions],
     }
+
+
+@router.post("/{review_batch_id}/decision")
+def apply_review_decision(
+    review_batch_id: str,
+    payload: ReviewDecisionRequest,
+    request: Request,
+) -> dict[str, Any]:
+    try:
+        approved_count = ReviewService(request.app.state.settings).apply_workflow_decision(
+            review_batch_id,
+            payload.model_dump(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return {
+        "review_batch_id": review_batch_id,
+        "approved_count": approved_count,
+        "status": "ok",
+    }
+
+
+@router.post("/{review_batch_id}/execute")
+def execute_review_batch(
+    review_batch_id: str,
+    payload: ExecuteReviewRequest,
+    request: Request,
+) -> dict[str, Any]:
+    try:
+        return ReviewService(request.app.state.settings).execute_approved_actions(
+            review_batch_id,
+            operator=payload.operator,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

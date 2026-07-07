@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.api import (
     chat,
@@ -26,6 +27,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         description="Local backend gateway for the taxonomy maintenance agent.",
     )
     app.state.settings = app_settings
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^http://(127\.0\.0\.1|localhost):\d+$",
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.include_router(health.router, prefix="/api")
     app.include_router(files.router, prefix="/api")
     app.include_router(taxonomy.router, prefix="/api")

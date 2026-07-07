@@ -8,7 +8,11 @@ from backend.app.repositories.taxonomy_repo import TaxonomyRepository
 from backend.app.schemas.suggestion import ActionValidationResult, AdjustmentSuggestion, SuggestionRecord
 from backend.app.schemas.taxonomy import TaxonomyNodeRecord
 from backend.app.schemas.version import ExecuteActionsResult
-from backend.app.tools.validation_tools import validate_suggestion_action
+from backend.app.tools.validation_tools import (
+    extract_move_new_parent_id,
+    resolve_clean_synonym_update,
+    validate_suggestion_action,
+)
 
 
 class ActionService:
@@ -24,12 +28,15 @@ class ActionService:
             for item in self.suggestion_repo.list_suggestions(review_batch_id=review_batch_id)
             if item.status == "approved"
         ]
+        return self.validate_suggestion_records(approved)
+
+    def validate_suggestion_records(self, suggestions: list[SuggestionRecord]) -> list[ActionValidationResult]:
         return [
             validate_suggestion_action(
                 AdjustmentSuggestion.model_validate(item.model_dump(exclude={"id", "review_batch_id"})),
                 self.settings,
             ).model_copy(update={"suggestion_id": item.id})
-            for item in approved
+            for item in suggestions
         ]
 
     def execute_actions(
@@ -43,7 +50,22 @@ class ActionService:
             review_batch_id=review_batch_id,
             status="approved",
         )
-        validations = self.validate_approved_actions(review_batch_id)
+        return self.execute_suggestion_records(
+            version_id=version_id,
+            review_batch_id=review_batch_id,
+            approved=approved,
+            operator=operator,
+        )
+
+    def execute_suggestion_records(
+        self,
+        *,
+        version_id: int,
+        review_batch_id: str,
+        approved: list[SuggestionRecord],
+        operator: str = "local_user",
+    ) -> ExecuteActionsResult:
+        validations = self.validate_suggestion_records(approved)
         failed_validations = [item for item in validations if not item.valid]
         if failed_validations:
             for item in failed_validations:
@@ -143,17 +165,8 @@ class ActionService:
         suggestion: SuggestionRecord,
     ) -> None:
         node = self._require_node(nodes, suggestion.target_node_id)
-        remove_terms = {
-            str(item).strip()
-            for item in suggestion.action_payload.get("synonyms_to_remove", [])
-            if str(item).strip()
-        }
-        current_terms = _split_synonyms(node.syn_list or "")
-        missing = sorted(remove_terms.difference(current_terms))
-        if missing:
-            raise ValueError(f"待删除同义词不存在：{', '.join(missing)}")
-        kept = [item for item in current_terms if item not in remove_terms]
-        nodes[node.category_id] = node.model_copy(update={"syn_list": ", ".join(kept) or None})
+        updated_terms, _ = resolve_clean_synonym_update(node.syn_list or "", suggestion.action_payload)
+        nodes[node.category_id] = node.model_copy(update={"syn_list": ", ".join(updated_terms) or None})
 
     def _rename_node(
         self,
@@ -179,12 +192,7 @@ class ActionService:
         suggestion: SuggestionRecord,
     ) -> None:
         node = self._require_node(nodes, suggestion.target_node_id)
-        has_parent = suggestion.new_parent_id is not None or "new_parent_id" in suggestion.action_payload
-        new_parent_id = (
-            suggestion.new_parent_id
-            if suggestion.new_parent_id is not None
-            else suggestion.action_payload.get("new_parent_id")
-        )
+        has_parent, new_parent_id = extract_move_new_parent_id(suggestion)
         if not has_parent:
             raise ValueError("move_node 缺少 new_parent_id。")
         if new_parent_id is None:
