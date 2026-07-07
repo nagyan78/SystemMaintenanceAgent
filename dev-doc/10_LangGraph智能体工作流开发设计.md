@@ -357,12 +357,13 @@ stateDiagram-v2
     content_diagnosis_node --> generate_suggestion_node
     generate_suggestion_node --> wait_human_review_node
     wait_human_review_node --> validate_action_node: approved_or_edited
-    wait_human_review_node --> generate_report_node: rejected_or_skip_execute
-    validate_action_node --> execute_action_node
-    execute_action_node --> save_new_version_node
-    save_new_version_node --> generate_report_node
+    wait_human_review_node --> generate_report_node: rejected_or_no_approved
+    validate_action_node --> wait_human_review_node: validation_failed
+    validate_action_node --> generate_report_node: validation_passed_M3
     generate_report_node --> [*]
 ```
+
+> M4 接入动作执行与版本管理后，再将 `validate_action_node` 的成功分支改为 `execute_action_node -> save_new_version_node -> generate_report_node`。
 
 ### 7.2 失败分支
 
@@ -734,7 +735,8 @@ graph.invoke(
 1. 调 `action_service.validate_approved_actions(review_batch_id)`。
 2. 校验动作不会破坏树结构。
 3. 校验 move/merge/rename/add 的业务规则。
-4. 校验失败则回到 waiting_review 或进入 failed。
+4. M3 阶段校验通过后进入报告节点，执行动作和保存新版本留到 M4。
+5. 校验失败则回到 waiting_review 或进入 failed。
 
 节点示例：
 
@@ -748,7 +750,7 @@ def validate_action_node(state: TaxonomyGraphState) -> TaxonomyGraphState:
     })
 ```
 
-### 8.10 execute_action_node
+### 8.10 execute_action_node（M4 接入）
 
 职责：
 
@@ -772,7 +774,7 @@ def execute_action_node(state: TaxonomyGraphState) -> TaxonomyGraphState:
     })
 ```
 
-### 8.11 save_new_version_node
+### 8.11 save_new_version_node（M4 接入）
 
 职责：
 
@@ -838,12 +840,16 @@ def route_after_review(state: TaxonomyGraphState) -> str:
 
 ### 9.2 校验后路由
 
+M3 阶段：校验通过后生成报告，报告标记“待 M4 执行”；不进入执行和新版本节点。
+
 ```python
 def route_after_validate(state: TaxonomyGraphState) -> str:
     if state.error_code:
         return "wait_human_review_node"
-    return "execute_action_node"
+    return "generate_report_node"
 ```
+
+M4 阶段：接入执行与版本保存后，再将成功分支改为 `execute_action_node`。
 
 ---
 
@@ -863,8 +869,6 @@ from backend.app.agents.nodes import (
     generate_suggestion_node,
     wait_human_review_node,
     validate_action_node,
-    execute_action_node,
-    save_new_version_node,
     generate_report_node,
 )
 
@@ -882,8 +886,6 @@ def build_taxonomy_graph(checkpointer):
     builder.add_node("generate_suggestion_node", generate_suggestion_node)
     builder.add_node("wait_human_review_node", wait_human_review_node)
     builder.add_node("validate_action_node", validate_action_node)
-    builder.add_node("execute_action_node", execute_action_node)
-    builder.add_node("save_new_version_node", save_new_version_node)
     builder.add_node("generate_report_node", generate_report_node)
 
     builder.add_edge(START, "parse_excel_node")
@@ -897,8 +899,6 @@ def build_taxonomy_graph(checkpointer):
     builder.add_edge("generate_suggestion_node", "wait_human_review_node")
     builder.add_conditional_edges("wait_human_review_node", route_after_review)
     builder.add_conditional_edges("validate_action_node", route_after_validate)
-    builder.add_edge("execute_action_node", "save_new_version_node")
-    builder.add_edge("save_new_version_node", "generate_report_node")
     builder.add_edge("generate_report_node", END)
 
     return builder.compile(checkpointer=checkpointer)
@@ -979,7 +979,7 @@ event: workflow_interrupt
 data: {"type":"human_review","review_batch_id":"review_001"}
 
 event: workflow_completed
-data: {"version_id":2,"report_id":1}
+data: {"version_id":1,"report_id":1,"pending_stage":"M4_execute_actions"}
 ```
 
 ### 11.4 恢复工作流
@@ -1052,9 +1052,7 @@ POST /api/workflows/{task_id}/resume
 
 ### 12.4 版本页
 
-当 workflow completed：
-
-1. 展示新版本。
+M3 完成时不展示新版本，只展示当前版本、已审核建议和“待 M4 执行”的状态。M4 完成后再展示新版本、diff 和导出入口。
 2. 展示操作日志。
 3. 支持 diff。
 4. 支持回滚。

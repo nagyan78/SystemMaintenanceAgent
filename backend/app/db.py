@@ -95,6 +95,7 @@ def init_db(settings: Settings) -> None:
             CREATE TABLE IF NOT EXISTS adjustment_suggestion (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 issue_id INTEGER NOT NULL,
+                review_batch_id TEXT,
                 version_id INTEGER NOT NULL,
                 action_type TEXT NOT NULL,
                 target_node_id INTEGER,
@@ -156,6 +157,11 @@ def init_db(settings: Settings) -> None:
                 "interrupt_payload": "TEXT",
                 "result_payload": "TEXT",
             },
+        )
+        _ensure_columns(
+            connection,
+            "adjustment_suggestion",
+            {"review_batch_id": "TEXT"},
         )
 
 

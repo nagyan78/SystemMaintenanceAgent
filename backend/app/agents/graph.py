@@ -52,6 +52,14 @@ def create_memory_checkpointer() -> InMemorySaver:
     return InMemorySaver()
 
 
+def route_after_suggestion(state: TaxonomyGraphState, *, enable_suggestion_review: bool = True) -> str:
+    if not enable_suggestion_review:
+        return "generate_report_node"
+    if state.suggestion_count == 0 or state.review_batch_id is None:
+        return "generate_report_node"
+    return "wait_human_review_node"
+
+
 def route_after_review(state: TaxonomyGraphState) -> str:
     if state.review_decision == "reject":
         return "generate_report_node"
@@ -62,11 +70,16 @@ def route_after_review(state: TaxonomyGraphState) -> str:
 
 def route_after_validate(state: TaxonomyGraphState) -> str:
     if state.error_code:
-        return "wait_human_review_node"
-    return "execute_action_node"
+        return "generate_report_node"
+    return "generate_report_node"
 
 
-def build_taxonomy_graph(checkpointer=None, settings: Settings | None = None):
+def build_taxonomy_graph(
+    checkpointer=None,
+    settings: Settings | None = None,
+    *,
+    enable_suggestion_review: bool = True,
+):
     if settings is not None:
         configure_workflow_runtime(settings)
     builder = StateGraph(TaxonomyGraphState)
@@ -92,7 +105,18 @@ def build_taxonomy_graph(checkpointer=None, settings: Settings | None = None):
     builder.add_edge("index_vector_node", "structure_diagnosis_node")
     builder.add_edge("structure_diagnosis_node", "diagnosis_planning_node")
     builder.add_edge("diagnosis_planning_node", "content_diagnosis_node")
-    builder.add_edge("content_diagnosis_node", "generate_report_node")
+    builder.add_edge("content_diagnosis_node", "generate_suggestion_node")
+    builder.add_conditional_edges(
+        "generate_suggestion_node",
+        lambda state: route_after_suggestion(
+            state,
+            enable_suggestion_review=enable_suggestion_review,
+        ),
+        {
+            "wait_human_review_node": "wait_human_review_node",
+            "generate_report_node": "generate_report_node",
+        },
+    )
     builder.add_conditional_edges(
         "wait_human_review_node",
         route_after_review,
@@ -105,8 +129,7 @@ def build_taxonomy_graph(checkpointer=None, settings: Settings | None = None):
         "validate_action_node",
         route_after_validate,
         {
-            "wait_human_review_node": "wait_human_review_node",
-            "execute_action_node": "execute_action_node",
+            "generate_report_node": "generate_report_node",
         },
     )
     builder.add_edge("execute_action_node", "save_new_version_node")

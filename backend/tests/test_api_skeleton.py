@@ -9,7 +9,6 @@ def test_planned_api_boundaries_return_not_implemented():
     cases = [
         ("GET", "/api/taxonomy/overview", "taxonomy"),
         ("POST", "/api/diagnosis/run", "diagnosis"),
-        ("GET", "/api/suggestions", "suggestions"),
         ("GET", "/api/versions", "versions"),
         ("POST", "/api/chat", "chat"),
     ]

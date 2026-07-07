@@ -5,6 +5,7 @@ from backend.app.api import (
     diagnosis,
     files,
     health,
+    reviews,
     suggestions,
     taxonomy,
     versions,
@@ -30,6 +31,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(taxonomy.router, prefix="/api")
     app.include_router(diagnosis.router, prefix="/api")
     app.include_router(suggestions.router, prefix="/api")
+    app.include_router(reviews.router, prefix="/api")
     app.include_router(versions.router, prefix="/api")
     app.include_router(workflows.router, prefix="/api")
     app.include_router(chat.router, prefix="/api")

@@ -125,6 +125,32 @@ class DiagnosisRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_pending_issues(self, version_id: int, limit: int | None = None) -> list[dict]:
+        query = """
+            SELECT id, version_id, issue_type, node_id, node_name, description,
+                   reason, risk_level, confidence, status
+            FROM diagnosis_issue
+            WHERE version_id = ? AND status = 'pending'
+            ORDER BY
+                CASE risk_level
+                    WHEN 'high' THEN 0
+                    WHEN 'medium' THEN 1
+                    ELSE 2
+                END,
+                confidence DESC,
+                id ASC
+        """
+        params: tuple[object, ...] = (version_id,)
+        if limit is not None:
+            query += " LIMIT ?"
+            params = (version_id, limit)
+        with connect(self.settings) as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_open_issues(self, version_id: int, limit: int | None = None) -> list[dict]:
+        return self.list_pending_issues(version_id, limit=limit)
+
     _STRUCTURE_TYPES = {"missing_parent", "deep_level", "wide_node", "duplicate_name", "orphan"}
 
     def count_content_issues(self, version_id: int) -> int:

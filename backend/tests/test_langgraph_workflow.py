@@ -50,7 +50,11 @@ def test_graph_runs_m1_deterministic_workflow_to_report(tmp_path):
     create_app(settings)
     file_id = _create_sample_file_record(settings)
     checkpointer = create_memory_checkpointer()
-    graph = build_taxonomy_graph(checkpointer, settings=settings)
+    graph = build_taxonomy_graph(
+        checkpointer,
+        settings=settings,
+        enable_suggestion_review=False,
+    )
     state = create_initial_state(
         file_id=file_id,
         task_id="task_demo",
@@ -72,7 +76,11 @@ def test_graph_m2_runs_content_diagnosis_without_human_review(tmp_path):
     settings = _settings(tmp_path)
     create_app(settings)
     file_id = _create_sample_file_record(settings)
-    graph = build_taxonomy_graph(create_memory_checkpointer(), settings=settings)
+    graph = build_taxonomy_graph(
+        create_memory_checkpointer(),
+        settings=settings,
+        enable_suggestion_review=False,
+    )
     state = create_initial_state(
         file_id=file_id,
         task_id="task_demo",
@@ -87,5 +95,5 @@ def test_graph_m2_runs_content_diagnosis_without_human_review(tmp_path):
     assert "diagnosis_planning_node" in result["completed_steps"]
     assert "content_diagnosis_node" in result["completed_steps"]
     assert result["diagnosis_plan"]["sample_strategy"] == "focused"
-    assert "generate_suggestion_node" not in result["completed_steps"]
+    assert "generate_suggestion_node" in result["completed_steps"]
     assert "wait_human_review_node" not in result["completed_steps"]

@@ -9,6 +9,7 @@ from backend.app.agents.states import TaxonomyGraphState
 from backend.app.config import Settings, get_settings
 from backend.app.repositories.task_repo import TaskRepository
 from backend.app.schemas.issue import DiagnosisPlan
+from backend.app.services.action_service import ActionService
 from backend.app.services.content_diagnosis_service import (
     ContentDiagnosisAgent,
     DiagnosisPlanningAgent,
@@ -16,6 +17,8 @@ from backend.app.services.content_diagnosis_service import (
 from backend.app.services.diagnosis_service import DiagnosisService
 from backend.app.services.excel_service import ExcelService
 from backend.app.services.report_service import ReportService
+from backend.app.services.review_service import ReviewService
+from backend.app.services.suggestion_service import SuggestionAgent
 from backend.app.services.taxonomy_service import TaxonomyService
 from backend.app.services.vector_index_service import VectorIndexService
 from backend.app.services.version_service import VersionService
@@ -207,30 +210,51 @@ def content_diagnosis_node(state: TaxonomyGraphState) -> StateUpdate:
 
 
 def generate_suggestion_node(state: TaxonomyGraphState) -> StateUpdate:
-    _require_current_version_id(state)
+    version_id = _require_current_version_id(state)
+    result = SuggestionAgent(_runtime_settings).run(version_id)
+    if result.generated_count == 0:
+        return _complete_step(
+            state,
+            "generate_suggestion_node",
+            current_step="generate_suggestion",
+            progress=78,
+            suggestion_count=0,
+        )
     return _complete_step(
         state,
         "generate_suggestion_node",
         current_step="generate_suggestion",
         progress=78,
-        suggestion_count=0,
+        suggestion_count=result.generated_count,
+        review_batch_id=result.review_batch_id,
     )
 
 
 def wait_human_review_node(state: TaxonomyGraphState) -> StateUpdate:
     review_batch_id = _require_review_batch_id(state)
-    decision = interrupt(
-        {
-            "type": "human_review",
-            "review_batch_id": review_batch_id,
-            "suggestion_count": state.suggestion_count,
-            "required_actions": ["approve", "reject", "edit"],
-        }
-    )
-    approved_ids = decision.get("approved_suggestion_ids", [])
+    interrupt_payload = {
+        "type": "human_review",
+        "review_batch_id": review_batch_id,
+        "suggestion_count": state.suggestion_count,
+        "required_actions": ["approve", "reject", "edit"],
+    }
+    if state.task_id:
+        TaskRepository(_runtime_settings).update_task(
+            task_id=state.task_id,
+            status="waiting_review",
+            current_step="human_review",
+            progress=80,
+            interrupt_payload=interrupt_payload,
+            result_payload={"review_batch_id": review_batch_id},
+        )
+    decision = interrupt(interrupt_payload)
     review_decision = decision.get("decision")
     if review_decision not in {"approve", "reject", "edit"}:
         raise WorkflowNodeError("INVALID_REVIEW_DECISION", "Review decision is invalid.")
+    approved_count = ReviewService(_runtime_settings).apply_workflow_decision(
+        review_batch_id,
+        decision,
+    )
     return _complete_step(
         state,
         "wait_human_review_node",
@@ -239,12 +263,17 @@ def wait_human_review_node(state: TaxonomyGraphState) -> StateUpdate:
         status="running",
         review_decision=review_decision,
         review_payload=decision,
-        approved_action_count=len(approved_ids),
+        approved_action_count=approved_count,
     )
 
 
 def validate_action_node(state: TaxonomyGraphState) -> StateUpdate:
-    _require_review_batch_id(state)
+    review_batch_id = _require_review_batch_id(state)
+    results = ActionService(_runtime_settings).validate_approved_actions(review_batch_id)
+    failed = [item for item in results if not item.valid]
+    if failed:
+        message = "; ".join(item.reason for item in failed)
+        raise WorkflowNodeError("ACTION_VALIDATION_FAILED", message)
     return _complete_step(
         state,
         "validate_action_node",

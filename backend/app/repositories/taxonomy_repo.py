@@ -1,4 +1,5 @@
 from collections.abc import Iterable
+from typing import Any
 
 from backend.app.config import Settings
 from backend.app.db import connect
@@ -90,6 +91,29 @@ class TaxonomyRepository:
                 (version_id, parent_id),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def is_descendant(self, version_id: int, ancestor_id: int, descendant_id: int) -> bool:
+        with connect(self.settings) as connection:
+            current = connection.execute(
+                """
+                SELECT parent_id
+                FROM category_node
+                WHERE version_id = ? AND category_id = ?
+                """,
+                (version_id, descendant_id),
+            ).fetchone()
+            while current and current[0] is not None:
+                if int(current[0]) == ancestor_id:
+                    return True
+                current = connection.execute(
+                    """
+                    SELECT parent_id
+                    FROM category_node
+                    WHERE version_id = ? AND category_id = ?
+                    """,
+                    (version_id, int(current[0])),
+                ).fetchone()
+        return False
 
     def list_root_overview(self, version_id: int, limit: int = 20) -> list[dict]:
         with connect(self.settings) as connection:

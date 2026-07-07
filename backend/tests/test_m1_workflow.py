@@ -109,14 +109,17 @@ def test_m1_workflow_api_runs_upload_to_report_with_real_data(tmp_path):
     status_response = client.get(f"/api/workflows/{start_body['task_id']}")
     assert status_response.status_code == 200
     status_body = status_response.json()
-    assert status_body["status"] == "completed"
-    assert status_body["current_step"] == "completed"
-    assert status_body["progress"] == 100
+    assert status_body["status"] in {"completed", "waiting_review"}
+    assert status_body["current_step"] in {"completed", "human_review"}
+    assert status_body["progress"] in {80, 100}
     assert status_body["file_id"] == file_id
     assert status_body["version_no"] == "v1.0"
     assert status_body["node_count"] == 21090
     assert status_body["structure_issue_count"] >= 44
-    assert Path(status_body["report_path"]).exists()
+    if status_body["status"] == "completed":
+        assert Path(status_body["report_path"]).exists()
+    else:
+        assert status_body["review_batch_id"]
 
     with sqlite3.connect(tmp_path / "app.db") as connection:
         task = connection.execute(
@@ -136,6 +139,6 @@ def test_m1_workflow_api_runs_upload_to_report_with_real_data(tmp_path):
         start_body["workflow_id"],
         start_body["thread_id"],
         status_body["current_version_id"],
-        100,
+        status_body["progress"],
     )
     assert event_count >= 6
