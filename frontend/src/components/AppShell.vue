@@ -8,7 +8,14 @@
       </div>
     </div>
     <nav class="shell-nav">
-      <RouterLink v-for="item in navItems" :key="item.label" :to="item.to" class="shell-nav-item">
+      <RouterLink
+        v-for="item in navItems"
+        :key="item.label"
+        :to="item.to"
+        class="shell-nav-item"
+        :class="{ active: isActive(item) }"
+      >
+        <span class="nav-icon">{{ item.icon }}</span>
         <span>{{ item.label }}</span>
       </RouterLink>
     </nav>
@@ -21,9 +28,10 @@
         <h1>{{ title }}</h1>
       </div>
       <div class="topbar-meta">
-        <label class="api-input">
+        <label class="api-input" title="修改后端 API 服务地址（保存后立即生效，无需刷新）">
           API Base
-          <input v-model="apiBaseUrl" @change="saveApiBaseUrl" type="text" />
+          <span class="api-hint">后端服务地址</span>
+          <input v-model="apiBaseUrl" @change="saveApiBaseUrl" type="text" placeholder="http://127.0.0.1:8000/api" />
         </label>
         <div class="status-pill" :data-status="statusTone">{{ statusText }}</div>
       </div>
@@ -43,23 +51,44 @@ import { useWorkspace } from '../state/workspace'
 const route = useRoute()
 const { state, patch } = useWorkspace()
 const apiBaseUrl = ref(state.apiBaseUrl)
-const navItems = computed(() => {
+
+type NavItem = { label: string; icon: string; to: string; match: string }
+
+const navItems = computed<NavItem[]>(() => {
   const versionId = state.newVersionId || state.currentVersionId
   return [
-    { to: '/upload', label: '上传分析' },
-    { to: state.taskId ? `/workflow/${state.taskId}` : '/upload', label: '工作流' },
+    { label: '上传分析', icon: '⬆', to: '/upload', match: '/upload' },
     {
+      label: '工作流',
+      icon: '🔄',
+      to: state.taskId ? `/workflow/${state.taskId}` : '/upload',
+      match: state.taskId ? `/workflow/${state.taskId}` : '',
+    },
+    {
+      label: '建议审核',
+      icon: '✅',
       to: state.reviewBatchId
         ? `/review/${state.reviewBatchId}?task_id=${state.taskId || ''}`
         : state.taskId
           ? `/workflow/${state.taskId}`
           : '/upload',
-      label: '建议审核',
+      match: state.reviewBatchId ? `/review/${state.reviewBatchId}` : state.taskId ? `/workflow/${state.taskId}` : '',
     },
-    { to: '/versions', label: '版本管理' },
-    { to: versionId ? `/report/${versionId}` : '/versions', label: '报告' },
+    { label: '版本管理', icon: '🗂', to: '/versions', match: '/versions' },
+    {
+      label: '报告',
+      icon: '📄',
+      to: versionId ? `/report/${versionId}` : '/versions',
+      match: versionId ? `/report/${versionId}` : '',
+    },
   ]
 })
+
+// 精确匹配当前路由，避免包含式匹配导致多个导航项同时高亮。
+function isActive(item: NavItem): boolean {
+  if (!item.match) return false
+  return route.path === item.match
+}
 
 const title = computed(() => {
   if (route.path.startsWith('/workflow')) return '工作流进度'
@@ -72,12 +101,12 @@ const title = computed(() => {
   return '上传与启动'
 })
 
-const statusText = computed(() => state.taskId ? `Task ${state.taskId}` : 'Ready')
-const statusTone = computed(() => state.taskId ? 'active' : 'idle')
+const statusText = computed(() => (state.taskId ? `Task ${state.taskId}` : 'Ready'))
+const statusTone = computed(() => (state.taskId ? 'active' : 'idle'))
 
 function saveApiBaseUrl() {
   patch({ apiBaseUrl: apiBaseUrl.value })
 }
 
-watch(apiBaseUrl, value => patch({ apiBaseUrl: value }))
+watch(apiBaseUrl, (value) => patch({ apiBaseUrl: value }))
 </script>

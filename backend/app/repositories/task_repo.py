@@ -135,6 +135,45 @@ class TaskRepository:
                 ),
             )
 
+    def list_events(
+        self,
+        workflow_id: str,
+        after_id: int | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """Return workflow_event rows for a workflow, newest last.
+
+        Used by the SSE stream to fetch events that arrived after a cursor.
+        """
+        with connect(self.settings) as connection:
+            if after_id is None:
+                rows = connection.execute(
+                    """
+                    SELECT id, workflow_id, thread_id, task_id, node_name,
+                           event_type, status, progress, message, payload,
+                           created_time
+                    FROM workflow_event
+                    WHERE workflow_id = ?
+                    ORDER BY id ASC
+                    LIMIT ?
+                    """,
+                    (workflow_id, limit),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT id, workflow_id, thread_id, task_id, node_name,
+                           event_type, status, progress, message, payload,
+                           created_time
+                    FROM workflow_event
+                    WHERE workflow_id = ? AND id > ?
+                    ORDER BY id ASC
+                    LIMIT ?
+                    """,
+                    (workflow_id, after_id, limit),
+                ).fetchall()
+        return [dict(row) for row in rows]
+
     def record_event(
         self,
         *,

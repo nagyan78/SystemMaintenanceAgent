@@ -27,6 +27,7 @@ output/
 outputs/
 *.log
 data/app.db
+data/workflow_checkpoints.sqlite
 data/uploads/
 data/exports/
 data/reports/

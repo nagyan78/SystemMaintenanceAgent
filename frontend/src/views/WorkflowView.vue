@@ -1,16 +1,28 @@
 <template>
   <AppShell>
     <div class="page-stack">
-      <StepTimeline :phase="phase" :label="label" :status="status" :tone="tone" :steps="timelineSteps" />
+      <TaskStatusBar
+        :task-id="taskId"
+        @progress="onSseProgress"
+        @interrupt="onSseInterrupt"
+        @completed="onSseCompleted"
+        @failed="onSseFailed"
+      />
+      <StepTimeline :phase="phase" :label="label" :status="status" :tone="badgeTone" :steps="timelineSteps" />
       <section class="card">
         <div class="card-head">
           <div>
             <p class="eyebrow">工作流状态</p>
-            <h2>{{ status }}</h2>
+            <h2>{{ statusLabel }}</h2>
           </div>
-          <span class="badge">{{ progress }}%</span>
+          <span class="badge" :data-tone="badgeTone">{{ progress }}%</span>
         </div>
-        <p class="lead">{{ currentStep }}</p>
+        <div class="progress-track">
+          <div class="progress-fill" :data-tone="badgeTone" :style="{ width: progress + '%' }">
+            <span class="progress-text">{{ progress }}%</span>
+          </div>
+        </div>
+        <p class="lead">{{ currentStepLabel }}</p>
         <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
         <div class="action-row">
           <RouterLink v-if="reviewBatchId && status === 'waiting_review'" :to="`/review/${reviewBatchId}?task_id=${taskId}`" class="button primary">进入审核</RouterLink>
@@ -27,6 +39,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
 import StepTimeline from '../components/StepTimeline.vue'
+import TaskStatusBar from '../components/TaskStatusBar.vue'
 import { getWorkflowStatus } from '../api/workflows'
 import { useWorkspace } from '../state/workspace'
 
@@ -77,7 +90,20 @@ const stepMeta: Record<string, { label: string; phase: string }> = {
 
 const phase = computed(() => status.value === 'waiting_review' ? 'M3' : status.value === 'completed' ? 'M4' : 'M1-M4')
 const label = computed(() => currentStep.value || '工作流运行中')
-const tone = computed(() => status.value)
+const badgeTone = computed(() => {
+  if (status.value === 'completed') return 'success'
+  if (status.value === 'failed') return 'danger'
+  if (status.value === 'waiting_review') return 'warning'
+  return 'warning'
+})
+const statusLabel = computed(() => {
+  const map: Record<string, string> = { running: '运行中', pending: '等待启动', waiting_review: '等待人工审核', completed: '已完成', failed: '失败' }
+  return map[status.value] || status.value
+})
+const currentStepLabel = computed(() => {
+  const meta = stepMeta[currentStep.value as keyof typeof stepMeta]
+  return meta ? `${meta.label}（${meta.phase}）` : '工作流运行中'
+})
 
 const timelineSteps = computed(() => {
   const currentIndex = Math.max(stepOrder.indexOf(currentStep.value as (typeof stepOrder)[number]), 0)
@@ -119,6 +145,34 @@ async function refresh() {
   }
 }
 
+// --- Real-time SSE handlers (M5: consume real workflow events) ---
+function onSseProgress(data: Record<string, unknown>) {
+  if (typeof data.status === 'string') status.value = data.status
+  if (typeof data.progress === 'number') progress.value = data.progress
+  if (typeof data.current_step === 'string') currentStep.value = data.current_step
+}
+
+async function onSseInterrupt(batchId: string) {
+  await refresh()
+  status.value = 'waiting_review'
+  reviewBatchId.value = batchId
+  stop()
+  if (batchId) {
+    router.push(`/review/${batchId}?task_id=${taskId}`).catch(() => {})
+  }
+}
+
+async function onSseCompleted() {
+  await refresh()
+  stop()
+}
+
+async function onSseFailed(message: string) {
+  errorMessage.value = message
+  await refresh()
+  stop()
+}
+
 function start() {
   timer.value = window.setInterval(refresh, 1500)
 }
@@ -131,7 +185,9 @@ function stop() {
 onMounted(async () => {
   await refresh()
   if (status.value === 'running' || status.value === 'pending') start()
-  if (status.value === 'waiting_review' && reviewBatchId.value) await router.push(`/review/${reviewBatchId.value}?task_id=${taskId}`)
+  if (status.value === 'waiting_review' && reviewBatchId.value) {
+    router.push(`/review/${reviewBatchId.value}?task_id=${taskId}`).catch(() => {})
+  }
 })
 
 onBeforeUnmount(stop)

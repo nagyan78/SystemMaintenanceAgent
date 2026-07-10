@@ -1,6 +1,8 @@
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel
 
@@ -43,9 +45,9 @@ class ResumeWorkflowRequest(BaseModel):
 def _get_workflow_checkpointer():
     global _WORKFLOW_CHECKPOINTER
     if _WORKFLOW_CHECKPOINTER is None:
-        from backend.app.agents.graph import create_memory_checkpointer
+        from backend.app.agents.checkpoints import create_sqlite_checkpointer
 
-        _WORKFLOW_CHECKPOINTER = create_memory_checkpointer()
+        _WORKFLOW_CHECKPOINTER = create_sqlite_checkpointer()
     return _WORKFLOW_CHECKPOINTER
 
 
@@ -115,6 +117,66 @@ def get_workflow_status(task_id: str, request: Request) -> dict[str, Any]:
         "review_batch_id": payload.get("review_batch_id"),
         "report_path": payload.get("report_path"),
     }
+
+
+@router.get("/{task_id}/events")
+def workflow_events(task_id: str, request: Request) -> StreamingResponse:
+    """Server-Sent Events stream of real workflow progress (M5).
+
+    Emits ``workflow_step`` frames as nodes complete, then a terminal
+    ``workflow_interrupt`` / ``workflow_completed`` / ``workflow_failed`` frame
+    and closes. The frontend consumes this instead of a static progress bar.
+    """
+    settings = request.app.state.settings
+    task_repo = TaskRepository(settings)
+    task = task_repo.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
+    workflow_id = task["workflow_id"]
+
+    async def _stream() -> Any:
+        from backend.app.agents.events import (
+            completed_event,
+            format_sse,
+            interrupt_event,
+            map_workflow_event,
+        )
+
+        last_id = 0
+        seen_terminal = False
+        while not seen_terminal:
+            if await request.is_disconnected():
+                return
+            rows = task_repo.list_events(workflow_id, after_id=last_id)
+            for row in rows:
+                last_id = row["id"]
+                event = map_workflow_event(row)
+                if event is not None:
+                    yield format_sse(event)
+
+            current = task_repo.get_task(task_id)
+            if current is None:
+                return
+            task_status = current["status"]
+            if task_status == "waiting_review":
+                yield format_sse(interrupt_event(current.get("interrupt_payload")))
+                seen_terminal = True
+            elif task_status == "completed":
+                yield format_sse(completed_event(task_id, current.get("result_payload")))
+                seen_terminal = True
+            elif task_status == "failed":
+                yield format_sse(
+                    {
+                        "event": "workflow_failed",
+                        "data": {"message": current.get("error_message") or "workflow failed"},
+                    }
+                )
+                seen_terminal = True
+            else:
+                yield ": keep-alive\n\n"
+                await asyncio.sleep(0.5)
+
+    return StreamingResponse(_stream(), media_type="text/event-stream")
 
 
 @router.post("/{task_id}/resume")

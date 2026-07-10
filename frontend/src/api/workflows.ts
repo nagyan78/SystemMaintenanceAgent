@@ -45,6 +45,11 @@ export function getWorkflowStatus(taskId: string) {
   return apiGet<WorkflowStatus>(`/workflows/${taskId}`)
 }
 
+export function workflowEvents(taskId: string): EventSource {
+  const baseUrl = (localStorage.getItem('apiBaseUrl') || API_BASE_URL).replace(/\/$/, '')
+  return new EventSource(`${baseUrl}/workflows/${taskId}/events`)
+}
+
 export function resumeWorkflow(taskId: string, payload: ResumeRequest) {
   return apiPost<Record<string, unknown>>(`/workflows/${taskId}/resume`, payload)
 }
