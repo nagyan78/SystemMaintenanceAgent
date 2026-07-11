@@ -1,0 +1,244 @@
+{
+  "benchmark_id": "demo-v1-2026-07-11T14:05:55",
+  "run_started_at": "2026-07-11T14:05:55",
+  "dataset": {
+    "version": "demo-v1",
+    "source_excel": "eval/golden_demo.xlsx",
+    "golden_issue_count": 11,
+    "row_count": 188
+  },
+  "environment": {
+    "use_live_llm": true,
+    "deepseek_configured": true,
+    "dashscope_configured": true
+  },
+  "workflow": {
+    "workflow_id": "benchmark_demo-v1_1783749955",
+    "task_id": "workflow_19d4c55e62db",
+    "status": "completed",
+    "current_step": "completed",
+    "measurement_scope": {
+      "timing_field": "local_runner_elapsed_ms",
+      "includes": [
+        "in-process LangGraph node execution"
+      ],
+      "excludes": [
+        "HTTP request/response latency",
+        "SSE streaming latency",
+        "frontend rendering time",
+        "real human review waiting time"
+      ],
+      "valid_for_resume_metrics": true,
+      "valid_for_user_wait_time": false
+    },
+    "local_runner_elapsed_ms": 225710.82,
+    "node_timings_ms": {
+      "parse_excel_node": 6.3,
+      "build_tree_node": 8.29,
+      "save_initial_version_node": 9.94,
+      "index_vector_node": 2206.62,
+      "structure_diagnosis_node": 4.96,
+      "diagnosis_planning_node": 5248.42,
+      "content_diagnosis_node": 127167.54,
+      "generate_suggestion_node": 91054.97,
+      "generate_report_node": 3.68
+    },
+    "node_outcomes": {
+      "parse_excel_node": {
+        "status": "running",
+        "current_step": "parse_excel",
+        "progress": 10
+      },
+      "build_tree_node": {
+        "status": "running",
+        "current_step": "build_tree",
+        "progress": 20
+      },
+      "save_initial_version_node": {
+        "status": "running",
+        "current_step": "save_initial_version",
+        "progress": 30
+      },
+      "index_vector_node": {
+        "status": "running",
+        "current_step": "index_vector",
+        "progress": 40
+      },
+      "structure_diagnosis_node": {
+        "status": "running",
+        "current_step": "structure_diagnosis",
+        "progress": 55
+      },
+      "diagnosis_planning_node": {
+        "status": "running",
+        "current_step": "diagnosis_planning",
+        "progress": 62
+      },
+      "content_diagnosis_node": {
+        "status": "running",
+        "current_step": "content_diagnosis",
+        "progress": 68
+      },
+      "generate_suggestion_node": {
+        "status": "failed",
+        "current_step": "generate_suggestion_node",
+        "error_code": "WORKFLOW_NODE_ERROR",
+        "error_message": "'suggestion_id'"
+      },
+      "generate_report_node": {
+        "status": "completed",
+        "current_step": "completed",
+        "progress": 100
+      }
+    },
+    "failed_nodes": [
+      "generate_suggestion_node"
+    ],
+    "completed_steps": [
+      "parse_excel_node",
+      "build_tree_node",
+      "save_initial_version_node",
+      "index_vector_node",
+      "structure_diagnosis_node",
+      "diagnosis_planning_node",
+      "content_diagnosis_node",
+      "generate_report_node"
+    ],
+    "interrupted_for_review": false,
+    "event_count": 10
+  },
+  "versions": {
+    "base_version_id": 1,
+    "current_version_id": 1,
+    "new_version_id": null,
+    "version_no": "v1.0"
+  },
+  "diagnosis": {
+    "predicted_issue_count": 10,
+    "structure_issue_count": 4,
+    "content_issue_count": 6,
+    "issue_metrics": {
+      "overall": {
+        "true_positive": 9,
+        "false_positive": 1,
+        "false_negative": 2,
+        "precision": 0.9,
+        "recall": 0.8182,
+        "f1": 0.8571
+      },
+      "by_type": {
+        "deep_level": {
+          "true_positive": 2,
+          "false_positive": 0,
+          "false_negative": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "duplicate_name": {
+          "true_positive": 1,
+          "false_positive": 0,
+          "false_negative": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "missing_parent": {
+          "true_positive": 1,
+          "false_positive": 0,
+          "false_negative": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "semantic_duplicate": {
+          "true_positive": 0,
+          "false_positive": 1,
+          "false_negative": 1,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "synonym_pollution": {
+          "true_positive": 5,
+          "false_positive": 0,
+          "false_negative": 1,
+          "precision": 1.0,
+          "recall": 0.8333,
+          "f1": 0.9091
+        }
+      },
+      "matches": [
+        {
+          "golden_issue_id": "G-001",
+          "prediction_index": 0,
+          "issue_type": "missing_parent"
+        },
+        {
+          "golden_issue_id": "G-002",
+          "prediction_index": 1,
+          "issue_type": "deep_level"
+        },
+        {
+          "golden_issue_id": "G-003",
+          "prediction_index": 2,
+          "issue_type": "deep_level"
+        },
+        {
+          "golden_issue_id": "G-004",
+          "prediction_index": 3,
+          "issue_type": "duplicate_name"
+        },
+        {
+          "golden_issue_id": "G-005",
+          "prediction_index": 4,
+          "issue_type": "synonym_pollution"
+        },
+        {
+          "golden_issue_id": "G-006",
+          "prediction_index": 5,
+          "issue_type": "synonym_pollution"
+        },
+        {
+          "golden_issue_id": "G-007",
+          "prediction_index": 7,
+          "issue_type": "synonym_pollution"
+        },
+        {
+          "golden_issue_id": "G-008",
+          "prediction_index": 8,
+          "issue_type": "synonym_pollution"
+        },
+        {
+          "golden_issue_id": "G-009",
+          "prediction_index": 9,
+          "issue_type": "synonym_pollution"
+        }
+      ],
+      "missed_golden_issue_ids": [
+        "G-010",
+        "G-011"
+      ]
+    }
+  },
+  "suggestions": {
+    "suggestion_count": 1,
+    "review_batch_id": null,
+    "approved_count": 0,
+    "action_types": {
+      "move_node": 1
+    }
+  },
+  "actions": {
+    "validated_count": 0,
+    "validation_passed_count": 0,
+    "validation_failed_count": 0,
+    "validation_pass_rate": 0.0,
+    "failed_reasons": []
+  },
+  "artifacts": {
+    "report_path": "eval/results/current_m1_m5_live_llm_after_qdrant_restart.report.md",
+    "raw_report_path": "/var/folders/bl/fbs74f2n5c112w52f1kgt3400000gn/T/taxonomy_benchmark_t6effw4d/reports/v1.0_diagnosis_report.md",
+    "output_path": "eval/results/current_m1_m5_live_llm_after_qdrant_restart.json"
+  }
+}

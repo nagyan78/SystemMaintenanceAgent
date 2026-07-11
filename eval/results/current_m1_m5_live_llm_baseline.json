@@ -1,0 +1,224 @@
+{
+  "benchmark_id": "demo-v1-2026-07-11T13:58:13",
+  "run_started_at": "2026-07-11T13:58:13",
+  "dataset": {
+    "version": "demo-v1",
+    "source_excel": "eval/golden_demo.xlsx",
+    "golden_issue_count": 11,
+    "row_count": 188
+  },
+  "environment": {
+    "use_live_llm": true,
+    "deepseek_configured": true,
+    "dashscope_configured": true
+  },
+  "workflow": {
+    "workflow_id": "benchmark_demo-v1_1783749494",
+    "task_id": "workflow_7197d191eac8",
+    "status": "completed",
+    "current_step": "completed",
+    "measurement_scope": {
+      "timing_field": "local_runner_elapsed_ms",
+      "includes": [
+        "in-process LangGraph node execution"
+      ],
+      "excludes": [
+        "HTTP request/response latency",
+        "SSE streaming latency",
+        "frontend rendering time",
+        "real human review waiting time"
+      ],
+      "valid_for_resume_metrics": true,
+      "valid_for_user_wait_time": false
+    },
+    "local_runner_elapsed_ms": 30767.03,
+    "node_timings_ms": {
+      "parse_excel_node": 6.04,
+      "build_tree_node": 8.91,
+      "save_initial_version_node": 8.76,
+      "index_vector_node": 4050.87,
+      "structure_diagnosis_node": 9.67,
+      "diagnosis_planning_node": 13486.19,
+      "content_diagnosis_node": 4982.05,
+      "generate_suggestion_node": 8202.91,
+      "generate_report_node": 11.59
+    },
+    "node_outcomes": {
+      "parse_excel_node": {
+        "status": "running",
+        "current_step": "parse_excel",
+        "progress": 10
+      },
+      "build_tree_node": {
+        "status": "running",
+        "current_step": "build_tree",
+        "progress": 20
+      },
+      "save_initial_version_node": {
+        "status": "running",
+        "current_step": "save_initial_version",
+        "progress": 30
+      },
+      "index_vector_node": {
+        "status": "failed",
+        "current_step": "index_vector_node",
+        "error_code": "WORKFLOW_NODE_ERROR",
+        "error_message": "Unexpected Response: 502 (Bad Gateway)\nRaw response content:\nb''"
+      },
+      "structure_diagnosis_node": {
+        "status": "running",
+        "current_step": "structure_diagnosis",
+        "progress": 55
+      },
+      "diagnosis_planning_node": {
+        "status": "running",
+        "current_step": "diagnosis_planning",
+        "progress": 62
+      },
+      "content_diagnosis_node": {
+        "status": "failed",
+        "current_step": "content_diagnosis_node",
+        "error_code": "WORKFLOW_NODE_ERROR",
+        "error_message": "Unexpected Response: 502 (Bad Gateway)\nRaw response content:\nb''"
+      },
+      "generate_suggestion_node": {
+        "status": "failed",
+        "current_step": "generate_suggestion_node",
+        "error_code": "WORKFLOW_NODE_ERROR",
+        "error_message": "Unexpected Response: 502 (Bad Gateway)\nRaw response content:\nb''"
+      },
+      "generate_report_node": {
+        "status": "completed",
+        "current_step": "completed",
+        "progress": 100
+      }
+    },
+    "failed_nodes": [
+      "index_vector_node",
+      "content_diagnosis_node",
+      "generate_suggestion_node"
+    ],
+    "completed_steps": [
+      "parse_excel_node",
+      "build_tree_node",
+      "save_initial_version_node",
+      "structure_diagnosis_node",
+      "diagnosis_planning_node",
+      "generate_report_node"
+    ],
+    "interrupted_for_review": false,
+    "event_count": 10
+  },
+  "versions": {
+    "base_version_id": 1,
+    "current_version_id": 1,
+    "new_version_id": null,
+    "version_no": "v1.0"
+  },
+  "diagnosis": {
+    "predicted_issue_count": 4,
+    "structure_issue_count": 4,
+    "content_issue_count": 0,
+    "issue_metrics": {
+      "overall": {
+        "true_positive": 4,
+        "false_positive": 0,
+        "false_negative": 7,
+        "precision": 1.0,
+        "recall": 0.3636,
+        "f1": 0.5333
+      },
+      "by_type": {
+        "deep_level": {
+          "true_positive": 2,
+          "false_positive": 0,
+          "false_negative": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "duplicate_name": {
+          "true_positive": 1,
+          "false_positive": 0,
+          "false_negative": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "missing_parent": {
+          "true_positive": 1,
+          "false_positive": 0,
+          "false_negative": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "semantic_duplicate": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 1,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "synonym_pollution": {
+          "true_positive": 0,
+          "false_positive": 0,
+          "false_negative": 6,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        }
+      },
+      "matches": [
+        {
+          "golden_issue_id": "G-001",
+          "prediction_index": 0,
+          "issue_type": "missing_parent"
+        },
+        {
+          "golden_issue_id": "G-002",
+          "prediction_index": 1,
+          "issue_type": "deep_level"
+        },
+        {
+          "golden_issue_id": "G-003",
+          "prediction_index": 2,
+          "issue_type": "deep_level"
+        },
+        {
+          "golden_issue_id": "G-004",
+          "prediction_index": 3,
+          "issue_type": "duplicate_name"
+        }
+      ],
+      "missed_golden_issue_ids": [
+        "G-005",
+        "G-006",
+        "G-007",
+        "G-008",
+        "G-009",
+        "G-010",
+        "G-011"
+      ]
+    }
+  },
+  "suggestions": {
+    "suggestion_count": 0,
+    "review_batch_id": null,
+    "approved_count": 0,
+    "action_types": {}
+  },
+  "actions": {
+    "validated_count": 0,
+    "validation_passed_count": 0,
+    "validation_failed_count": 0,
+    "validation_pass_rate": 0.0,
+    "failed_reasons": []
+  },
+  "artifacts": {
+    "report_path": "eval/results/current_m1_m5_live_llm_baseline.report.md",
+    "raw_report_path": "/var/folders/bl/fbs74f2n5c112w52f1kgt3400000gn/T/taxonomy_benchmark_y1h048sp/reports/v1.0_diagnosis_report.md",
+    "output_path": "eval/results/current_m1_m5_live_llm_baseline.json"
+  }
+}

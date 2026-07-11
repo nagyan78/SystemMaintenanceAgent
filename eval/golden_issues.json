@@ -1,0 +1,84 @@
+{
+  "dataset_version": "demo-v1",
+  "source_excel": "eval/golden_demo.xlsx",
+  "description": "Demo taxonomy golden set generated from scripts/generate_demo_excel.py. The labels are manually pinned and must not be overwritten by model predictions.",
+  "issues": [
+    {
+      "issue_id": "G-001",
+      "issue_type": "missing_parent",
+      "affected_node_ids": [150],
+      "node_name": "智能穿戴",
+      "expected_action": {"action_type": "add_node", "note": "补齐缺失父节点 998 或迁移到已有合理父类"}
+    },
+    {
+      "issue_id": "G-002",
+      "issue_type": "deep_level",
+      "affected_node_ids": [111],
+      "node_name": "Mate60",
+      "expected_action": {"action_type": "mark_as_valid_or_restructure", "note": "人工确认是否接受过深层级或合并中间层"}
+    },
+    {
+      "issue_id": "G-003",
+      "issue_type": "deep_level",
+      "affected_node_ids": [112],
+      "node_name": "Mate60Pro",
+      "expected_action": {"action_type": "mark_as_valid_or_restructure", "note": "人工确认是否接受过深层级或合并中间层"}
+    },
+    {
+      "issue_id": "G-004",
+      "issue_type": "duplicate_name",
+      "affected_node_ids": [304, 308, 323],
+      "node_name": "外套",
+      "expected_action": {"action_type": "mark_as_valid_or_rename", "note": "区分男装/女装/童装外套，或确认同名复用合理"}
+    },
+    {
+      "issue_id": "G-005",
+      "issue_type": "synonym_pollution",
+      "affected_node_ids": [103],
+      "node_name": "苹果手机",
+      "expected_action": {"action_type": "clean_synonym", "remove_terms": ["华为手机"]}
+    },
+    {
+      "issue_id": "G-006",
+      "issue_type": "synonym_pollution",
+      "affected_node_ids": [104],
+      "node_name": "华为手机",
+      "expected_action": {"action_type": "clean_synonym", "remove_terms": ["荣耀手机"]}
+    },
+    {
+      "issue_id": "G-007",
+      "issue_type": "synonym_pollution",
+      "affected_node_ids": [105],
+      "node_name": "小米手机",
+      "expected_action": {"action_type": "clean_synonym", "remove_terms": ["iPhone"]}
+    },
+    {
+      "issue_id": "G-008",
+      "issue_type": "synonym_pollution",
+      "affected_node_ids": [132],
+      "node_name": "电饭煲",
+      "expected_action": {"action_type": "clean_synonym", "remove_terms": ["电磁炉"]}
+    },
+    {
+      "issue_id": "G-009",
+      "issue_type": "synonym_pollution",
+      "affected_node_ids": [134],
+      "node_name": "榨汁机",
+      "expected_action": {"action_type": "clean_synonym", "remove_terms": ["搅拌机"]}
+    },
+    {
+      "issue_id": "G-010",
+      "issue_type": "synonym_pollution",
+      "affected_node_ids": [237],
+      "node_name": "苹果",
+      "expected_action": {"action_type": "clean_synonym", "remove_terms": ["iPhone"]}
+    },
+    {
+      "issue_id": "G-011",
+      "issue_type": "semantic_duplicate",
+      "affected_node_ids": [169, 170],
+      "node_name": "电子书阅读器 / 电子书",
+      "expected_action": {"action_type": "merge_or_rename", "note": "确认二者是否同义，必要时合并或改名区分"}
+    }
+  ]
+}
