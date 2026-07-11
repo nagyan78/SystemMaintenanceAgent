@@ -13,6 +13,10 @@ const workflowSource = readFileSync(new URL('../src/views/WorkflowView.vue', imp
 for (const step of ['parse_excel', 'build_tree', 'save_initial_version', 'index_vector', 'structure_diagnosis', 'diagnosis_planning', 'content_diagnosis', 'generate_suggestion', 'human_review', 'validate_action', 'execute_action', 'save_new_version', 'completed']) {
   assert.ok(workflowSource.includes(step), `missing workflow step ${step}`)
 }
+assert.ok(workflowSource.includes('QualityComparison'), 'workflow page must render quality comparison')
+assert.ok(workflowSource.includes('continue_optimization'), 'workflow page must handle continue interrupts')
+assert.ok(workflowSource.includes('继续优化'), 'workflow page must expose continue action')
+assert.ok(workflowSource.includes('结束并生成报告'), 'workflow page must expose finish action')
 
 const uploadViewSource = readFileSync(new URL('../src/views/UploadView.vue', import.meta.url), 'utf8')
 assert.ok(uploadViewSource.includes('开始智能体分析'), 'upload page must let users inspect fields before starting workflow')
@@ -25,7 +29,7 @@ assert.ok(clientSource.includes("localStorage.getItem('apiBaseUrl') || 'http://1
 
 const workspaceSource = readFileSync(new URL('../src/state/workspace.ts', import.meta.url), 'utf8')
 assert.ok(workspaceSource.includes("import { reactive } from 'vue'"), 'workspace must import reactive for runtime mount')
-for (const key of ['fileId', 'fileName', 'taskId', 'workflowId', 'threadId', 'currentVersionId', 'newVersionId', 'versionNo', 'reviewBatchId', 'reportPath']) {
+for (const key of ['fileId', 'fileName', 'taskId', 'workflowId', 'threadId', 'workflowMode', 'baseVersionId', 'resultVersionId', 'currentVersionId', 'newVersionId', 'versionNo', 'reviewBatchId', 'evaluationBeforeId', 'evaluationAfterId', 'verification', 'round', 'maxRounds', 'reportPath']) {
   assert.ok(workspaceSource.includes(key), `missing workspace key ${key}`)
 }
 
@@ -47,6 +51,8 @@ const versionsViewSource = readFileSync(new URL('../src/views/VersionsView.vue',
 assert.ok(versionsViewSource.includes('listFiles'), 'versions page must load files for file-scoped version management')
 assert.ok(versionsViewSource.includes('selectedFileId'), 'versions page must maintain selected file context')
 assert.ok(versionsViewSource.includes('orderedSelectedIds'), 'versions page must compare versions from older to newer')
+assert.ok(versionsViewSource.includes('继续优化此版本'), 'versions page must start maintain mode from a selected version')
+assert.ok(versionsViewSource.includes("mode: 'maintain'"), 'versions page must send maintain mode')
 for (const fn of ['loadDiff', 'doExport', 'doRollback']) {
   const sourceFromFunction = versionsViewSource.slice(versionsViewSource.indexOf(`async function ${fn}`))
   assert.ok(sourceFromFunction.includes('try {'), `${fn} must display API errors instead of failing silently`)
@@ -63,5 +69,15 @@ assert.ok(!reviewViewSource.includes('resumeWorkflow'), 'review page must not de
 const reviewApiSource = readFileSync(new URL('../src/api/reviews.ts', import.meta.url), 'utf8')
 assert.ok(reviewApiSource.includes('/decision'), 'review api must expose decision endpoint')
 assert.ok(reviewApiSource.includes('/execute'), 'review api must expose execute endpoint')
+
+const workflowApiSource = readFileSync(new URL('../src/api/workflows.ts', import.meta.url), 'utf8')
+for (const token of ['base_version_id', 'result_version_id', 'interrupt_type', 'continue_optimization', 'affected_node_ids']) {
+  assert.ok(workflowApiSource.includes(token), `workflow api missing ${token}`)
+}
+
+const qualityComparisonSource = readFileSync(new URL('../src/components/QualityComparison.vue', import.meta.url), 'utf8')
+for (const token of ['available_dimensions', 'resolved_fingerprints', 'unresolved_fingerprints', 'introduced_fingerprints']) {
+  assert.ok(qualityComparisonSource.includes(token), `quality comparison missing ${token}`)
+}
 
 console.log('navigation contract checks passed')

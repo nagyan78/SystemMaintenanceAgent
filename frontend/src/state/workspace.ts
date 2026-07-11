@@ -10,10 +10,18 @@ export type WorkspaceState = {
   taskId: string | null
   workflowId: string | null
   threadId: string | null
+  workflowMode: 'import' | 'maintain' | 'verify'
+  baseVersionId: number | null
+  resultVersionId: number | null
   currentVersionId: number | null
   newVersionId: number | null
   versionNo: string | null
   reviewBatchId: string | null
+  evaluationBeforeId: number | null
+  evaluationAfterId: number | null
+  verification: Record<string, unknown> | null
+  round: number
+  maxRounds: number
   reportPath: string | null
 }
 
@@ -29,10 +37,18 @@ const defaultState = (): WorkspaceState => ({
   taskId: null,
   workflowId: null,
   threadId: null,
+  workflowMode: 'import',
+  baseVersionId: null,
+  resultVersionId: null,
   currentVersionId: null,
   newVersionId: null,
   versionNo: null,
   reviewBatchId: null,
+  evaluationBeforeId: null,
+  evaluationAfterId: null,
+  verification: null,
+  round: 1,
+  maxRounds: 2,
   reportPath: null,
 })
 

@@ -99,6 +99,7 @@ def get_workflow_status(task_id: str, request: Request) -> dict[str, Any]:
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
     payload = _loads(task.get("result_payload"))
+    interrupt_payload = _loads(task.get("interrupt_payload"))
     return {
         "task_id": task["id"],
         "status": task["status"],
@@ -112,6 +113,17 @@ def get_workflow_status(task_id: str, request: Request) -> dict[str, Any]:
         "suggestion_count": payload.get("suggestion_count", 0),
         "review_batch_id": payload.get("review_batch_id"),
         "report_path": payload.get("report_path"),
+        "error_message": task.get("error_message"),
+        "workflow_mode": task.get("workflow_mode") or "import",
+        "base_version_id": task.get("base_version_id") or payload.get("base_version_id"),
+        "result_version_id": payload.get("result_version_id") or task.get("result_version_id"),
+        "evaluation_before_id": payload.get("evaluation_before_id"),
+        "evaluation_after_id": payload.get("evaluation_after_id"),
+        "verification": payload.get("verification_payload"),
+        "interrupt_type": interrupt_payload.get("interrupt_type"),
+        "interrupt_id": interrupt_payload.get("interrupt_id") or task.get("interrupt_id"),
+        "round": payload.get("round") or task.get("round") or 1,
+        "max_rounds": payload.get("max_rounds") or 2,
     }
 
 

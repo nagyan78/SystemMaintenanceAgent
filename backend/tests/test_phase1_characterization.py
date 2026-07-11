@@ -22,7 +22,8 @@ def test_graph_resolves_mode_before_import_and_saves_new_version_before_report()
     assert ("__start__", "resolve_input_node") in edges
     assert ("resolve_input_node", "parse_excel_node") in edges
     assert ("execute_action_node", "save_new_version_node") in edges
-    assert ("save_new_version_node", "generate_report_node") in edges
+    assert ("save_new_version_node", "index_result_version_node") in edges
+    assert ("result_quality_evaluation_node", "verification_node") in edges
 
 
 def test_validation_failure_routes_to_failed_report() -> None:

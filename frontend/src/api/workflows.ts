@@ -1,4 +1,13 @@
-import { apiGet, apiPost } from './client'
+import { API_BASE_URL, apiGet, apiPost } from './client'
+
+export type StartWorkflowRequest = {
+  mode: 'import' | 'maintain' | 'verify'
+  file_id?: number
+  base_version_id?: number
+  result_version_id?: number
+  affected_node_ids?: number[]
+  max_rounds?: number
+}
 
 export type StartWorkflowResponse = {
   task_id: string
@@ -11,7 +20,7 @@ export type StartWorkflowResponse = {
 
 export type WorkflowStatus = {
   task_id: string
-  status: 'pending' | 'running' | 'waiting_review' | 'completed' | 'failed'
+  status: 'pending' | 'running' | 'waiting_review' | 'waiting_continue' | 'waiting_manual_intervention' | 'completed' | 'completed_degraded' | 'failed'
   current_step: string
   progress: number
   file_id: number
@@ -26,9 +35,21 @@ export type WorkflowStatus = {
   review_batch_id?: string
   report_path?: string
   error_message?: string
+  workflow_mode?: 'import' | 'maintain' | 'verify'
+  base_version_id?: number
+  result_version_id?: number
+  evaluation_before_id?: number
+  evaluation_after_id?: number
+  verification?: Record<string, unknown>
+  interrupt_type?: 'human_review' | 'continue_optimization'
+  interrupt_id?: string
+  round?: number
+  max_rounds?: number
 }
 
-export type ResumeRequest = {
+export type HumanReviewResumeRequest = {
+  interrupt_type: 'human_review'
+  interrupt_id: string
   decision: 'approve' | 'reject' | 'edit'
   approved_suggestion_ids: number[]
   rejected_suggestion_ids: number[]
@@ -37,8 +58,20 @@ export type ResumeRequest = {
   reject_reason?: string | null
 }
 
-export function startWorkflow(fileId: number) {
-  return apiPost<StartWorkflowResponse>('/workflows/taxonomy/start', { file_id: fileId })
+export type ContinueResumeRequest = {
+  interrupt_type: 'continue_optimization'
+  interrupt_id: string
+  decision: 'continue' | 'finish'
+  operator: string
+}
+
+export type ResumeRequest = HumanReviewResumeRequest | ContinueResumeRequest
+
+export function startWorkflow(payload: number | StartWorkflowRequest) {
+  const request: StartWorkflowRequest = typeof payload === 'number'
+    ? { mode: 'import', file_id: payload }
+    : payload
+  return apiPost<StartWorkflowResponse>('/workflows/taxonomy/start', request)
 }
 
 export function getWorkflowStatus(taskId: string) {

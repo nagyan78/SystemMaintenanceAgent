@@ -34,6 +34,7 @@
           <button class="button primary" :disabled="selectedIds.length !== 2" @click="loadDiff">查看 Diff</button>
           <button class="button secondary" :disabled="!selectedIds[0]" @click="doExport">导出版本</button>
           <button class="button danger" :disabled="!selectedIds[0]" @click="doRollback">回滚版本</button>
+          <button class="button primary" :disabled="!selectedIds.length" @click="continueMaintenance">继续优化此版本</button>
         </div>
         <p v-if="message" class="lead">{{ message }}</p>
         <p v-if="downloadUrl" class="lead">下载地址：{{ downloadUrl }}</p>
@@ -111,6 +112,7 @@ import Modal from '../components/Modal.vue'
 import { listFiles } from '../api/files'
 import type { FileRecord } from '../api/files'
 import { exportVersion, getVersionDiff, listVersions, rollbackVersion } from '../api/versions'
+import { startWorkflow } from '../api/workflows'
 import { useWorkspace } from '../state/workspace'
 
 const route = useRoute()
@@ -178,6 +180,32 @@ async function doRollback() {
     await loadVersions()
   } catch (err) {
     error.value = err instanceof Error ? err.message : '回滚失败'
+  }
+}
+
+async function continueMaintenance() {
+  const baseVersionId = selectedIds.value[selectedIds.value.length - 1]
+  if (!baseVersionId) return
+  error.value = ''
+  try {
+    const result = await startWorkflow({
+      mode: 'maintain',
+      base_version_id: baseVersionId,
+      max_rounds: 2,
+    })
+    patch({
+      taskId: result.task_id,
+      workflowId: result.workflow_id,
+      threadId: result.thread_id,
+      workflowMode: 'maintain',
+      baseVersionId,
+      resultVersionId: null,
+      round: 1,
+      maxRounds: 2,
+    })
+    await router.push(`/workflow/${result.task_id}`)
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '启动版本维护失败'
   }
 }
 
