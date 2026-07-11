@@ -14,22 +14,27 @@ class SuggestionRepository:
         self,
         *,
         review_batch_id: str,
+        workflow_id: str | None = None,
+        analysis_run_id: str | None = None,
         suggestion: AdjustmentSuggestion,
     ) -> int:
         with connect(self.settings) as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO adjustment_suggestion (
-                    issue_id, review_batch_id, version_id, action_type, target_node_id,
+                    issue_id, review_batch_id, workflow_id, analysis_run_id,
+                    version_id, action_type, target_node_id,
                     target_node_name, old_parent_id, new_parent_id, old_name, new_name,
                     action_payload, reason, suggestion, risk_level, confidence,
                     need_confirm, status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     suggestion.issue_id,
                     review_batch_id,
+                    workflow_id,
+                    analysis_run_id,
                     suggestion.version_id,
                     suggestion.action_type,
                     suggestion.target_node_id,
@@ -80,6 +85,22 @@ class SuggestionRepository:
                 ORDER BY id
                 """,
                 params,
+            ).fetchall()
+        return [_record_from_row(dict(row)) for row in rows]
+
+    def list_for_run(self, analysis_run_id: str) -> list[SuggestionRecord]:
+        with connect(self.settings) as connection:
+            rows = connection.execute(
+                """
+                SELECT id, issue_id, review_batch_id, version_id, action_type,
+                       target_node_id, target_node_name, old_parent_id, new_parent_id,
+                       old_name, new_name, action_payload, reason, suggestion,
+                       risk_level, confidence, need_confirm, status
+                FROM adjustment_suggestion
+                WHERE analysis_run_id = ?
+                ORDER BY id
+                """,
+                (analysis_run_id,),
             ).fetchall()
         return [_record_from_row(dict(row)) for row in rows]
 

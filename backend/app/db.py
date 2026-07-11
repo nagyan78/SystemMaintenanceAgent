@@ -140,6 +140,17 @@ def init_db(settings: Settings) -> None:
                 created_time DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS analysis_run (
+                id TEXT PRIMARY KEY,
+                workflow_id TEXT NOT NULL,
+                round INTEGER NOT NULL,
+                analyzed_version_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'running',
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                completed_time DATETIME,
+                UNIQUE(workflow_id, round)
+            );
+
             CREATE UNIQUE INDEX IF NOT EXISTS idx_category_node_version_category
             ON category_node(version_id, category_id);
 
@@ -161,7 +172,34 @@ def init_db(settings: Settings) -> None:
         _ensure_columns(
             connection,
             "adjustment_suggestion",
-            {"review_batch_id": "TEXT"},
+            {
+                "review_batch_id": "TEXT",
+                "workflow_id": "TEXT",
+                "analysis_run_id": "TEXT",
+            },
+        )
+        _ensure_columns(
+            connection,
+            "diagnosis_issue",
+            {
+                "workflow_id": "TEXT",
+                "analysis_run_id": "TEXT",
+                "detector_version": "TEXT DEFAULT 'legacy-v1'",
+            },
+        )
+        _ensure_columns(
+            connection,
+            "operation_log",
+            {"workflow_id": "TEXT", "analysis_run_id": "TEXT"},
+        )
+        connection.execute("DROP INDEX IF EXISTS idx_issue_unique_rule")
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_unique_run_rule
+            ON diagnosis_issue(
+                analysis_run_id, detector_version, issue_type, node_id, description
+            )
+            """
         )
 
 

@@ -57,9 +57,22 @@ class SuggestionAgent:
         self.max_iter = max_iter
         self.max_retry = max_retry
         self.trace_log: list[str] = []
+        self.workflow_id: str | None = None
+        self.analysis_run_id: str | None = None
 
-    def run(self, version_id: int) -> SuggestionGenerationResult:
-        issues = DiagnosisRepository(self.settings).list_pending_issues(version_id)
+    def run(
+        self,
+        version_id: int,
+        *,
+        workflow_id: str | None = None,
+        analysis_run_id: str | None = None,
+    ) -> SuggestionGenerationResult:
+        self.workflow_id = workflow_id
+        self.analysis_run_id = analysis_run_id
+        issues = DiagnosisRepository(self.settings).list_pending_issues(
+            version_id,
+            analysis_run_id=analysis_run_id,
+        )
         records: list[SuggestionRecord] = []
         for issue in issues:
             record = self._rule_based_suggestion_record(version_id, issue)
@@ -127,6 +140,8 @@ class SuggestionAgent:
         else:
             suggestion_id = self.suggestion_repo.create_suggestion(
                 review_batch_id=self.review_batch_id,
+                workflow_id=self.workflow_id,
+                analysis_run_id=self.analysis_run_id,
                 suggestion=suggestion,
             )
         return SuggestionRecord(
@@ -173,6 +188,8 @@ class SuggestionAgent:
             return None
         suggestion_id = self.suggestion_repo.create_suggestion(
             review_batch_id=self.review_batch_id,
+            workflow_id=self.workflow_id,
+            analysis_run_id=self.analysis_run_id,
             suggestion=suggestion,
         )
         return SuggestionRecord(
@@ -193,6 +210,8 @@ class SuggestionAgent:
                 return json.dumps({"valid": False, "reason": validation.reason}, ensure_ascii=False)
             suggestion_id = agent.suggestion_repo.create_suggestion(
                 review_batch_id=agent.review_batch_id,
+                workflow_id=agent.workflow_id,
+                analysis_run_id=agent.analysis_run_id,
                 suggestion=record,
             )
             return json.dumps(

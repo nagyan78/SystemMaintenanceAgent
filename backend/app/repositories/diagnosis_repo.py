@@ -13,11 +13,17 @@ class DiagnosisRepository:
         self,
         *,
         version_id: int,
+        workflow_id: str | None = None,
+        analysis_run_id: str | None = None,
+        detector_version: str = "structure-v1",
         issues: Iterable[DiagnosisIssueRecord],
     ) -> None:
         values = [
             (
                 version_id,
+                workflow_id,
+                analysis_run_id,
+                detector_version,
                 issue.issue_type,
                 issue.node_id,
                 issue.node_name,
@@ -30,17 +36,27 @@ class DiagnosisRepository:
             for issue in issues
         ]
         with connect(self.settings) as connection:
-            connection.execute(
-                "DELETE FROM diagnosis_issue WHERE version_id = ?",
-                (version_id,),
-            )
+            if analysis_run_id is None:
+                connection.execute(
+                    "DELETE FROM diagnosis_issue WHERE version_id = ?",
+                    (version_id,),
+                )
+            else:
+                connection.execute(
+                    """
+                    DELETE FROM diagnosis_issue
+                    WHERE analysis_run_id = ? AND detector_version = ?
+                    """,
+                    (analysis_run_id, detector_version),
+                )
             connection.executemany(
                 """
                 INSERT OR IGNORE INTO diagnosis_issue (
-                    version_id, issue_type, node_id, node_name, description,
-                    reason, risk_level, confidence, status
+                    version_id, workflow_id, analysis_run_id, detector_version,
+                    issue_type, node_id, node_name, description, reason,
+                    risk_level, confidence, status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 values,
             )
@@ -49,19 +65,26 @@ class DiagnosisRepository:
         self,
         *,
         version_id: int,
+        workflow_id: str | None = None,
+        analysis_run_id: str | None = None,
+        detector_version: str = "content-v1",
         issue: DiagnosisIssueRecord,
     ) -> int:
         with connect(self.settings) as connection:
             cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO diagnosis_issue (
-                    version_id, issue_type, node_id, node_name, description,
-                    reason, risk_level, confidence, status
+                    version_id, workflow_id, analysis_run_id, detector_version,
+                    issue_type, node_id, node_name, description, reason,
+                    risk_level, confidence, status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     version_id,
+                    workflow_id,
+                    analysis_run_id,
+                    detector_version,
                     issue.issue_type,
                     issue.node_id,
                     issue.node_name,
@@ -79,29 +102,62 @@ class DiagnosisRepository:
                 SELECT id
                 FROM diagnosis_issue
                 WHERE version_id = ?
+                  AND IFNULL(analysis_run_id, '') = IFNULL(?, '')
+                  AND detector_version = ?
                   AND issue_type = ?
                   AND IFNULL(node_id, -1) = IFNULL(?, -1)
                   AND description = ?
                 ORDER BY id DESC
                 LIMIT 1
                 """,
-                (version_id, issue.issue_type, issue.node_id, issue.description),
+                (
+                    version_id,
+                    analysis_run_id,
+                    detector_version,
+                    issue.issue_type,
+                    issue.node_id,
+                    issue.description,
+                ),
             ).fetchone()
             return int(row["id"]) if row else 0
 
-    def count_by_type(self, version_id: int) -> dict[str, int]:
+    def count_by_type(
+        self,
+        version_id: int,
+        *,
+        analysis_run_id: str | None = None,
+    ) -> dict[str, int]:
+        run_clause = " AND analysis_run_id = ?" if analysis_run_id else ""
+        params: tuple[object, ...] = (
+            (version_id, analysis_run_id) if analysis_run_id else (version_id,)
+        )
         with connect(self.settings) as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT issue_type, COUNT(*) AS issue_count
                 FROM diagnosis_issue
-                WHERE version_id = ?
+                WHERE version_id = ?{run_clause}
                 GROUP BY issue_type
                 ORDER BY issue_type
                 """,
-                (version_id,),
+                params,
             ).fetchall()
         return {row["issue_type"]: int(row["issue_count"]) for row in rows}
+
+    def list_for_run(self, analysis_run_id: str) -> list[dict]:
+        with connect(self.settings) as connection:
+            rows = connection.execute(
+                """
+                SELECT id, version_id, workflow_id, analysis_run_id,
+                       detector_version, issue_type, node_id, node_name,
+                       description, reason, risk_level, confidence, status
+                FROM diagnosis_issue
+                WHERE analysis_run_id = ?
+                ORDER BY id
+                """,
+                (analysis_run_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def list_examples(self, version_id: int, limit: int = 5) -> list[dict]:
         with connect(self.settings) as connection:
@@ -125,7 +181,13 @@ class DiagnosisRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def list_pending_issues(self, version_id: int, limit: int | None = None) -> list[dict]:
+    def list_pending_issues(
+        self,
+        version_id: int,
+        limit: int | None = None,
+        *,
+        analysis_run_id: str | None = None,
+    ) -> list[dict]:
         query = """
             SELECT id, version_id, issue_type, node_id, node_name, description,
                    reason, risk_level, confidence, status
@@ -141,9 +203,15 @@ class DiagnosisRepository:
                 id ASC
         """
         params: tuple[object, ...] = (version_id,)
+        if analysis_run_id is not None:
+            query = query.replace(
+                "WHERE version_id = ? AND status = 'pending'",
+                "WHERE version_id = ? AND status = 'pending' AND analysis_run_id = ?",
+            )
+            params = (version_id, analysis_run_id)
         if limit is not None:
             query += " LIMIT ?"
-            params = (version_id, limit)
+            params = (*params, limit)
         with connect(self.settings) as connection:
             rows = connection.execute(query, params).fetchall()
         return [dict(row) for row in rows]

@@ -44,6 +44,9 @@ class ActionService:
         version_id: int,
         review_batch_id: str,
         operator: str = "local_user",
+        *,
+        workflow_id: str | None = None,
+        analysis_run_id: str | None = None,
     ) -> ExecuteActionsResult:
         approved = self.suggestion_repo.list_suggestions(
             version_id=version_id,
@@ -55,6 +58,8 @@ class ActionService:
             review_batch_id=review_batch_id,
             approved=approved,
             operator=operator,
+            workflow_id=workflow_id,
+            analysis_run_id=analysis_run_id,
         )
 
     def execute_suggestion_records(
@@ -64,6 +69,8 @@ class ActionService:
         review_batch_id: str,
         approved: list[SuggestionRecord],
         operator: str = "local_user",
+        workflow_id: str | None = None,
+        analysis_run_id: str | None = None,
     ) -> ExecuteActionsResult:
         validations = self.validate_suggestion_records(approved)
         failed_validations = [item for item in validations if not item.valid]
@@ -106,6 +113,8 @@ class ActionService:
                 self.suggestion_repo.update_status(int(failure["suggestion_id"]), "failed")
             self.log_repo.create_log(
                 version_id=version_id,
+                workflow_id=workflow_id,
+                analysis_run_id=analysis_run_id,
                 operator=operator,
                 operation_type="execute_actions_failed",
                 operation_detail={
@@ -120,6 +129,8 @@ class ActionService:
             self.suggestion_repo.update_status(suggestion.id, "executed")
         self.log_repo.create_log(
             version_id=version_id,
+            workflow_id=workflow_id,
+            analysis_run_id=analysis_run_id,
             operator=operator,
             operation_type="execute_actions",
             operation_detail={
