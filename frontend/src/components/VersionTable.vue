@@ -19,9 +19,9 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="version in versions" :key="version.id">
+          <tr v-for="(version, index) in versions" :key="version.id">
             <td><input type="checkbox" :name="name" :value="version.id" :checked="selectedIds.includes(version.id)" @change="$emit('select', version.id)" /></td>
-            <td>{{ version.version_no }}</td>
+            <td>{{ version.version_no }} <span v-if="index === versions.length - 1" class="badge" data-tone="success">当前</span></td>
             <td>{{ version.description || '-' }}</td>
             <td>{{ version.quality_score ?? '-' }}</td>
             <td>{{ version.node_count ?? '-' }}</td>

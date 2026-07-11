@@ -23,6 +23,8 @@ def _settings(tmp_path):
         report_dir=tmp_path / "reports",
         export_dir=tmp_path / "exports",
         deepseek_api_key="",
+        llm_provider="deepseek",
+        llm_model="deepseek-chat",
         dashscope_api_key="",
     )
 

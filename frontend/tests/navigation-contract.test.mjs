@@ -10,12 +10,17 @@ for (const route of ['/upload', '/workflow/:taskId', '/review/:reviewBatchId', '
 }
 
 const workflowSource = readFileSync(new URL('../src/views/WorkflowView.vue', import.meta.url), 'utf8')
-for (const step of ['parse_excel', 'build_tree', 'save_initial_version', 'index_vector', 'structure_diagnosis', 'diagnosis_planning', 'content_diagnosis', 'generate_suggestion', 'human_review', 'validate_action', 'execute_action', 'save_new_version', 'completed']) {
+for (const step of ['Excel 解析', '结构检测', '内容检测', 'AI 分析']) {
   assert.ok(workflowSource.includes(step), `missing workflow step ${step}`)
 }
 
 const uploadViewSource = readFileSync(new URL('../src/views/UploadView.vue', import.meta.url), 'utf8')
-assert.ok(uploadViewSource.includes('开始智能体分析'), 'upload page must let users inspect fields before starting workflow')
+assert.ok(uploadViewSource.includes('开始诊断'), 'upload page must expose the diagnosis-first user action')
+assert.ok(uploadViewSource.includes('分类层级'), 'upload page must show parsed taxonomy metrics')
+assert.ok(uploadViewSource.includes('runDiagnosis'), 'upload page must start the simplified diagnosis flow')
+assert.ok(uploadViewSource.includes('快速模式（关闭 AI）'), 'AI must be disabled by default for fast diagnosis')
+assert.ok(uploadViewSource.includes('本地模型 qwen3:8b'), 'upload page must expose the local model choice')
+assert.ok(uploadViewSource.includes('DeepSeek API'), 'upload page must expose the deployment model choice')
 assert.ok(uploadViewSource.includes('listFiles'), 'upload page must load previously uploaded files')
 assert.ok(uploadViewSource.includes('历史文件'), 'upload page must show a historical file section')
 assert.ok(uploadViewSource.includes('selectExistingFile'), 'upload page must allow selecting an existing file without re-uploading')
@@ -25,7 +30,7 @@ assert.ok(clientSource.includes("localStorage.getItem('apiBaseUrl') || 'http://1
 
 const workspaceSource = readFileSync(new URL('../src/state/workspace.ts', import.meta.url), 'utf8')
 assert.ok(workspaceSource.includes("import { reactive } from 'vue'"), 'workspace must import reactive for runtime mount')
-for (const key of ['fileId', 'fileName', 'taskId', 'workflowId', 'threadId', 'currentVersionId', 'newVersionId', 'versionNo', 'reviewBatchId', 'reportPath']) {
+for (const key of ['fileId', 'fileName', 'taskId', 'workflowId', 'threadId', 'currentVersionId', 'newVersionId', 'versionNo', 'reviewBatchId', 'reportPath', 'enableAiAnalysis', 'modelProvider', 'modelName']) {
   assert.ok(workspaceSource.includes(key), `missing workspace key ${key}`)
 }
 
@@ -38,6 +43,23 @@ assert.ok(!appShellSource.includes("to: '/report/0'"), 'report nav must use curr
 for (const view of ['OverviewView', 'TreeView', 'DiagnosisView']) {
   assert.ok(routerSource.includes(`import ${view}`), `router must import ${view}`)
   assert.ok(routerSource.includes(`component: ${view}`), `router must mount ${view}`)
+}
+for (const component of ['AgentRunProgress', 'AgentEventLog']) {
+  assert.ok(workflowSource.includes(component), `workflow must use ${component}`)
+}
+for (const eventName of ['agent_step', 'agent_tool_completed', 'candidate_completed']) {
+  assert.ok(workflowSource.includes(eventName), `workflow must consume ${eventName}`)
+}
+assert.ok(workflowSource.includes('cancelWorkflow'), 'workflow must expose safe cancellation')
+
+const progressSource = readFileSync(new URL('../src/components/AgentRunProgress.vue', import.meta.url), 'utf8')
+for (const label of ['候选总数', '已处理', '发现问题', '正常', '不确定', '失败', '剩余']) {
+  assert.ok(progressSource.includes(label), `agent progress must show ${label}`)
+}
+
+const diagnosisViewSource = readFileSync(new URL('../src/views/DiagnosisView.vue', import.meta.url), 'utf8')
+for (const value of ['体系体检报告', '结构问题', '内容问题', '高风险问题', '综合评分', '问题原因', '检测依据', '建议动作']) {
+  assert.ok(diagnosisViewSource.includes(value), `diagnosis report must display ${value}`)
 }
 
 const versionTableSource = readFileSync(new URL('../src/components/VersionTable.vue', import.meta.url), 'utf8')
@@ -54,11 +76,11 @@ for (const fn of ['loadDiff', 'doExport', 'doRollback']) {
 
 const reviewViewSource = readFileSync(new URL('../src/views/ReviewView.vue', import.meta.url), 'utf8')
 assert.ok(reviewViewSource.slice(reviewViewSource.indexOf('onMounted')).includes('catch'), 'review batch loading must display API errors')
-assert.ok(reviewViewSource.includes('applyReviewDecision'), 'review page must persist approve/reject decisions without resuming a completed workflow')
-assert.ok(reviewViewSource.includes('executeReviewBatch'), 'review page must execute approved suggestions and generate a new version')
-assert.ok(reviewViewSource.includes('执行已批准'), 'review page must expose an explicit execute-approved action')
+assert.ok(reviewViewSource.includes('resumeWorkflow'), 'review page must resume the interrupted LangGraph workflow')
+assert.ok(reviewViewSource.includes('接受选中建议'), 'review page must expose an accept action')
+assert.ok(reviewViewSource.includes('拒绝其余建议'), 'review page must expose a reject action')
+assert.ok(reviewViewSource.includes('applyReviewDecision'), 'simplified diagnosis review must not require workflow resume')
 assert.ok(!reviewViewSource.includes('editJson'), 'review page must not require users to type a JSON edits array')
-assert.ok(!reviewViewSource.includes('resumeWorkflow'), 'review page must not depend on workflow resume for repeated review execution')
 
 const reviewApiSource = readFileSync(new URL('../src/api/reviews.ts', import.meta.url), 'utf8')
 assert.ok(reviewApiSource.includes('/decision'), 'review api must expose decision endpoint')

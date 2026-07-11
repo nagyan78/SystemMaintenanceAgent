@@ -5,7 +5,6 @@ from collections.abc import Callable
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
-from langchain_openai import ChatOpenAI
 
 from backend.app.agents.prompts import (
     CONTENT_DIAGNOSIS_FEW_SHOT,
@@ -13,16 +12,10 @@ from backend.app.agents.prompts import (
     DIAGNOSIS_PLANNING_PROMPT,
 )
 from backend.app.config import Settings, get_settings
+from backend.app.services.model_service import ModelService
 from backend.app.repositories.taxonomy_repo import TaxonomyRepository
 from backend.app.schemas.issue import ContentIssue, DiagnosisPlan
-from backend.app.tools.tree_tools import (
-    configure_tree_tool_runtime,
-    get_children,
-    get_node_detail,
-    get_node_path,
-    search_similar_nodes,
-    submit_diagnosis,
-)
+from backend.app.services.tool_factory import AgentResourceLimits, AgentToolFactory
 
 
 logger = logging.getLogger(__name__)
@@ -37,7 +30,6 @@ class DiagnosisPlanningAgent:
         llm: Any | None = None,
     ) -> None:
         self.settings = settings or get_settings()
-        configure_tree_tool_runtime(settings=self.settings)
         self.llm = llm or self._create_llm()
 
     def run(self, structure_stats: dict, tree_overview: dict) -> DiagnosisPlan:
@@ -59,16 +51,8 @@ class DiagnosisPlanningAgent:
         )
         return DiagnosisPlan.model_validate(_extract_json(response.content))
 
-    def _create_llm(self) -> ChatOpenAI | None:
-        if not self.settings.deepseek_api_key:
-            return None
-        return ChatOpenAI(
-            model=self.settings.deepseek_model,
-            base_url=self.settings.deepseek_base_url,
-            api_key=self.settings.deepseek_api_key,
-            temperature=0.1,
-            request_timeout=60,
-        )
+    def _create_llm(self) -> Any:
+        return ModelService(self.settings).get_chat_model(temperature=0.1)
 
 
 class ContentDiagnosisAgent:
@@ -80,21 +64,17 @@ class ContentDiagnosisAgent:
         tools: list[Any] | None = None,
         candidate_selector: CandidateSelector | None = None,
         max_iter: int = 8,
+        event_sink: Callable[[dict[str, Any]], None] | None = None,
+        resource_limits: AgentResourceLimits | None = None,
     ) -> None:
         self.settings = settings or get_settings()
-        configure_tree_tool_runtime(settings=self.settings)
         self.llm = llm or self._create_llm()
-        self.tools = tools or [
-            search_similar_nodes,
-            get_node_detail,
-            get_node_path,
-            get_children,
-            submit_diagnosis,
-        ]
+        self.tools = tools or AgentToolFactory(self.settings, resource_limits=resource_limits).content_diagnosis_tools()
         self.tool_map = {item.name: item for item in self.tools}
         self.candidate_selector = candidate_selector or self.select_candidates
         self.max_iter = max_iter
         self.trace_log: list[str] = []
+        self.event_sink = event_sink
 
     def run(self, version_id: int, plan: DiagnosisPlan) -> list[ContentIssue]:
         if self.llm is None:
@@ -149,8 +129,12 @@ class ContentDiagnosisAgent:
         args = tool_call.get("args") or {}
         tool_obj = self.tool_map[name]
         self._trace(f"Action: {name} {json.dumps(args, ensure_ascii=False)}")
+        if self.event_sink:
+            self.event_sink({"event_type": "agent_step", "tool_name": name, "status": "running", "summary": {"action": "tool_started"}})
         observation = tool_obj.invoke(args)
         self._trace(f"Observation: {observation}")
+        if self.event_sink:
+            self.event_sink({"event_type": "agent_tool_completed", "tool_name": name, "status": "completed", "summary": {"result_type": type(observation).__name__}})
         messages.append(
             ToolMessage(
                 content=json.dumps(observation, ensure_ascii=False),
@@ -161,16 +145,8 @@ class ContentDiagnosisAgent:
             return _issue_from_tool_args(args, str(observation))
         return None
 
-    def _create_llm(self) -> ChatOpenAI | None:
-        if not self.settings.deepseek_api_key:
-            return None
-        return ChatOpenAI(
-            model=self.settings.deepseek_model,
-            base_url=self.settings.deepseek_base_url,
-            api_key=self.settings.deepseek_api_key,
-            temperature=0.1,
-            request_timeout=60,
-        )
+    def _create_llm(self) -> Any:
+        return ModelService(self.settings).get_chat_model(temperature=0.1)
 
     def _trace(self, message: str) -> None:
         self.trace_log.append(message)
@@ -192,7 +168,6 @@ def run_agent(
     version_id: int,
     plan: DiagnosisPlan,
 ) -> list[ContentIssue]:
-    configure_tree_tool_runtime(settings=settings)
     return ContentDiagnosisAgent(settings).run(version_id, plan)
 
 
@@ -219,6 +194,9 @@ def _issue_from_tool_args(args: dict[str, Any], issue_id: str) -> ContentIssue:
         risk_level=issue.get("risk_level", "low"),
         confidence=_coerce_confidence(issue.get("confidence", 0.0)),
         status=issue.get("status", "pending"),
+        path=issue.get("path"),
+        evidence=issue.get("evidence") or issue.get("reason"),
+        source="model_analysis",
     )
 
 

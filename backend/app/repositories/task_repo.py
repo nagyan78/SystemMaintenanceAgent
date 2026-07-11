@@ -56,17 +56,58 @@ class TaskRepository:
             )
         return task_id
 
+    def create_diagnosis_task(
+        self,
+        *,
+        file_id: int,
+        version_id: int,
+        enable_ai_analysis: bool,
+        model_provider: str | None,
+        model_name: str | None,
+    ) -> str:
+        task_id = f"diagnosis_{uuid4().hex[:12]}"
+        with connect(self.settings) as connection:
+            connection.execute(
+                """
+                INSERT INTO task_record (
+                    id, file_id, task_type, status, current_step, progress,
+                    version_id, enable_ai_analysis, model_provider, model_name
+                    , start_time
+                ) VALUES (?, ?, 'diagnosis', 'running', 'rule_detection', 10, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (task_id, file_id, version_id, int(enable_ai_analysis), model_provider, model_name),
+            )
+        return task_id
+
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         with connect(self.settings) as connection:
             row = connection.execute(
                 """
                 SELECT id, file_id, task_type, status, current_step, progress,
                        error_message, workflow_id, thread_id, version_id,
-                       interrupt_payload, result_payload, created_time, updated_time
+                       interrupt_payload, result_payload, enable_ai_analysis,
+                       model_provider, model_name, created_time, updated_time
+                       , start_time, end_time
                 FROM task_record
                 WHERE id = ?
                 """,
                 (task_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_latest_diagnosis_for_version(self, version_id: int) -> dict[str, Any] | None:
+        with connect(self.settings) as connection:
+            row = connection.execute(
+                """
+                SELECT id, file_id, status, current_step, progress, version_id,
+                       result_payload, enable_ai_analysis, model_provider, model_name,
+                       created_time, updated_time
+                       , start_time, end_time
+                FROM task_record
+                WHERE task_type = 'diagnosis' AND version_id = ?
+                ORDER BY created_time DESC, id DESC LIMIT 1
+                """,
+                (version_id,),
             ).fetchone()
         return dict(row) if row else None
 
@@ -119,7 +160,8 @@ class TaskRepository:
                     error_message = ?,
                     result_payload = ?,
                     interrupt_payload = ?,
-                    updated_time = ?
+                    updated_time = ?,
+                    end_time = CASE WHEN ? IN ('completed', 'failed', 'cancelled') THEN ? ELSE end_time END
                 WHERE id = ?
                 """,
                 (
@@ -130,6 +172,8 @@ class TaskRepository:
                     updates["error_message"],
                     updates["result_payload"],
                     updates["interrupt_payload"],
+                    updates["updated_time"],
+                    updates["status"],
                     updates["updated_time"],
                     task_id,
                 ),

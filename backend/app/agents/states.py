@@ -44,7 +44,12 @@ class TaxonomyGraphState(BaseModel):
     structure_issue_count: int = 0
     structure_issue_summary: dict[str, int] = Field(default_factory=dict)
     content_issue_count: int = 0
+    enable_ai_analysis: bool = False
+    model_provider: str | None = None
+    model_name: str | None = None
     diagnosis_plan: dict[str, Any] | None = None
+    analysis_run_id: str | None = None
+    work_item_counts: dict[str, int] = Field(default_factory=dict)
     suggestion_count: int = 0
     approved_action_count: int = 0
     executed_action_count: int = 0

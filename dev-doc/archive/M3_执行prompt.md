@@ -1,5 +1,7 @@
 # M3 里程碑执行 Prompt
 
+> **历史执行材料（ARCHIVED）**：不得直接作为当前开发 prompt 使用。当前事实和路线见 `CURRENT_IMPLEMENTATION.md`、`ROADMAP.md`。
+
 > 用途：先把"环境准备"确认完毕，再把"复制以下内容作为 Prompt"代码块整体复制给 AI 编程助手，启动 M3 代码实现。
 > 项目路径：/Users/flflfl/Documents/code/SystemMaintenanceAgent
 > 技术方案：LLM 用 DeepSeek API（OpenAI 兼容），Embedding 用通义千问 DashScope（OpenAI 兼容），统一 langchain-openai

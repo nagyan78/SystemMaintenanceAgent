@@ -13,6 +13,9 @@ class DiagnosisIssueRecord(BaseModel):
     risk_level: str
     confidence: float
     status: str = "pending"
+    path: str | None = None
+    evidence: str | None = None
+    source: str = "structure_rule"
 
 
 class StructureDiagnosisResult(BaseModel):

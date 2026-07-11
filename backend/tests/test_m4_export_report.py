@@ -1,7 +1,7 @@
 from openpyxl import load_workbook
 
 from backend.app.config import Settings
-from backend.app.db import init_db
+from backend.app.db import connect, init_db
 from backend.app.repositories.diagnosis_repo import DiagnosisRepository
 from backend.app.repositories.suggestion_repo import SuggestionRepository
 from backend.app.repositories.taxonomy_repo import TaxonomyRepository
@@ -26,6 +26,8 @@ def _settings(tmp_path):
 
 def _seed_version(settings: Settings) -> int:
     init_db(settings)
+    with connect(settings) as connection:
+        connection.execute("INSERT OR IGNORE INTO uploaded_file (id,file_name,file_path) VALUES (1,'test.xlsx','test.xlsx')")
     version_id = VersionRepository(settings).create_version(
         file_id=1,
         version_no="v1.0",

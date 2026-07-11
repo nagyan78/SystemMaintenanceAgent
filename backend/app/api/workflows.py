@@ -1,7 +1,7 @@
 import asyncio
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel
@@ -14,6 +14,7 @@ from backend.app.agents.graph import (
 )
 from backend.app.repositories.file_repo import FileRepository
 from backend.app.repositories.task_repo import TaskRepository
+from backend.app.services.workflow_runner import WorkflowRunner
 
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
@@ -80,7 +81,8 @@ def start_taxonomy_workflow(
         message="taxonomy workflow started",
         payload={"file_id": payload.file_id},
     )
-    background_tasks.add_task(
+    WorkflowRunner(settings).submit(
+        background_tasks,
         _run_workflow,
         settings,
         payload.file_id,
@@ -116,11 +118,33 @@ def get_workflow_status(task_id: str, request: Request) -> dict[str, Any]:
         "suggestion_count": payload.get("suggestion_count", 0),
         "review_batch_id": payload.get("review_batch_id"),
         "report_path": payload.get("report_path"),
+        "report_preview_url": (
+            f"/api/reports/{task['version_id']}/preview"
+            if task.get("version_id") and payload.get("report_path")
+            else None
+        ),
+        "report_download_url": (
+            f"/api/reports/{task['version_id']}/download"
+            if task.get("version_id") and payload.get("report_path")
+            else None
+        ),
+        "error_message": task.get("error_message") or payload.get("error_message"),
+        "enable_ai_analysis": bool(task.get("enable_ai_analysis")),
+        "model_provider": task.get("model_provider"),
+        "model_name": task.get("model_name"),
+        "start_time": task.get("start_time") or task.get("created_time"),
+        "end_time": task.get("end_time"),
+        "analysis_run_id": payload.get("analysis_run_id"),
+        "work_item_counts": payload.get("work_item_counts", {}),
     }
 
 
 @router.get("/{task_id}/events")
-def workflow_events(task_id: str, request: Request) -> StreamingResponse:
+def workflow_events(
+    task_id: str, request: Request,
+    after_id: int = Query(default=0, ge=0),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+) -> StreamingResponse:
     """Server-Sent Events stream of real workflow progress (M5).
 
     Emits ``workflow_step`` frames as nodes complete, then a terminal
@@ -142,7 +166,11 @@ def workflow_events(task_id: str, request: Request) -> StreamingResponse:
             map_workflow_event,
         )
 
-        last_id = 0
+        try:
+            header_cursor = int(last_event_id) if last_event_id else 0
+        except ValueError:
+            header_cursor = 0
+        last_id = max(after_id, header_cursor)
         seen_terminal = False
         while not seen_terminal:
             if await request.is_disconnected():
@@ -184,6 +212,7 @@ def resume_workflow(
     task_id: str,
     payload: ResumeWorkflowRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
 ) -> dict[str, Any]:
     settings = request.app.state.settings
     task_repo = TaskRepository(settings)
@@ -192,25 +221,17 @@ def resume_workflow(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
     if task["status"] != "waiting_review":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Task is not waiting for review.")
+    task_repo.update_task(task_id=task_id, status="running", current_step="resume_queued")
+    WorkflowRunner(settings).submit(background_tasks, _resume_workflow, settings, task, payload.model_dump())
+    return {"task_id": task_id, "status": "running", "current_step": "resume_queued"}
+
+
+@router.post("/{task_id}/cancel")
+def cancel_workflow(task_id: str, request: Request) -> dict[str, Any]:
     try:
-        graph = build_taxonomy_graph(
-            _get_workflow_checkpointer(),
-            settings=settings,
-            enable_suggestion_review=True,
-        )
-        result = graph.invoke(
-            Command(resume=payload.model_dump()),
-            config={"configurable": {"thread_id": task["thread_id"]}},
-        )
-    except Exception as exc:
-        task_repo.update_task(
-            task_id=task_id,
-            status="failed",
-            current_step="failed",
-            error_message=str(exc),
-        )
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return result
+        return WorkflowRunner(request.app.state.settings).cancel(task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 def _run_workflow(settings, file_id: int, task_id: str, workflow_id: str) -> None:
@@ -252,6 +273,26 @@ def _run_workflow(settings, file_id: int, task_id: str, workflow_id: str) -> Non
             status="failed",
             message=str(exc),
         )
+
+
+def _resume_workflow(settings, task: dict[str, Any], payload: dict[str, Any]) -> None:
+    task_repo = TaskRepository(settings)
+    try:
+        graph = build_taxonomy_graph(
+            _get_workflow_checkpointer(), settings=settings, enable_suggestion_review=True,
+        )
+        result = graph.invoke(
+            Command(resume=payload),
+            config={"configurable": {"thread_id": task["thread_id"]}},
+        )
+        if result.get("status") == "failed":
+            task_repo.update_task(
+                task_id=task["id"], status="failed", current_step=result.get("current_step"),
+                progress=result.get("progress", 0), error_message=result.get("error_message"),
+                result_payload=result,
+            )
+    except Exception as exc:
+        task_repo.update_task(task_id=task["id"], status="failed", current_step="failed", error_message=str(exc))
 
 
 def _loads(value: str | None) -> dict[str, Any]:

@@ -6,6 +6,7 @@ from backend.app.db import connect
 from backend.app.repositories.diagnosis_repo import DiagnosisRepository
 from backend.app.repositories.file_repo import FileRepository
 from backend.app.repositories.suggestion_repo import SuggestionRepository
+from backend.app.repositories.task_repo import TaskRepository
 from backend.app.repositories.version_repo import VersionRepository
 from backend.app.schemas.issue import ReportResult
 from backend.app.services.taxonomy_service import TaxonomyService
@@ -30,6 +31,7 @@ class ReportService:
         content_examples = issue_repo.list_content_examples(version_id, limit=3)
         suggestions = SuggestionRepository(self.settings).list_suggestions(version_id=version_id)
         operation_logs = _list_operation_logs(self.settings, version_id)
+        diagnosis_task = TaskRepository(self.settings).get_latest_diagnosis_for_version(version_id)
 
         self.settings.report_dir.mkdir(parents=True, exist_ok=True)
         report_name = f"{version['version_no']}_diagnosis_report.md"
@@ -45,6 +47,7 @@ class ReportService:
                 content_examples,
                 suggestions,
                 operation_logs,
+                diagnosis_task,
             ),
             encoding="utf-8",
         )
@@ -66,6 +69,7 @@ class ReportService:
         content_examples: list[dict],
         suggestions: list,
         operation_logs: list[dict],
+        diagnosis_task: dict | None,
     ) -> str:
         created_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
         example_lines = "\n".join(
@@ -77,17 +81,20 @@ class ReportService:
             for item in content_examples
         ) or "- 暂无典型内容问题。"
 
+        ai_enabled = bool(diagnosis_task and diagnosis_task.get("enable_ai_analysis"))
+        model_name = diagnosis_task.get("model_name") if diagnosis_task else None
         if content_issue_count > 0:
-            content_section = f"""- AI 语义诊断问题总数：{content_issue_count}
-- 诊断方式：DeepSeek ReAct Agent Loop（召回→LLM判断→补充查询→再判断）
-- 诊断范围：由 diagnosis_planning_node 智能规划（非全量扫描）
+            content_section = f"""- 内容问题总数：{content_issue_count}
+- 诊断模式：{'AI 增强模式' if ai_enabled else '快速规则模式'}
+- 使用模型：{model_name or '未启用'}
+- 诊断范围：全量规则筛查，AI 仅处理候选节点
 
 典型内容问题：
 {content_example_lines}"""
         else:
-            content_section = "内容诊断 Agent 已运行但未发现语义异常（或 M2 Agent Loop 未在本次执行中激活）。"
+            content_section = f"内容规则检测未发现异常。诊断模式：{'AI 增强模式' if ai_enabled else '快速规则模式'}；模型：{model_name or '未启用'}。"
 
-        total_issues = sum(issue_summary.values()) + content_issue_count
+        total_issues = sum(issue_summary.values())
         quality_score = (
             float(version["quality_score"])
             if version.get("quality_score") is not None

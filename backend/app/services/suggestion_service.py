@@ -5,23 +5,15 @@ from uuid import uuid4
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
 
 from backend.app.agents.prompts import SUGGESTION_GENERATION_SYSTEM_PROMPT
 from backend.app.config import Settings, get_settings
+from backend.app.services.model_service import ModelService
 from backend.app.repositories.diagnosis_repo import DiagnosisRepository
 from backend.app.repositories.suggestion_repo import SuggestionRepository
 from backend.app.schemas.suggestion import AdjustmentSuggestion, SuggestionGenerationResult, SuggestionRecord
-from backend.app.tools.tree_tools import (
-    configure_tree_tool_runtime,
-    get_children,
-    get_node_detail,
-    get_node_path,
-    search_similar_nodes,
-)
+from backend.app.services.tool_factory import AgentResourceLimits, AgentToolFactory
 from backend.app.tools.validation_tools import (
-    configure_validation_tool_runtime,
-    validate_action,
     validate_suggestion_action,
 )
 
@@ -37,29 +29,34 @@ class SuggestionAgent:
         tools: list[Any] | None = None,
         max_iter: int = 8,
         max_retry: int = 3,
+        enable_ai: bool = True,
+        review_batch_id: str | None = None,
+        work_item_id: str | None = None,
+        analysis_run_id: str | None = None,
+        workflow_id: str | None = None,
+        event_sink: Any | None = None,
+        resource_limits: AgentResourceLimits | None = None,
     ) -> None:
         self.settings = settings or get_settings()
-        configure_tree_tool_runtime(settings=self.settings)
-        configure_validation_tool_runtime(self.settings)
-        self.review_batch_id = f"review_{uuid4().hex[:12]}"
+        self.review_batch_id = review_batch_id or f"review_{uuid4().hex[:12]}"
+        self.work_item_id = work_item_id
+        self.analysis_run_id = analysis_run_id
+        self.workflow_id = workflow_id
+        self.event_sink = event_sink
         self.suggestion_repo = SuggestionRepository(self.settings)
-        self.llm = llm or self._create_llm()
+        self.llm = (llm or self._create_llm()) if enable_ai else None
         self.uses_internal_submit_tool = tools is None
-        self.tools = tools or [
-            get_node_detail,
-            get_node_path,
-            get_children,
-            search_similar_nodes,
-            validate_action,
-            self._submit_suggestion_tool(),
-        ]
+        self.tools = tools or AgentToolFactory(self.settings, resource_limits=resource_limits).suggestion_tools(self._submit_suggestion_tool())
         self.tool_map = {item.name: item for item in self.tools}
         self.max_iter = max_iter
         self.max_retry = max_retry
         self.trace_log: list[str] = []
 
-    def run(self, version_id: int) -> SuggestionGenerationResult:
+    def run(self, version_id: int, issue_ids: list[int] | None = None) -> SuggestionGenerationResult:
         issues = DiagnosisRepository(self.settings).list_pending_issues(version_id)
+        if issue_ids is not None:
+            allowed = set(issue_ids)
+            issues = [issue for issue in issues if int(issue["id"]) in allowed]
         records: list[SuggestionRecord] = []
         for issue in issues:
             record = self._rule_based_suggestion_record(version_id, issue)
@@ -110,8 +107,12 @@ class SuggestionAgent:
         name = tool_call["name"]
         args = tool_call.get("args") or {}
         self._trace(f"Action: {name} {json.dumps(args, ensure_ascii=False)}")
+        if self.event_sink:
+            self.event_sink({"event_type": "agent_step", "tool_name": name, "status": "running", "summary": {"action": "tool_started"}})
         observation = self.tool_map[name].invoke(args)
         self._trace(f"Observation: {observation}")
+        if self.event_sink:
+            self.event_sink({"event_type": "agent_tool_completed", "tool_name": name, "status": "completed", "summary": {"result_type": type(observation).__name__}})
         messages.append(
             ToolMessage(
                 content=json.dumps(observation, ensure_ascii=False),
@@ -128,6 +129,9 @@ class SuggestionAgent:
             suggestion_id = self.suggestion_repo.create_suggestion(
                 review_batch_id=self.review_batch_id,
                 suggestion=suggestion,
+                work_item_id=self.work_item_id,
+                analysis_run_id=self.analysis_run_id,
+                workflow_id=self.workflow_id,
             )
         return SuggestionRecord(
             id=suggestion_id,
@@ -174,6 +178,9 @@ class SuggestionAgent:
         suggestion_id = self.suggestion_repo.create_suggestion(
             review_batch_id=self.review_batch_id,
             suggestion=suggestion,
+            work_item_id=self.work_item_id,
+            analysis_run_id=self.analysis_run_id,
+            workflow_id=self.workflow_id,
         )
         return SuggestionRecord(
             id=suggestion_id,
@@ -194,6 +201,9 @@ class SuggestionAgent:
             suggestion_id = agent.suggestion_repo.create_suggestion(
                 review_batch_id=agent.review_batch_id,
                 suggestion=record,
+                work_item_id=agent.work_item_id,
+                analysis_run_id=agent.analysis_run_id,
+                workflow_id=agent.workflow_id,
             )
             return json.dumps(
                 {
@@ -206,16 +216,8 @@ class SuggestionAgent:
 
         return submit_suggestion
 
-    def _create_llm(self) -> ChatOpenAI | None:
-        if not self.settings.deepseek_api_key:
-            return None
-        return ChatOpenAI(
-            model=self.settings.deepseek_model,
-            base_url=self.settings.deepseek_base_url,
-            api_key=self.settings.deepseek_api_key,
-            temperature=0.1,
-            request_timeout=60,
-        )
+    def _create_llm(self) -> Any:
+        return ModelService(self.settings).get_chat_model(temperature=0.1)
 
     def _trace(self, message: str) -> None:
         self.trace_log.append(message)

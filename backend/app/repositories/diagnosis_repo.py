@@ -26,6 +26,9 @@ class DiagnosisRepository:
                 issue.risk_level,
                 issue.confidence,
                 issue.status,
+                issue.path,
+                issue.evidence,
+                issue.source,
             )
             for issue in issues
         ]
@@ -38,9 +41,9 @@ class DiagnosisRepository:
                 """
                 INSERT OR IGNORE INTO diagnosis_issue (
                     version_id, issue_type, node_id, node_name, description,
-                    reason, risk_level, confidence, status
+                    reason, risk_level, confidence, status, path, evidence, source
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 values,
             )
@@ -56,9 +59,9 @@ class DiagnosisRepository:
                 """
                 INSERT OR IGNORE INTO diagnosis_issue (
                     version_id, issue_type, node_id, node_name, description,
-                    reason, risk_level, confidence, status
+                    reason, risk_level, confidence, status, path, evidence, source
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     version_id,
@@ -70,6 +73,9 @@ class DiagnosisRepository:
                     issue.risk_level,
                     issue.confidence,
                     issue.status,
+                    issue.path,
+                    issue.evidence,
+                    issue.source,
                 ),
             )
             if cursor.lastrowid:
@@ -128,7 +134,7 @@ class DiagnosisRepository:
     def list_pending_issues(self, version_id: int, limit: int | None = None) -> list[dict]:
         query = """
             SELECT id, version_id, issue_type, node_id, node_name, description,
-                   reason, risk_level, confidence, status
+                   reason, risk_level, confidence, status, path, evidence, source
             FROM diagnosis_issue
             WHERE version_id = ? AND status = 'pending'
             ORDER BY
@@ -150,6 +156,64 @@ class DiagnosisRepository:
 
     def list_open_issues(self, version_id: int, limit: int | None = None) -> list[dict]:
         return self.list_pending_issues(version_id, limit=limit)
+
+    def list_issues(
+        self,
+        version_id: int,
+        *,
+        issue_type: str | None = None,
+        risk_level: str | None = None,
+    ) -> list[dict]:
+        clauses = ["issue.version_id = ?"]
+        params: list[object] = [version_id]
+        if issue_type:
+            clauses.append("issue.issue_type = ?")
+            params.append(issue_type)
+        if risk_level:
+            clauses.append("issue.risk_level = ?")
+            params.append(risk_level)
+        with connect(self.settings) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT issue.id, issue.version_id, issue.issue_type, issue.node_id,
+                       issue.node_name, COALESCE(issue.path, node.path_names) AS path,
+                       issue.description, issue.reason,
+                       COALESCE(issue.evidence, issue.description) AS evidence,
+                       issue.risk_level, issue.confidence,
+                       COALESCE(issue.source, 'structure_rule') AS source,
+                       issue.status
+                FROM diagnosis_issue issue
+                LEFT JOIN category_node node
+                  ON node.version_id = issue.version_id
+                 AND node.category_id = issue.node_id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY CASE issue.risk_level WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+                         issue.confidence DESC, issue.id
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_issue_detail(self, issue_id: int) -> dict | None:
+        with connect(self.settings) as connection:
+            row = connection.execute(
+                """
+                SELECT issue.id, issue.version_id, issue.issue_type, issue.node_id,
+                       issue.node_name, COALESCE(issue.path, node.path_names) AS path,
+                       issue.description, issue.reason,
+                       COALESCE(issue.evidence, issue.description) AS evidence,
+                       issue.risk_level, issue.confidence,
+                       COALESCE(issue.source, 'structure_rule') AS source,
+                       issue.status, node.parent_id
+                FROM diagnosis_issue issue
+                LEFT JOIN category_node node
+                  ON node.version_id = issue.version_id
+                 AND node.category_id = issue.node_id
+                WHERE issue.id = ?
+                """,
+                (issue_id,),
+            ).fetchone()
+        return dict(row) if row else None
 
     _STRUCTURE_TYPES = {"missing_parent", "deep_level", "wide_node", "duplicate_name", "orphan"}
 

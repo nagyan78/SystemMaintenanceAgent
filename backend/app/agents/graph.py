@@ -6,7 +6,7 @@ from langgraph.graph import END, START, StateGraph
 
 from backend.app.agents.nodes import (
     build_tree_node,
-    configure_workflow_runtime,
+    bind_workflow_node,
     content_diagnosis_node,
     diagnosis_planning_node,
     execute_action_node,
@@ -21,7 +21,7 @@ from backend.app.agents.nodes import (
     wait_human_review_node,
 )
 from backend.app.agents.states import TaxonomyGraphState
-from backend.app.config import Settings
+from backend.app.config import Settings, get_settings
 
 
 def create_workflow_id(file_id: int) -> str:
@@ -80,23 +80,22 @@ def build_taxonomy_graph(
     *,
     enable_suggestion_review: bool = True,
 ):
-    if settings is not None:
-        configure_workflow_runtime(settings)
+    runtime_settings = settings or get_settings()
     builder = StateGraph(TaxonomyGraphState)
 
-    builder.add_node("parse_excel_node", parse_excel_node)
-    builder.add_node("build_tree_node", build_tree_node)
-    builder.add_node("save_initial_version_node", save_initial_version_node)
-    builder.add_node("index_vector_node", index_vector_node)
-    builder.add_node("structure_diagnosis_node", structure_diagnosis_node)
-    builder.add_node("diagnosis_planning_node", diagnosis_planning_node)
-    builder.add_node("content_diagnosis_node", content_diagnosis_node)
-    builder.add_node("generate_suggestion_node", generate_suggestion_node)
-    builder.add_node("wait_human_review_node", wait_human_review_node)
-    builder.add_node("validate_action_node", validate_action_node)
-    builder.add_node("execute_action_node", execute_action_node)
-    builder.add_node("save_new_version_node", save_new_version_node)
-    builder.add_node("generate_report_node", generate_report_node)
+    builder.add_node("parse_excel_node", bind_workflow_node(parse_excel_node, runtime_settings))
+    builder.add_node("build_tree_node", bind_workflow_node(build_tree_node, runtime_settings))
+    builder.add_node("save_initial_version_node", bind_workflow_node(save_initial_version_node, runtime_settings))
+    builder.add_node("index_vector_node", bind_workflow_node(index_vector_node, runtime_settings))
+    builder.add_node("structure_diagnosis_node", bind_workflow_node(structure_diagnosis_node, runtime_settings))
+    builder.add_node("diagnosis_planning_node", bind_workflow_node(diagnosis_planning_node, runtime_settings))
+    builder.add_node("content_diagnosis_node", bind_workflow_node(content_diagnosis_node, runtime_settings))
+    builder.add_node("generate_suggestion_node", bind_workflow_node(generate_suggestion_node, runtime_settings))
+    builder.add_node("wait_human_review_node", bind_workflow_node(wait_human_review_node, runtime_settings))
+    builder.add_node("validate_action_node", bind_workflow_node(validate_action_node, runtime_settings))
+    builder.add_node("execute_action_node", bind_workflow_node(execute_action_node, runtime_settings))
+    builder.add_node("save_new_version_node", bind_workflow_node(save_new_version_node, runtime_settings))
+    builder.add_node("generate_report_node", bind_workflow_node(generate_report_node, runtime_settings))
 
     builder.add_edge(START, "parse_excel_node")
     builder.add_edge("parse_excel_node", "build_tree_node")

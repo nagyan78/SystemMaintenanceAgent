@@ -1,129 +1,77 @@
 # Project Agent Notes
 
-This file is for future coding agents working in this repository. Read it before changing code. Do not replace the product/design documents with assumptions from memory.
+本文件供后续开发代理使用。修改代码前必须阅读，但不要用记忆替代仓库中的当前事实。
 
 ## Project Identity
 
-- Project path: `/Users/flflfl/Documents/code/SystemMaintenanceAgent`
-- Project name: 产品标准体系维护智能体
-- Goal: build a local product taxonomy maintenance agent platform using FastAPI, LangGraph, LangChain, SQLite, Qdrant, and a Vue frontend.
-- Core workflow: upload Excel, parse taxonomy tree, save initial version, run structure diagnosis, run content diagnosis agent, generate suggestions agent, wait for human review, validate and execute approved actions, save a new version, and generate a report.
-- This is not meant to be a generic Excel uploader or a simple chatbot. The central product is a LangGraph-orchestrated taxonomy maintenance agent with human-in-the-loop review.
+- 项目路径：`D:\Code of my\Course\Professional Design\standard_product_system`
+- 项目名称：产品标准体系维护智能体
+- 产品定位：本地运行、由 LangGraph 编排、支持人工审核和版本持续维护的产品分类体系维护平台；不是通用 Excel 上传器，也不是泛聊天机器人。
+- 技术栈：FastAPI、LangGraph、LangChain、SQLite、Qdrant、Vue。
 
-## Source Of Truth
+## Source of Truth
 
-Use `dev-doc/` as the source of truth. Do not invent requirements or architecture details.
+先读 `dev-doc/README.md`。它定义文档优先级、当前有效文档和历史文档的使用方式。
 
-Read these first:
+开工最小阅读顺序：
 
-1. `dev-doc/00_开发里程碑索引.md`
-2. `dev-doc/10_LangGraph智能体工作流开发设计.md`
-3. `dev-doc/产品标准体系维护智能体_技术架构设计.md`
-4. `dev-doc/架构评审报告.md`
+1. `dev-doc/README.md`
+2. `dev-doc/CURRENT_IMPLEMENTATION.md`
+3. `dev-doc/ROADMAP.md`
+4. 与任务直接相关的 01～10 功能设计文档
+5. 涉及长期架构变更时读取 `dev-doc/12_标准产品体系维护多智能体最终设计.md`
 
-When implementing a node, also read the corresponding feature document:
+代码和自动化测试高于描述性文档。`dev-doc/archive/` 中的旧索引、评审、阶段计划和执行 prompt 是历史资料，不是当前开发路线。
 
-- `parse_excel_node`: `dev-doc/01_Excel上传与导入开发设计.md`
-- `build_tree_node`, `save_initial_version_node`: `dev-doc/02_分类树解析与体系概览开发设计.md`
-- `structure_diagnosis_node`: `dev-doc/03_结构诊断开发设计.md`
-- `index_vector_node`, `content_diagnosis_node`: `dev-doc/04_向量索引与内容诊断开发设计.md`
-- `generate_suggestion_node`: `dev-doc/05_智能建议生成开发设计.md`
-- `wait_human_review_node`: `dev-doc/06_人工审核开发设计.md`
-- `validate_action_node`, `execute_action_node`, `save_new_version_node`: `dev-doc/07_动作执行与版本管理开发设计.md`
-- `generate_report_node`: `dev-doc/08_导出与诊断报告开发设计.md`
-- frontend workflow/status/review/resume work: `dev-doc/09_前端工作台开发设计.md`
+## Current Direction
 
-Note: an older README reference to `dev-doc/00_分功能开发文档索引.md` is outdated. The current milestone entry is `dev-doc/00_开发里程碑索引.md`.
+当前优先完成 `ROADMAP.md` 的 R1“可信诊断与完整结果”：
 
-## Current Implemented State
+- 补齐 taxonomy/diagnosis 查询能力；
+- 建立全量轻筛查、候选召回、重点 Agent 深诊断的覆盖漏斗；
+- 让规划真实控制执行范围；
+- 完善节点、问题、证据和报告之间的可追溯关系。
 
-As of the current scaffold:
+不要在 R1～R3 用户闭环完成前扩张为分布式多 Agent 平台。
 
-- FastAPI backend exists and starts from `backend/app/main.py`.
-- SQLite initialization exists in `backend/app/db.py`.
-- Excel upload is implemented through `backend/app/api/files.py`, `backend/app/services/excel_service.py`, and `backend/app/repositories/file_repo.py`.
-- Basic tables exist: `uploaded_file`, `task_record`, `taxonomy_version`, `category_node`, `diagnosis_issue`, `adjustment_suggestion`, `operation_log`.
-- LangGraph scaffold exists in `backend/app/agents/graph.py`, `backend/app/agents/nodes.py`, and `backend/app/agents/states.py`.
-- The current LangGraph nodes are still MVP placeholders with hardcoded/demo results. They are not yet real business service calls.
-- `wait_human_review_node` uses LangGraph interrupt, and tests cover interrupt/resume with `Command(resume=...)`.
-- API modules for taxonomy, diagnosis, suggestions, versions, and chat are still placeholders returning 501.
-- Vue frontend scaffold exists under `frontend/`, with upload and overview screens plus placeholder routes.
-- Qdrant, LangChain agent loops, workflow API, streaming events, SQLite checkpointer, real taxonomy parsing, real diagnosis, suggestion generation, version execution, and report generation are not fully implemented yet.
+## Engineering Rules
 
-## Current Development Direction
-
-Follow the milestone plan, not the old 01-to-10 linear sequence.
-
-Current target from `dev-doc/00_开发里程碑索引.md`:
-
-- M1: 工作流骨架接真实数据（确定性闭环）
-- Replace hardcoded graph node outputs with real service calls.
-- M1 only implements deterministic workflow pieces: Excel parse, taxonomy tree build, initial version save, structure diagnosis, and template report.
-- M1 must not call LLM or Qdrant.
-- M2 and later introduce intelligent agent behavior through content diagnosis, suggestion generation, and report generation.
-
-The architecture review says the current project feels like a workflow because LLM/tool-calling/ReAct loops are missing. The intended shape is:
-
-- LangGraph remains the deterministic orchestration spine.
-- Agent behavior belongs inside selected nodes/services:
-  - `diagnosis_planning_node`
-  - `content_diagnosis_node`
-  - `generate_suggestion_node`
-  - `generate_report_node`
-- Deterministic nodes must stay deterministic.
-
-## Important Engineering Rules From Dev Docs
-
-- LangGraph nodes must be thin: call services, update state, decide routing.
-- Do not put Excel parsing, tree building, SQL, Qdrant logic, prompt construction, or action execution logic directly inside nodes.
-- Rule-based diagnosis should not use LLM.
-- LLM must not directly modify Excel, SQLite, or Qdrant.
-- All high-risk actions require human review before execution.
-- Original Excel files must remain unchanged; new versions and exports are separate artifacts.
-- In M1, do not hardcode values such as `structure_issue_count = 44`; that value must come from real data when M1 is implemented.
+- LangGraph 节点必须保持薄，只负责 service 调用、state 更新和路由；
+- Excel 解析、树构建、SQL、Qdrant、prompt 和动作执行逻辑不得直接堆在 node 中；
+- 规则诊断不使用 LLM；
+- LLM 不直接修改 Excel、SQLite 或 Qdrant；
+- 高风险动作必须先人工审核；
+- 原始 Excel 不覆盖，新版本和导出物单独保存；
+- 副作用必须具备 workflow/run、版本、审核和幂等证据；
+- 前端不展示原始 chain-of-thought，只展示决策摘要、工具和证据；
+- 节点失败不得被后续节点覆盖为 completed；
+- 不硬编码诊断数量、评分或演示结果。
 
 ## Local Environment
 
-- A Python virtual environment already exists at `.venv/`.
-- Use `.venv/bin/python` for backend commands.
-- Dependencies are installed in `.venv`, including FastAPI, pytest, pandas, openpyxl, langchain-ollama, and langgraph.
-- Do not install packages globally with system Python.
-- Frontend dependencies are installed under `frontend/node_modules/`.
-- `.gitignore` already ignores `.venv/`, `frontend/node_modules/`, `frontend/dist/`, `frontend/*.tsbuildinfo`, and runtime data directories.
+当前环境是 Windows PowerShell。
 
-Useful commands:
+```powershell
+.\.venv\Scripts\python.exe -m pytest backend/tests
+.\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 
-```bash
-.venv/bin/python -m pytest backend/tests
-.venv/bin/python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+Set-Location frontend
+npm.cmd run test:contract
+npm.cmd run build
+npm.cmd run dev
 ```
 
-```bash
-cd frontend
-npm run test:contract
-npm run build
-npm run dev
-```
+不要使用全局 Python 安装依赖。前端依赖位于 `frontend/node_modules/`。
 
 ## Verification Baseline
 
-Before claiming backend work is complete, run:
+2026-07-11 实测后端基线：56 passed，1 个第三方 Starlette TestClient 弃用警告。
 
-```bash
-.venv/bin/python -m pytest backend/tests
-```
+声明后端完成前运行全部后端测试；声明前端完成前运行 contract test 和 build。文档修改至少检查链接、文件名和状态声明。
 
-Before claiming frontend work is complete, run from `frontend/`:
+## Git and Workspace
 
-```bash
-npm run test:contract
-npm run build
-```
-
-The latest observed backend baseline was 17 tests passing with one third-party FastAPI/Starlette TestClient deprecation warning.
-
-## Git And Workspace Notes
-
-- The repository may contain user-authored or generated changes. Do not revert unrelated changes.
-- At the time this file was created, `dev-doc/` had uncommitted document changes, including the migration from the old functional index to `00_开发里程碑索引.md`.
-- Preserve user edits unless explicitly asked to change them.
+- 工作树可能包含用户正在进行的修改；不要回退无关变更；
+- 未提交改动不等于已发布能力，在文档中应注明事实范围；
+- 保留历史设计文件，除非用户明确授权归档或删除；
+- 修改与用户现有改动重叠时应先检查 diff，并尽量做最小修改。

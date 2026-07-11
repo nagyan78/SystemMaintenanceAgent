@@ -1,11 +1,15 @@
 # PRD-01 审核多轮与版本续跑（循环节点方案）
 
+> 状态：PLANNED  
+> 路线归属：R2 安全变更与版本闭环  
+> 注意：本文描述目标需求，不代表双循环和版本续跑已经实现。
+
 - **文档编号**：PRD-01
 - **名称**：审核多轮与版本续跑（双循环节点）
 - **状态**：待评审
 - **作者**：调度达（AgentsOrchestrator）
 - **日期**：2026-07-09
-- **关联方案**：`智能体协同-审核多轮与版本续跑修复方案.md`、`功能增强脑暴与优先级.md`（A1/D1 的前置基础）
+- **历史关联方案**：`../archive/智能体协同-审核多轮与版本续跑修复方案.md`、`../archive/功能增强脑暴与优先级.md`
 
 ---
 
@@ -112,7 +116,7 @@ GET /api/versions?file_id=12
 - AC-2：`start(mode=from_version, version_id=v1.1)` 后，新一轮 `current_version_id == 37`，内容诊断候选集为增量/deferred，不重复全量。
 - AC-3：v1.2.base_version_id == v1.1.id（base bug 修正生效）。
 - AC-4：deferred 建议在下一轮 `generate_suggestion_node` 输出中出现，且标注"此前您暂缓"。
-- AC-5：回归测试 `backend/tests` 全绿（目标 ≥ 现有 54 passed）。
+- AC-5：回归测试 `backend/tests` 全绿，且不得低于开工时记录的测试基线（2026-07-11 为 56 passed）。
 
 ---
 

@@ -1,5 +1,7 @@
 # LangGraph 智能体工作流开发设计
 
+> **参考设计（REFERENCE）**：节点契约和分层原则仍可参考，但 M1～M5 顺序、当前实现状态和 Thought-Action-Observation 展示要求已过期。当前路线见 `ROADMAP.md`，冲突裁决见 `DOCUMENT_CONFLICTS.md`。
+
 > 功能编号：F10
 > 里程碑归属：M1-M5 全程（编排文档）
 > 独立测试目标：系统能通过 LangGraph 编排 Excel 解析、分类树构建、结构诊断、诊断规划、内容诊断、建议生成、人工审核、动作执行、版本保存和报告生成，支持中断、恢复、状态查询、流式进度、人工审核和失败重试。
@@ -558,7 +560,7 @@ class DiagnosisPlan(BaseModel):
     estimated_candidates: int = 200
 ```
 
-> 详见 `00_开发里程碑索引.md` §5.5
+> 历史设计详见 `archive/00_开发里程碑索引.md` §5.5
 
 ### 8.7 content_diagnosis_node（修订·🤖智能体·ReAct loop）
 
@@ -1294,7 +1296,7 @@ def test_structure_diagnosis_node_updates_state(fake_diagnosis_service):
 
 ## 17. 开发顺序（M1-M5 里程碑制）
 
-> **修订说明**（2026-07-05）：原"阶段 1-6"已替换为 M1-M5 里程碑制。详见 `00_开发里程碑索引.md`。
+> **历史修订说明**（2026-07-05）：原"阶段 1-6"曾替换为 M1-M5 里程碑制，旧索引现位于 `archive/00_开发里程碑索引.md`。当前路线见 `ROADMAP.md`。
 
 ### M1：工作流骨架接真实数据（确定性闭环）
 

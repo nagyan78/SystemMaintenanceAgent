@@ -26,6 +26,8 @@ def _settings(tmp_path):
 
 def _insert_version_with_issue(settings: Settings, issue_type: str = "wide_node") -> int:
     init_db(settings)
+    with connect(settings) as connection:
+        connection.execute("INSERT OR IGNORE INTO uploaded_file (id, file_name, file_path) VALUES (1, 'test.xlsx', 'test.xlsx')")
     version_id = VersionRepository(settings).create_version(
         file_id=1,
         version_no="v1.0",

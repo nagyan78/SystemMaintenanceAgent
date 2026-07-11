@@ -6,11 +6,7 @@ from backend.app.main import create_app
 def test_planned_api_boundaries_return_not_implemented():
     client = TestClient(create_app())
 
-    cases = [
-        ("GET", "/api/taxonomy/overview", "taxonomy"),
-        ("POST", "/api/diagnosis/run", "diagnosis"),
-        ("POST", "/api/chat", "chat"),
-    ]
+    cases = [("POST", "/api/chat", "chat")]
 
     for method, path, module in cases:
         response = client.request(method, path)

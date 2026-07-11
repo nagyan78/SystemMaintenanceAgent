@@ -1,4 +1,4 @@
-import { apiGet, apiPost } from './client'
+import { API_BASE_URL, apiGet, apiPost } from './client'
 
 export type StartWorkflowResponse = {
   task_id: string
@@ -25,7 +25,14 @@ export type WorkflowStatus = {
   executed_action_count?: number
   review_batch_id?: string
   report_path?: string
+  report_preview_url?: string
+  report_download_url?: string
   error_message?: string
+  enable_ai_analysis?: boolean
+  model_provider?: string | null
+  model_name?: string | null
+  analysis_run_id?: string | null
+  work_item_counts?: Record<string, number>
 }
 
 export type ResumeRequest = {
@@ -45,9 +52,13 @@ export function getWorkflowStatus(taskId: string) {
   return apiGet<WorkflowStatus>(`/workflows/${taskId}`)
 }
 
-export function workflowEvents(taskId: string): EventSource {
+export function workflowEvents(taskId: string, afterId = 0): EventSource {
   const baseUrl = (localStorage.getItem('apiBaseUrl') || API_BASE_URL).replace(/\/$/, '')
-  return new EventSource(`${baseUrl}/workflows/${taskId}/events`)
+  return new EventSource(`${baseUrl}/workflows/${taskId}/events?after_id=${afterId}`)
+}
+
+export function cancelWorkflow(taskId: string) {
+  return apiPost<{task_id:string;status:string}>(`/workflows/${taskId}/cancel`)
 }
 
 export function resumeWorkflow(taskId: string, payload: ResumeRequest) {

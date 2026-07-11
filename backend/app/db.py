@@ -16,6 +16,9 @@ def connect(settings: Settings) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(db_path)
     connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA journal_mode = WAL")
+    connection.execute("PRAGMA busy_timeout = 5000")
     return connection
 
 
@@ -140,11 +143,72 @@ def init_db(settings: Settings) -> None:
                 created_time DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS agent_run (
+                id TEXT PRIMARY KEY,
+                workflow_id TEXT NOT NULL,
+                agent_type TEXT NOT NULL,
+                version_id INTEGER NOT NULL,
+                plan_revision INTEGER DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'pending',
+                model_profile TEXT DEFAULT 'default',
+                budget TEXT DEFAULT '{}',
+                coverage TEXT DEFAULT '{}',
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_time DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_work_item (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                subject_type TEXT NOT NULL,
+                subject_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempt INTEGER DEFAULT 0,
+                max_attempts INTEGER DEFAULT 3,
+                worker_id TEXT,
+                lease_expires_at DATETIME,
+                input_payload TEXT DEFAULT '{}',
+                result_payload TEXT DEFAULT '{}',
+                error_code TEXT,
+                error_message TEXT,
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (run_id) REFERENCES agent_run(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_event (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workflow_id TEXT NOT NULL,
+                run_id TEXT,
+                work_item_id TEXT,
+                agent_name TEXT,
+                event_type TEXT NOT NULL,
+                phase TEXT,
+                tool_name TEXT,
+                status TEXT,
+                attempt INTEGER,
+                latency_ms INTEGER,
+                model TEXT,
+                token_usage TEXT DEFAULT '{}',
+                summary TEXT DEFAULT '{}',
+                evidence_refs TEXT DEFAULT '[]',
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
             CREATE UNIQUE INDEX IF NOT EXISTS idx_category_node_version_category
             ON category_node(version_id, category_id);
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_unique_rule
             ON diagnosis_issue(version_id, issue_type, node_id, description);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_work_item_unique
+            ON agent_work_item(run_id, subject_type, subject_id);
+
+            CREATE INDEX IF NOT EXISTS idx_agent_work_item_status
+            ON agent_work_item(run_id, status);
+
+            CREATE INDEX IF NOT EXISTS idx_agent_event_workflow_sequence
+            ON agent_event(workflow_id, id);
             """
         )
         _ensure_columns(
@@ -156,12 +220,26 @@ def init_db(settings: Settings) -> None:
                 "version_id": "INTEGER",
                 "interrupt_payload": "TEXT",
                 "result_payload": "TEXT",
+                "enable_ai_analysis": "INTEGER DEFAULT 0",
+                "model_provider": "TEXT",
+                "model_name": "TEXT",
+                "start_time": "DATETIME",
+                "end_time": "DATETIME",
             },
         )
         _ensure_columns(
             connection,
             "adjustment_suggestion",
-            {"review_batch_id": "TEXT"},
+            {"review_batch_id": "TEXT", "old_value": "TEXT", "new_value": "TEXT",
+             "work_item_id": "TEXT", "analysis_run_id": "TEXT", "workflow_id": "TEXT"},
+        )
+        _ensure_columns(
+            connection,
+            "diagnosis_issue",
+            {"path": "TEXT", "evidence": "TEXT", "source": "TEXT"},
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_suggestion_work_item ON adjustment_suggestion(work_item_id) WHERE work_item_id IS NOT NULL"
         )
 
 

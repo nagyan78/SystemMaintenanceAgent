@@ -1,6 +1,7 @@
 """Thin LangGraph workflow nodes for the taxonomy maintenance MVP."""
 
 from collections.abc import Callable
+from contextvars import ContextVar
 from typing import Any
 
 from langgraph.types import interrupt
@@ -25,7 +26,7 @@ from backend.app.services.version_service import VersionService
 
 
 StateUpdate = dict[str, Any]
-_runtime_settings: Settings = get_settings()
+_workflow_settings: ContextVar[Settings | None] = ContextVar("workflow_settings", default=None)
 
 
 class WorkflowNodeError(RuntimeError):
@@ -34,9 +35,19 @@ class WorkflowNodeError(RuntimeError):
         self.error_code = error_code
 
 
-def configure_workflow_runtime(settings: Settings) -> None:
-    global _runtime_settings
-    _runtime_settings = settings
+def bind_workflow_node(fn: Callable[[TaxonomyGraphState], StateUpdate], settings: Settings):
+    """Bind settings to one node invocation without cross-workflow globals."""
+    def bound(state: TaxonomyGraphState) -> StateUpdate:
+        token = _workflow_settings.set(settings)
+        try:
+            return fn(state)
+        finally:
+            _workflow_settings.reset(token)
+    return bound
+
+
+def _current_settings() -> Settings:
+    return _workflow_settings.get() or get_settings()
 
 
 def _complete_step(
@@ -67,6 +78,10 @@ def node_guard(
     fn: Callable[[TaxonomyGraphState], StateUpdate],
 ) -> Callable[[TaxonomyGraphState], StateUpdate]:
     def wrapped(state: TaxonomyGraphState) -> StateUpdate:
+        if state.task_id:
+            task = TaskRepository(_current_settings()).get_task(state.task_id)
+            if task and task.get("status") == "cancelled":
+                return {"status": "cancelled", "current_step": "cancelled"}
         try:
             return fn(state)
         except WorkflowNodeError as exc:
@@ -109,7 +124,7 @@ def _require_review_batch_id(state: TaxonomyGraphState) -> str:
 
 def parse_excel_node(state: TaxonomyGraphState) -> StateUpdate:
     file_id = _require_file_id(state)
-    result = ExcelService(_runtime_settings).parse_uploaded_file(file_id)
+    result = ExcelService(_current_settings()).parse_uploaded_file(file_id)
     return _complete_step(
         state,
         "parse_excel_node",
@@ -124,7 +139,7 @@ def parse_excel_node(state: TaxonomyGraphState) -> StateUpdate:
 
 
 def build_tree_node(state: TaxonomyGraphState) -> StateUpdate:
-    result = TaxonomyService(_runtime_settings).build_tree(_require_file_id(state))
+    result = TaxonomyService(_current_settings()).build_tree(_require_file_id(state))
     return _complete_step(
         state,
         "build_tree_node",
@@ -137,7 +152,7 @@ def build_tree_node(state: TaxonomyGraphState) -> StateUpdate:
 
 
 def save_initial_version_node(state: TaxonomyGraphState) -> StateUpdate:
-    result = VersionService(_runtime_settings).create_initial_version(_require_file_id(state))
+    result = VersionService(_current_settings()).create_initial_version(_require_file_id(state))
     return _complete_step(
         state,
         "save_initial_version_node",
@@ -153,7 +168,7 @@ def save_initial_version_node(state: TaxonomyGraphState) -> StateUpdate:
 
 
 def index_vector_node(state: TaxonomyGraphState) -> StateUpdate:
-    result = VectorIndexService(_runtime_settings).index_version(
+    result = VectorIndexService(_current_settings()).index_version(
         _require_current_version_id(state)
     )
     return _complete_step(
@@ -167,7 +182,7 @@ def index_vector_node(state: TaxonomyGraphState) -> StateUpdate:
 
 
 def structure_diagnosis_node(state: TaxonomyGraphState) -> StateUpdate:
-    result = DiagnosisService(_runtime_settings).run_structure_diagnosis(
+    result = DiagnosisService(_current_settings()).run_structure_diagnosis(
         _require_current_version_id(state)
     )
     return _complete_step(
@@ -182,10 +197,13 @@ def structure_diagnosis_node(state: TaxonomyGraphState) -> StateUpdate:
 
 def diagnosis_planning_node(state: TaxonomyGraphState) -> StateUpdate:
     version_id = _require_current_version_id(state)
-    plan = DiagnosisPlanningAgent(_runtime_settings).run(
-        structure_stats=state.structure_issue_summary,
-        tree_overview=TaxonomyService(_runtime_settings).get_planning_overview(version_id),
-    )
+    if state.enable_ai_analysis:
+        plan = DiagnosisPlanningAgent(_current_settings()).run(
+            structure_stats=state.structure_issue_summary,
+            tree_overview=TaxonomyService(_current_settings()).get_planning_overview(version_id),
+        )
+    else:
+        plan = DiagnosisPlan(sample_strategy="focused", estimated_candidates=0)
     return _complete_step(
         state,
         "diagnosis_planning_node",
@@ -199,20 +217,40 @@ def content_diagnosis_node(state: TaxonomyGraphState) -> StateUpdate:
     version_id = _require_current_version_id(state)
     plan = DiagnosisPlan.model_validate(state.diagnosis_plan or {})
     plan.estimated_candidates = min(plan.estimated_candidates, 50)  # hard cap to prevent excessive API calls
-    issues = ContentDiagnosisAgent(_runtime_settings).run(version_id, plan)
+    if state.enable_ai_analysis:
+        from backend.app.agents.content_diagnosis_subgraph import build_content_diagnosis_subgraph
+        subgraph_result = build_content_diagnosis_subgraph(settings=_current_settings()).invoke(
+            {"workflow_id": state.workflow_id, "version_id": version_id, "plan": plan.model_dump()},
+            config={"max_concurrency": _current_settings().agent_llm_max_concurrency},
+        )
+        issues_count = int(subgraph_result.get("issue_count", 0))
+        analysis_run_id = subgraph_result.get("run_id")
+        work_item_counts = subgraph_result.get("work_item_counts", {})
+    else:
+        issues_count, analysis_run_id, work_item_counts = 0, None, {}
     return _complete_step(
         state,
         "content_diagnosis_node",
         current_step="content_diagnosis",
         progress=68,
-        content_issue_count=len(issues),
+        content_issue_count=issues_count,
+        analysis_run_id=analysis_run_id,
+        work_item_counts=work_item_counts,
     )
 
 
 def generate_suggestion_node(state: TaxonomyGraphState) -> StateUpdate:
     version_id = _require_current_version_id(state)
-    result = SuggestionAgent(_runtime_settings).run(version_id)
-    if result.generated_count == 0:
+    from backend.app.agents.suggestion_subgraph import build_suggestion_subgraph
+    from backend.app.services.model_service import ModelService
+    llm = ModelService(_current_settings()).get_chat_model() if state.enable_ai_analysis else None
+    result = build_suggestion_subgraph(settings=_current_settings(), llm=llm).invoke(
+        {"workflow_id": state.workflow_id, "version_id": version_id, "analysis_run_id": state.analysis_run_id},
+        config={"max_concurrency": _current_settings().agent_llm_max_concurrency},
+    )
+    generated_count = int(result.get("suggestion_count", 0))
+    review_batch_id = result.get("review_batch_id")
+    if generated_count == 0:
         return _complete_step(
             state,
             "generate_suggestion_node",
@@ -225,8 +263,8 @@ def generate_suggestion_node(state: TaxonomyGraphState) -> StateUpdate:
         "generate_suggestion_node",
         current_step="generate_suggestion",
         progress=78,
-        suggestion_count=result.generated_count,
-        review_batch_id=result.review_batch_id,
+        suggestion_count=generated_count,
+        review_batch_id=review_batch_id,
     )
 
 
@@ -239,7 +277,7 @@ def wait_human_review_node(state: TaxonomyGraphState) -> StateUpdate:
         "required_actions": ["approve", "reject", "edit"],
     }
     if state.task_id:
-        TaskRepository(_runtime_settings).update_task(
+        TaskRepository(_current_settings()).update_task(
             task_id=state.task_id,
             status="waiting_review",
             current_step="human_review",
@@ -251,7 +289,7 @@ def wait_human_review_node(state: TaxonomyGraphState) -> StateUpdate:
     review_decision = decision.get("decision")
     if review_decision not in {"approve", "reject", "edit"}:
         raise WorkflowNodeError("INVALID_REVIEW_DECISION", "Review decision is invalid.")
-    approved_count = ReviewService(_runtime_settings).apply_workflow_decision(
+    approved_count = ReviewService(_current_settings()).apply_workflow_decision(
         review_batch_id,
         decision,
     )
@@ -269,7 +307,7 @@ def wait_human_review_node(state: TaxonomyGraphState) -> StateUpdate:
 
 def validate_action_node(state: TaxonomyGraphState) -> StateUpdate:
     review_batch_id = _require_review_batch_id(state)
-    results = ActionService(_runtime_settings).validate_approved_actions(review_batch_id)
+    results = ActionService(_current_settings()).validate_approved_actions(review_batch_id)
     failed = [item for item in results if not item.valid]
     if failed:
         message = "; ".join(item.reason for item in failed)
@@ -285,7 +323,7 @@ def validate_action_node(state: TaxonomyGraphState) -> StateUpdate:
 def execute_action_node(state: TaxonomyGraphState) -> StateUpdate:
     version_id = _require_current_version_id(state)
     review_batch_id = _require_review_batch_id(state)
-    result = ActionService(_runtime_settings).execute_actions(version_id, review_batch_id)
+    result = ActionService(_current_settings()).execute_actions(version_id, review_batch_id)
     return _complete_step(
         state,
         "execute_action_node",
@@ -306,7 +344,7 @@ def save_new_version_node(state: TaxonomyGraphState) -> StateUpdate:
         from backend.app.schemas.taxonomy import TaxonomyNodeRecord
 
         nodes = [TaxonomyNodeRecord.model_validate(item) for item in state.executed_nodes]
-    result = VersionService(_runtime_settings).save_new_version(
+    result = VersionService(_current_settings()).save_new_version(
         base_version_id=current_version_id,
         review_batch_id=review_batch_id,
         nodes=nodes,
@@ -329,7 +367,7 @@ def generate_report_node(state: TaxonomyGraphState) -> StateUpdate:
     version_id = state.current_version_id or state.base_version_id
     if version_id is None:
         raise WorkflowNodeError("MISSING_VERSION_ID", "Workflow requires version_id.")
-    result = ReportService(_runtime_settings).generate_diagnosis_report(version_id)
+    result = ReportService(_current_settings()).generate_diagnosis_report(version_id)
     return _complete_step(
         state,
         "generate_report_node",
@@ -349,7 +387,7 @@ def _record_progress(
     if not state.task_id:
         return
     version_id = update.get("current_version_id") or state.current_version_id
-    task_repo = TaskRepository(_runtime_settings)
+    task_repo = TaskRepository(_current_settings())
     task_repo.update_task(
         task_id=state.task_id,
         status=update["status"],
@@ -378,7 +416,7 @@ def _record_failure(
 ) -> None:
     if not state.task_id:
         return
-    TaskRepository(_runtime_settings).record_event(
+    TaskRepository(_current_settings()).record_event(
         workflow_id=state.workflow_id,
         thread_id=state.thread_id,
         task_id=state.task_id,

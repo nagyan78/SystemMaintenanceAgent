@@ -1,11 +1,14 @@
 # PRD-02 分类咨询 Copilot（C1）
 
+> 状态：DEFERRED / BACKLOG  
+> 当前不进入 R1～R3。待可信诊断、版本闭环和报告闭环完成后重新评估。
+
 - **文档编号**：PRD-02
 - **名称**：分类咨询 Copilot（基于 Qdrant 召回 + LLM 解释）
 - **状态**：待评审
 - **作者**：调度达（AgentsOrchestrator）
 - **日期**：2026-07-09
-- **关联方案**：`功能增强脑暴与优先级.md`（C1）、`backend/app/vectorstores/qdrant_store.py`、`backend/app/services/vector_index_service.py`
+- **历史关联方案**：`../archive/功能增强脑暴与优先级.md`（C1）；代码资产为 `backend/app/vectorstores/qdrant_store.py`、`backend/app/services/vector_index_service.py`
 
 ---
 

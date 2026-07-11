@@ -1,5 +1,7 @@
 # M5 里程碑执行 Prompt
 
+> **历史执行材料（ARCHIVED）**：不得直接作为当前开发 prompt 使用。当前事实和路线见 `CURRENT_IMPLEMENTATION.md`、`ROADMAP.md`。
+
 > 用途：复制以下 Prompt 给 AI 编程助手，启动 M5 前端工作台实现。
 > 项目路径：/Users/flflfl/Documents/code/SystemMaintenanceAgent
 > 前置条件：M1-M4 后端已完成，版本 API、workflow API、review API、export API 可用。

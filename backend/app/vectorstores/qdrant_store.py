@@ -22,11 +22,13 @@ class QdrantStore:
         *,
         embeddings: OpenAIEmbeddings | None = None,
         client: QdrantClient | None = None,
+        embedding_semaphore: Any | None = None,
     ) -> None:
         self.settings = settings
         self.collection_name = settings.qdrant_collection
         self.embeddings = embeddings or _create_embeddings(settings)
         self.client = client or QdrantClient(url=settings.qdrant_url)
+        self.embedding_semaphore = embedding_semaphore
 
     def create_collection(self, vector_size: int = 1536) -> None:
         if self.client.collection_exists(self.collection_name):
@@ -72,7 +74,11 @@ class QdrantStore:
         node_text: str,
         top_k: int = 10,
     ) -> list[dict[str, Any]]:
-        query_vector = self.embeddings.embed_query(node_text)
+        if self.embedding_semaphore is None:
+            query_vector = self.embeddings.embed_query(node_text)
+        else:
+            with self.embedding_semaphore:
+                query_vector = self.embeddings.embed_query(node_text)
         query_filter = Filter(
             must=[
                 FieldCondition(

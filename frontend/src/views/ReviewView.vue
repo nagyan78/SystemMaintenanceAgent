@@ -18,9 +18,8 @@
           <span class="badge">已拒绝 {{ statusCounts.rejected }}</span>
         </div>
         <div class="action-row">
-          <button class="button primary" :disabled="loading || selectedIds.length === 0" @click="applyDecision('approve')">批准选中</button>
-          <button class="button secondary" :disabled="loading || selectedIds.length === 0" @click="applyDecision('reject')">拒绝选中</button>
-          <button class="button primary" :disabled="loading || statusCounts.approved === 0" @click="executeApproved">执行已批准</button>
+          <button class="button primary" :disabled="loading || selectedIds.length === 0" @click="applyDecision('approve')">接受选中建议</button>
+          <button class="button secondary" :disabled="loading || statusCounts.pending + statusCounts.edited === 0" @click="applyDecision('reject')">拒绝其余建议</button>
           <RouterLink v-if="taskId" class="button secondary" :to="`/workflow/${taskId}`">查看工作流</RouterLink>
           <RouterLink class="button secondary" :to="state.fileId ? `/versions?file_id=${state.fileId}` : '/versions'">查看版本</RouterLink>
           <RouterLink v-if="currentReportVersionId" class="button secondary" :to="`/report/${currentReportVersionId}`">查看报告</RouterLink>
@@ -34,14 +33,16 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
 import SuggestionTable from '../components/SuggestionTable.vue'
-import { applyReviewDecision, executeReviewBatch, getReviewBatch } from '../api/reviews'
+import { applyReviewDecision, getReviewBatch } from '../api/reviews'
 import type { SuggestionRecord } from '../api/reviews'
+import { resumeWorkflow } from '../api/workflows'
 import { useWorkspace } from '../state/workspace'
 
 const route = useRoute()
+const router = useRouter()
 const { state, patch } = useWorkspace()
 const reviewBatchId = String(route.params.reviewBatchId)
 const taskId = String(route.query.task_id || state.taskId || '')
@@ -72,49 +73,49 @@ function toggle(id: number) {
 }
 
 async function applyDecision(decision: 'approve' | 'reject') {
-  if (!selectedIds.value.length) return
+  if (!taskId) {
+    error.value = '缺少 task_id，无法恢复工作流。请从工作流页面进入审核。'
+    return
+  }
   loading.value = true
   error.value = ''
   message.value = ''
   try {
-    const ids = [...selectedIds.value]
-    await applyReviewDecision(reviewBatchId, {
+    const pendingIds = suggestions.value.filter(isSelectable).map(item => item.id)
+    const approvedIds = decision === 'approve' ? [...selectedIds.value] : []
+    const rejectedIds = decision === 'approve'
+      ? pendingIds.filter(id => !approvedIds.includes(id))
+      : pendingIds
+    const decisionPayload = {
       decision,
-      approved_suggestion_ids: decision === 'approve' ? ids : [],
-      rejected_suggestion_ids: decision === 'reject' ? ids : [],
+      approved_suggestion_ids: approvedIds,
+      rejected_suggestion_ids: rejectedIds,
       edits: [],
       operator: 'local_user',
-      reject_reason: decision === 'reject' ? 'manual reject' : null,
+      reject_reason: rejectedIds.length ? 'manual reject' : null,
+    }
+    if (taskId.startsWith('diagnosis_') || !taskId) {
+      await applyReviewDecision(reviewBatchId, decisionPayload)
+      await loadBatch()
+      message.value = decision === 'approve'
+        ? `已接受 ${approvedIds.length} 条建议；系统不会自动执行修改。`
+        : `已拒绝 ${rejectedIds.length} 条建议。`
+      return
+    }
+    const result = await resumeWorkflow(taskId, decisionPayload)
+    patch({
+      currentVersionId: typeof result.current_version_id === 'number' ? result.current_version_id : state.currentVersionId,
+      newVersionId: typeof result.new_version_id === 'number' ? result.new_version_id : state.newVersionId,
+      versionNo: typeof result.version_no === 'string' ? result.version_no : state.versionNo,
+      reportPath: typeof result.report_path === 'string' ? result.report_path : state.reportPath,
+      reviewBatchId,
     })
-    message.value = decision === 'approve' ? `已批准 ${ids.length} 条建议，可继续执行生成新版本。` : `已拒绝 ${ids.length} 条建议。`
-    await loadBatch()
+    message.value = decision === 'approve'
+      ? `已批准 ${approvedIds.length} 条建议，工作流已继续执行。`
+      : `已拒绝 ${rejectedIds.length} 条建议，工作流已继续生成报告。`
+    await router.push(`/workflow/${taskId}`)
   } catch (err) {
     error.value = err instanceof Error ? err.message : '提交失败'
-  } finally {
-    loading.value = false
-  }
-}
-
-async function executeApproved() {
-  loading.value = true
-  error.value = ''
-  message.value = ''
-  try {
-    const result = await executeReviewBatch(reviewBatchId)
-    if (result.new_version_id) {
-      patch({
-        currentVersionId: result.new_version_id,
-        newVersionId: result.new_version_id,
-        versionNo: result.new_version_no || state.versionNo,
-        reviewBatchId,
-      })
-      message.value = `执行完成，已生成版本 ${result.new_version_no || result.new_version_id}，执行 ${result.executed_count} 条。`
-    } else {
-      message.value = result.message || '当前没有已批准且待执行的建议。'
-    }
-    await loadBatch()
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : '执行失败'
   } finally {
     loading.value = false
   }

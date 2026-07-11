@@ -40,6 +40,37 @@ class DiagnosisService:
             summary=summary,
         )
 
+    def run_content_rule_diagnosis(self, version_id: int) -> int:
+        """Run deterministic content checks; never invokes an LLM."""
+        nodes = TaxonomyRepository(self.settings).list_nodes(version_id)
+        issues: list[DiagnosisIssueRecord] = []
+        ambiguous_names = {"其他", "其它", "综合", "通用", "未分类"}
+        for node in nodes:
+            name = str(node["category_name"] or "").strip()
+            path = str(node.get("path_names") or name)
+            if name in ambiguous_names:
+                issues.append(DiagnosisIssueRecord(
+                    issue_type="ambiguous_name", node_id=int(node["category_id"]),
+                    node_name=name, description=f"节点名称「{name}」无法明确表达分类边界",
+                    reason="名称过于宽泛，需要结合业务上下文人工确认",
+                    risk_level="low", confidence=1.0, path=path,
+                    evidence=f"名称命中确定性模糊词规则：{name}", source="content_rule",
+                ))
+            synonyms = _split_synonyms(node.get("syn_list"))
+            normalized = [item.casefold().strip() for item in synonyms if item.strip()]
+            if name.casefold() in normalized or len(normalized) != len(set(normalized)):
+                issues.append(DiagnosisIssueRecord(
+                    issue_type="synonym_format_issue", node_id=int(node["category_id"]),
+                    node_name=name, description="同义词包含节点主名称或重复值",
+                    reason="同义词列表存在可由规则确定的重复或自引用",
+                    risk_level="low", confidence=1.0, path=path,
+                    evidence=f"原始同义词：{node.get('syn_list') or ''}", source="content_rule",
+                ))
+        repo = DiagnosisRepository(self.settings)
+        for issue in issues:
+            repo.create_issue(version_id=version_id, issue=issue)
+        return len(issues)
+
     def _missing_parent_issues(
         self,
         nodes: list[dict],
@@ -128,3 +159,12 @@ class DiagnosisService:
                 )
             )
         return issues
+
+
+def _split_synonyms(value: object) -> list[str]:
+    if value is None:
+        return []
+    text = str(value).strip().strip("[]")
+    if not text:
+        return []
+    return [item.strip().strip("'\"") for item in text.replace("；", ",").replace(";", ",").split(",") if item.strip()]

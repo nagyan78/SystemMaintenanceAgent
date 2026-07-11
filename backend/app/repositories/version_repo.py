@@ -44,17 +44,19 @@ class VersionRepository:
         clauses = []
         params: list[object] = []
         if file_id is not None:
-            clauses.append("file_id = ?")
+            clauses.append("version.file_id = ?")
             params.append(file_id)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with connect(self.settings) as connection:
             rows = connection.execute(
                 f"""
-                SELECT id, file_id, version_no, description, quality_score,
-                       snapshot_path, created_time
-                FROM taxonomy_version
+                SELECT version.id, version.file_id, version.version_no,
+                       version.description, version.quality_score,
+                       version.snapshot_path, version.created_time,
+                       (SELECT COUNT(*) FROM category_node node WHERE node.version_id = version.id) AS node_count
+                FROM taxonomy_version version
                 {where}
-                ORDER BY id
+                ORDER BY version.id
                 """,
                 params,
             ).fetchall()
@@ -89,3 +91,10 @@ class VersionRepository:
                 (file_id, version_no),
             ).fetchone()
         return dict(row) if row else None
+
+    def update_quality_score(self, version_id: int, quality_score: float) -> None:
+        with connect(self.settings) as connection:
+            connection.execute(
+                "UPDATE taxonomy_version SET quality_score = ? WHERE id = ?",
+                (quality_score, version_id),
+            )

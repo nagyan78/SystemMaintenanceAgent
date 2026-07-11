@@ -15,6 +15,9 @@ export type WorkspaceState = {
   versionNo: string | null
   reviewBatchId: string | null
   reportPath: string | null
+  enableAiAnalysis: boolean
+  modelProvider: 'ollama' | 'deepseek'
+  modelName: string
 }
 
 const STORAGE_KEY = 'taxonomy-workbench-state'
@@ -34,6 +37,9 @@ const defaultState = (): WorkspaceState => ({
   versionNo: null,
   reviewBatchId: null,
   reportPath: null,
+  enableAiAnalysis: false,
+  modelProvider: 'ollama',
+  modelName: 'qwen3:8b',
 })
 
 const state = reactive(defaultState())

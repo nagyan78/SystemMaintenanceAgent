@@ -154,6 +154,11 @@ class ActionService:
             return
         if suggestion.action_type == "mark_as_valid":
             return
+        if suggestion.action_type == "split_subtree":
+            # M4 MVP records the reviewed split plan but deliberately does not
+            # mutate the taxonomy snapshot. This is a successful no-op, not an
+            # execution failure (see F07 §2.3 and §4).
+            return
         if suggestion.action_type == "add_node":
             self._add_node(nodes, suggestion)
             return

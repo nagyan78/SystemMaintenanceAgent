@@ -8,7 +8,6 @@ from backend.app.db import connect
 from backend.app.repositories.taxonomy_repo import TaxonomyRepository
 from backend.app.schemas.suggestion import ActionValidationResult, AdjustmentSuggestion
 
-_runtime_settings: Settings = get_settings()
 REMOVE_SYNONYM_KEYS = (
     "synonyms_to_remove",
     "remove_synonyms",
@@ -38,11 +37,6 @@ ALLOWED_ACTION_TYPES = {
 }
 
 
-def configure_validation_tool_runtime(settings: Settings) -> None:
-    global _runtime_settings
-    _runtime_settings = settings
-
-
 @tool
 def validate_action(action_json: str) -> dict:
     """预校验维护建议动作是否合法。"""
@@ -51,7 +45,7 @@ def validate_action(action_json: str) -> dict:
         suggestion = AdjustmentSuggestion.model_validate(payload)
     except Exception as exc:
         return ActionValidationResult(valid=False, reason=f"建议 JSON 结构非法：{exc}").model_dump()
-    result = validate_suggestion_action(suggestion, _runtime_settings)
+    result = validate_suggestion_action(suggestion, get_settings())
     return result.model_dump()
 
 
@@ -59,7 +53,7 @@ def validate_suggestion_action(
     suggestion: AdjustmentSuggestion,
     settings: Settings | None = None,
 ) -> ActionValidationResult:
-    runtime_settings = settings or _runtime_settings
+    runtime_settings = settings or get_settings()
     if suggestion.action_type not in ALLOWED_ACTION_TYPES:
         return _invalid("action_type 不在允许枚举中。")
     if suggestion.risk_level not in {"low", "medium", "high"}:

@@ -1,201 +1,110 @@
-# 标准产品体系维护智能体
+# 产品标准体系维护智能体
 
-这是一个面向“产品标准分类体系维护”的本地智能体平台骨架。当前版本重点完成了 FastAPI 后端基础工程：本地启动、健康检查、Excel 上传、SQLite 初始化，以及后续分类树、诊断、建议、版本、问答等模块的 API 边界。
+本项目是一套本地运行的产品分类体系持续维护平台。系统通过 FastAPI、LangGraph、SQLite、Qdrant 和 Vue 串联 Excel 导入、分类树解析、结构与内容诊断、建议生成、人工审核、动作执行、版本保存和报告导出。
 
-当前代码还不是完整诊断系统，`taxonomy`、`diagnosis`、`suggestions`、`versions`、`chat` 等业务接口已预留路由，但会返回 `501 Not Implemented`，等待后续功能接入。
+它不是通用 Excel 上传器，也不是泛聊天机器人。核心目标是让分类体系维护过程可审核、可追溯、可生成新版本。
+
+## 当前状态
+
+当前已经具备一条可运行的主工作流：
+
+```text
+上传 Excel
+→ 解析分类树
+→ 保存初始版本
+→ 建立向量索引
+→ 结构诊断
+→ 诊断规划与内容诊断
+→ 生成建议
+→ 人工审核
+→ 校验并执行动作
+→ 保存新版本
+→ 生成报告
+```
+
+workflow、suggestions、reviews、versions 和 reports 已有实际 API。taxonomy、diagnosis 和 chat 仍存在未完成的查询边界；诊断覆盖率、run 级证据链、新版本复检和持续维护闭环仍需补齐。
+
+完整事实基线见 [当前实现矩阵](dev-doc/CURRENT_IMPLEMENTATION.md)，近期路线见 [ROADMAP](dev-doc/ROADMAP.md)。
 
 ## 环境要求
 
-- Python 3.10 或更高版本
-- macOS / Linux / Windows 均可
-- 不需要单独安装 SQLite；项目使用 Python 标准库 `sqlite3`
+- Windows PowerShell
+- Python 3.11+
+- Node.js 18+
+- 可选：Docker/Qdrant（内容诊断需要）
+- 可选：DeepSeek 与 DashScope API Key（LLM/Embedding 路径需要）
 
-## 安装依赖
+项目已包含 `.venv` 和 `frontend/node_modules` 时，无需重复全局安装依赖。
 
-macOS / Linux：
+## 配置
 
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
+复制 `.env.example` 为 `.env`，按需要填写：
+
+```dotenv
+QDRANT_URL=http://localhost:6333
+QDRANT_COLLECTION=taxonomy_nodes
+DEEPSEEK_API_KEY=
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-chat
+DASHSCOPE_API_KEY=
+EMBEDDING_MODEL=text-embedding-v2
 ```
 
-Windows PowerShell：
+## 启动
+
+后端：
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-## 启动后端
-
-macOS / Linux：
-
-```bash
-.venv/bin/python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
-```
-
-Windows PowerShell：
+前端：
 
 ```powershell
-.\.venv\Scripts\python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+Set-Location frontend
+npm.cmd install
+npm.cmd run dev
 ```
 
-启动后访问：
+默认地址：
 
-- API 文档：http://127.0.0.1:8000/docs
-- 健康检查：http://127.0.0.1:8000/api/health
+- 前端：`http://127.0.0.1:5173`
+- 后端：`http://127.0.0.1:8000`
+- Swagger：`http://127.0.0.1:8000/docs`
 
-健康检查正常返回示例：
+完整演示步骤见 [RUNBOOK.md](RUNBOOK.md)。
 
-```json
-{
-  "status": "ok",
-  "app": "standard-taxonomy-agent"
-}
-```
-
-## 上传样例 Excel
-
-启动后端后，可以用样例文件测试上传接口。
-
-macOS / Linux：
-
-```bash
-curl -F "file=@data/sample/产品标准体系.xlsx" \
-  http://127.0.0.1:8000/api/files/upload
-```
-
-成功返回示例：
-
-```json
-{
-  "file_id": 1,
-  "task_id": "import_excel_xxxxxxxxxxxx",
-  "file_name": "产品标准体系.xlsx",
-  "row_count": 21090,
-  "column_count": 6,
-  "columns": [
-    "category_id",
-    "category_name",
-    "category_group_id",
-    "category_pids",
-    "category_group_name",
-    "syn_list"
-  ],
-  "status": "uploaded"
-}
-```
-
-上传后会自动生成本地运行数据：
-
-```text
-data/app.db
-data/uploads/
-```
-
-这些文件和目录已在 `.gitignore` 中忽略。
-
-## 当前可用接口
-
-| 方法 | 路径 | 状态 |
-| --- | --- | --- |
-| GET | `/api/health` | 可用 |
-| POST | `/api/files/upload` | 可用 |
-| GET | `/api/files` | 可用 |
-| GET | `/api/files/{file_id}` | 可用 |
-| GET | `/api/taxonomy/overview` | 占位，返回 501 |
-| POST | `/api/diagnosis/run` | 占位，返回 501 |
-| GET | `/api/suggestions` | 占位，返回 501 |
-| GET | `/api/versions` | 占位，返回 501 |
-| POST | `/api/chat` | 占位，返回 501 |
-
-## 运行测试
-
-macOS / Linux：
-
-```bash
-.venv/bin/python -m pytest -q
-```
-
-Windows PowerShell：
+## 验证
 
 ```powershell
-.\.venv\Scripts\python -m pytest -q
+.\.venv\Scripts\python.exe -m pytest backend/tests
+Set-Location frontend
+npm.cmd run test:contract
+npm.cmd run build
 ```
 
-当前测试覆盖：
-
-- FastAPI 健康检查
-- SQLite 表结构初始化
-- Excel 上传、字段识别、文件记录写入
-- 后续业务模块 API 占位边界
-- LangGraph 状态模型默认值
+2026-07-11 实测基线：后端 56 passed；前端 contract 和 production build 通过。
 
 ## 项目结构
 
 ```text
-.
-├── backend/
-│   ├── app/
-│   │   ├── main.py                 # FastAPI 应用入口
-│   │   ├── config.py               # 本地配置
-│   │   ├── db.py                   # SQLite 初始化和连接
-│   │   ├── api/                    # API 路由
-│   │   ├── agents/                 # LangGraph 工作流骨架
-│   │   ├── repositories/           # SQLite 数据访问
-│   │   ├── schemas/                # Pydantic 响应模型
-│   │   ├── services/               # 业务服务
-│   │   ├── tools/                  # 分类树、校验、导出工具占位
-│   │   └── vectorstores/           # Qdrant 适配器占位
-│   └── tests/                      # 后端测试
-├── data/
-│   └── sample/                     # 样例 Excel
-├── dev-doc/                        # PRD 和技术设计文档
-├── docs/
-│   └── superpowers/plans/          # 实施计划
-├── requirements.txt
-└── README.md
+backend/          FastAPI、LangGraph、service、repository 和测试
+frontend/         Vue 工作台
+dev-doc/          当前设计、功能文档、backlog、产品材料和历史归档
+data/             SQLite、上传文件、导出物和报告（运行时生成）
+requirements.txt Python 依赖
+RUNBOOK.md        演示与故障排查手册
 ```
 
-## 数据库说明
+文档从 [dev-doc/README.md](dev-doc/README.md) 开始阅读。
 
-项目启动时会自动创建 SQLite 数据库：
+## 当前开发重点
 
-```text
-data/app.db
-```
+当前优先完成 R1“可信诊断与完整结果”：
 
-已初始化的主要表：
+1. 补齐 taxonomy 和 diagnosis 查询 API；
+2. 建立全量轻筛查、候选召回和 Agent 深诊断的覆盖漏斗；
+3. 让诊断规划真正约束执行；
+4. 完善问题、节点、证据和报告之间的追溯关系。
 
-- `uploaded_file`
-- `task_record`
-- `taxonomy_version`
-- `category_node`
-- `diagnosis_issue`
-- `adjustment_suggestion`
-- `operation_log`
-
-如果想手动查看数据库，可以安装 SQLite 命令行工具；运行项目本身不需要。
-
-macOS 安装查看工具：
-
-```bash
-brew install sqlite
-sqlite3 data/app.db
-```
-
-## 后续开发顺序
-
-建议按 `dev-doc/00_分功能开发文档索引.md` 中的顺序继续：
-
-1. Excel 上传与导入
-2. 分类树解析与体系概览
-3. 结构诊断
-4. 向量索引与内容诊断
-5. 智能建议生成
-6. 人工审核
-7. 动作执行与版本管理
-8. 导出与诊断报告
-9. 前端工作台
-
-当前骨架已经为这些模块预留了后端目录和 API 入口。

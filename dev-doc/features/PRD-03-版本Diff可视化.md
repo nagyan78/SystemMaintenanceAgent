@@ -1,11 +1,14 @@
 # PRD-03 版本 Diff 可视化（D1）
 
+> 状态：PARTIAL / PLANNED  
+> 路线归属：R2/R3。后端 Diff service/API 和前端基础选择能力已存在；完整过滤、树高亮和路径展示尚未完成。
+
 - **文档编号**：PRD-03
 - **名称**：版本 Diff 可视化（多版本迭代对比）
 - **状态**：待评审
 - **作者**：调度达（AgentsOrchestrator）
 - **日期**：2026-07-09
-- **关联方案**：`功能增强脑暴与优先级.md`（D1）、`智能体协同-审核多轮与版本续跑修复方案.md`（PRD-01 前置）、`backend/app/schemas/version.py::VersionDiff`
+- **历史关联方案**：`../archive/功能增强脑暴与优先级.md`（D1）、`../archive/智能体协同-审核多轮与版本续跑修复方案.md`；当前 schema 为 `backend/app/schemas/version.py::VersionDiff`
 
 ---
 
@@ -27,7 +30,7 @@
 - 前端可在 ≤2 次点击内定位任一变更节点并高亮其树位置。
 
 ### 范围内 / 外
-- **内**：Diff 计算（repo）、`GET /api/versions/{from}/diff/{to}`、前端 Diff 视图。
+- **内**：验证现有 Diff 计算、`GET /api/versions/{from_version_id}/diff?target_version_id={to_version_id}`、前端 Diff 视图。
 - **外**：Diff 自动生成"自然语言报告"（D3 另案）、批量版本对比（>2 版）。
 
 ---
@@ -48,7 +51,7 @@
 | FR-2 | 验证 `GET /api/versions/{version_id}/diff?target_version_id=` 返回结构与 `VersionDiff` 一致 | P0 |
 | FR-3 | 前端 `VersionDiffView`：左右/上下双栏展示 from→to；按变更类型 Tab 过滤（**本 PRD 核心新增**） | P0 |
 | FR-4 | 每个变更项可点击 → 在分类树中高亮对应节点（复用 `TaxonomyTreeView`） | P1 |
-| FR-5 | 每个变更项可点击 → 在分类树中高亮对应节点（复用 `TaxonomyTreeView`） | P1 |
+| FR-5 | 展示五类变更的汇总数量，并支持按变更类型过滤 | P1 |
 | FR-6 | 版本页提供"对比选择器"（选 from/to），默认当前版 vs 上一版 | P1 |
 | FR-7 | Diff 项展示路径变化（moved 显示"从 A/B/C → A/D/C"） | P2 |
 

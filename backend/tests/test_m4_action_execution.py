@@ -28,6 +28,8 @@ def _settings(tmp_path):
 
 def _seed_version(settings: Settings) -> int:
     init_db(settings)
+    with connect(settings) as connection:
+        connection.execute("INSERT OR IGNORE INTO uploaded_file (id,file_name,file_path) VALUES (1,'test.xlsx','test.xlsx')")
     version_id = VersionRepository(settings).create_version(
         file_id=1,
         version_no="v1.0",
@@ -166,6 +168,32 @@ def test_clean_synonym_generates_new_version_without_changing_base(tmp_path):
     with connect(settings) as connection:
         log_count = connection.execute("SELECT COUNT(*) FROM operation_log").fetchone()[0]
     assert log_count >= 1
+
+
+def test_split_subtree_is_recorded_as_successful_noop_in_m4_mvp(tmp_path):
+    settings = _settings(tmp_path)
+    base_version_id = _seed_version(settings)
+    issue_id = _create_issue(settings, base_version_id, 20, "wide_node")
+    review_batch_id = "batch-split-noop"
+    _create_approved_suggestion(
+        settings,
+        review_batch_id=review_batch_id,
+        version_id=base_version_id,
+        issue_id=issue_id,
+        action_type="split_subtree",
+        target_node_id=20,
+        payload={"plan": "按语义拆分为多个中间类目"},
+    )
+
+    result = ActionService(settings).execute_actions(base_version_id, review_batch_id)
+
+    assert result.executed_count == 1
+    assert result.failed_count == 0
+    assert result.nodes == TaxonomyRepository(settings).list_node_records(base_version_id)
+    suggestions = SuggestionRepository(settings).list_suggestions(
+        review_batch_id=review_batch_id
+    )
+    assert [item.status for item in suggestions] == ["executed"]
 
 
 def test_clean_synonym_accepts_ai_payload_aliases(tmp_path):

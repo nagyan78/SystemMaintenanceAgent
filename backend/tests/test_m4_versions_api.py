@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
 from backend.app.config import Settings
-from backend.app.db import init_db
+from backend.app.db import connect, init_db
 from backend.app.main import create_app
 from backend.app.repositories.taxonomy_repo import TaxonomyRepository
 from backend.app.repositories.version_repo import VersionRepository
@@ -21,6 +21,8 @@ def _settings(tmp_path):
 
 def _seed_versions(settings: Settings) -> tuple[int, int]:
     init_db(settings)
+    with connect(settings) as connection:
+        connection.execute("INSERT OR IGNORE INTO uploaded_file (id,file_name,file_path) VALUES (1,'test.xlsx','test.xlsx')")
     repo = VersionRepository(settings)
     taxonomy_repo = TaxonomyRepository(settings)
     v1 = repo.create_version(file_id=1, version_no="v1.0", description="base")

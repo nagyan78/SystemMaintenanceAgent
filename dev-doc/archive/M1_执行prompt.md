@@ -1,5 +1,7 @@
 # M1 里程碑执行 Prompt
 
+> **历史执行材料（ARCHIVED）**：不得直接作为当前开发 prompt 使用。当前事实和路线见 `CURRENT_IMPLEMENTATION.md`、`ROADMAP.md`。
+
 > 用途：把以下 prompt 整体复制给 AI 编程助手（Cursor / Claude Code / 工程师 agent），启动 M1 里程碑的代码实现。
 > 项目路径：/Users/flflfl/Documents/code/SystemMaintenanceAgent
 

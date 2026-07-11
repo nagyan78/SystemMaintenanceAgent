@@ -78,23 +78,30 @@ class ExcelService:
             saved_path.unlink(missing_ok=True)
             raise ExcelValidationError("Excel file could not be read.", "INVALID_EXCEL") from exc
 
-        sheet = workbook.worksheets[0]
-        columns = [
-            "" if value is None else str(value).strip()
-            for value in next(sheet.iter_rows(max_row=1, values_only=True))
-        ]
-        missing_columns = sorted(REQUIRED_COLUMNS.difference(columns))
-        if missing_columns:
+        try:
+            sheet = workbook.worksheets[0]
+            columns, row_count = _inspect_worksheet(sheet)
+            missing_columns = sorted(REQUIRED_COLUMNS.difference(columns))
+            if missing_columns:
+                joined = ", ".join(missing_columns)
+                raise ExcelValidationError(
+                    f"Excel missing required columns: {joined}",
+                    "INVALID_COLUMNS",
+                )
+            sheet_name = sheet.title
+        except ExcelValidationError:
+            workbook.close()
             saved_path.unlink(missing_ok=True)
-            joined = ", ".join(missing_columns)
-            raise ExcelValidationError(f"Excel missing required columns: {joined}", "INVALID_COLUMNS")
+            raise
+        finally:
+            workbook.close()
 
         return UploadedFileMetadata(
             file_name=original_name,
             file_path=saved_path,
             file_size=file_size,
-            sheet_name=sheet.title,
-            row_count=max(sheet.max_row - 1, 0),
+            sheet_name=sheet_name,
+            row_count=row_count,
             column_count=len(columns),
             columns=columns,
         )
@@ -115,22 +122,26 @@ class ExcelService:
         except Exception as exc:
             raise ExcelValidationError("Excel file could not be read.", "INVALID_EXCEL") from exc
 
-        sheet = workbook.worksheets[0]
-        columns = [
-            "" if value is None else str(value).strip()
-            for value in next(sheet.iter_rows(max_row=1, values_only=True))
-        ]
-        missing_columns = sorted(REQUIRED_COLUMNS.difference(columns))
-        if missing_columns:
-            joined = ", ".join(missing_columns)
-            raise ExcelValidationError(f"Excel missing required columns: {joined}", "INVALID_COLUMNS")
+        try:
+            sheet = workbook.worksheets[0]
+            columns, row_count = _inspect_worksheet(sheet)
+            missing_columns = sorted(REQUIRED_COLUMNS.difference(columns))
+            if missing_columns:
+                joined = ", ".join(missing_columns)
+                raise ExcelValidationError(
+                    f"Excel missing required columns: {joined}",
+                    "INVALID_COLUMNS",
+                )
+            sheet_name = sheet.title
+        finally:
+            workbook.close()
 
         return ParseExcelResult(
             file_id=file_id,
             file_name=file_record["file_name"],
             file_path=file_path,
-            sheet_name=sheet.title,
-            row_count=max(sheet.max_row - 1, 0),
+            sheet_name=sheet_name,
+            row_count=row_count,
             column_count=len(columns),
             columns=columns,
         )
@@ -139,3 +150,19 @@ class ExcelService:
         safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(original_name).name)
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
         return f"{timestamp}_{safe_name}"
+
+
+def _inspect_worksheet(sheet) -> tuple[list[str], int]:
+    """Read headers and count populated data rows without relying on dimensions.
+
+    Some valid XLSX writers omit worksheet dimension metadata, leaving
+    ``ReadOnlyWorksheet.max_row`` as ``None``. Iterating also handles those files.
+    """
+    rows = sheet.iter_rows(values_only=True)
+    try:
+        header = next(rows)
+    except StopIteration as exc:
+        raise ExcelValidationError("Excel worksheet is empty.", "EMPTY_FILE") from exc
+    columns = ["" if value is None else str(value).strip() for value in header]
+    row_count = sum(1 for row in rows if any(value is not None for value in row))
+    return columns, row_count

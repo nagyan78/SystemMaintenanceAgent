@@ -59,6 +59,11 @@ const navItems = computed<NavItem[]>(() => {
   return [
     { label: '上传分析', icon: '⬆', to: '/upload', match: '/upload' },
     {
+      label: '诊断结果', icon: '🩺',
+      to: versionId ? `/diagnosis/${versionId}` : '/upload',
+      match: versionId ? `/diagnosis/${versionId}` : '',
+    },
+    {
       label: '工作流',
       icon: '🔄',
       to: state.taskId ? `/workflow/${state.taskId}` : '/upload',

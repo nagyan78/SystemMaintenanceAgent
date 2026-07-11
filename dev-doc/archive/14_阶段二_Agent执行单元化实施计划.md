@@ -1,5 +1,7 @@
 # 阶段二：Agent 执行单元化 Implementation Plan
 
+> **历史实施计划（SUPERSEDED）**：保留用于追溯四阶段方案，不再决定当前开发顺序。当前路线见 `ROADMAP.md`。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 将内容诊断和建议生成从单个 LangGraph 节点内的串行黑盒循环，升级为候选/问题级可持久化、可并发、可重试、可观测的执行单元。
