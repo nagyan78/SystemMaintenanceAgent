@@ -15,6 +15,7 @@ from backend.app.agents.nodes import (
     generate_failed_report_node,
     generate_suggestion_node,
     index_vector_node,
+    index_result_version_node,
     load_verification_context_node,
     load_version_context_node,
     parse_excel_node,
@@ -138,6 +139,7 @@ def build_taxonomy_graph(
     builder.add_node("build_tree_node", build_tree_node)
     builder.add_node("save_initial_version_node", save_initial_version_node)
     builder.add_node("index_vector_node", index_vector_node)
+    builder.add_node("index_result_version_node", index_result_version_node)
     builder.add_node("structure_diagnosis_node", structure_diagnosis_node)
     builder.add_node(
         "baseline_quality_evaluation_node", baseline_quality_evaluation_node
@@ -318,6 +320,24 @@ def build_taxonomy_graph(
     )
     builder.add_conditional_edges(
         "save_new_version_node",
+        lambda state: route_after_required_node(state, "index_result_version_node"),
+        {
+            "index_result_version_node": "index_result_version_node",
+            "generate_failed_report_node": "generate_failed_report_node",
+        },
+    )
+    builder.add_conditional_edges(
+        "index_result_version_node",
+        lambda state: route_after_required_node(
+            state, "result_quality_evaluation_node"
+        ),
+        {
+            "result_quality_evaluation_node": "result_quality_evaluation_node",
+            "generate_failed_report_node": "generate_failed_report_node",
+        },
+    )
+    builder.add_conditional_edges(
+        "result_quality_evaluation_node",
         lambda state: route_after_required_node(state, "generate_report_node"),
         {
             "generate_report_node": "generate_report_node",

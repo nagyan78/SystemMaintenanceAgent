@@ -224,11 +224,36 @@ def index_vector_node(state: TaxonomyGraphState) -> StateUpdate:
     result = VectorIndexService(_runtime_settings).index_version(
         _require_current_version_id(state)
     )
+    if result.status == "failed":
+        raise WorkflowNodeError(
+            "VECTOR_INDEX_FAILED",
+            result.error_message or "Vector index failed.",
+        )
     return _complete_step(
         state,
         "index_vector_node",
         current_step="index_vector",
         progress=40,
+        vector_index_status=result.status,
+        vector_index_count=result.indexed_count,
+    )
+
+
+def index_result_version_node(state: TaxonomyGraphState) -> StateUpdate:
+    result = VectorIndexService(_runtime_settings).index_version(
+        _require_current_version_id(state),
+        changed_category_ids=state.affected_node_ids or None,
+    )
+    if result.status == "failed":
+        raise WorkflowNodeError(
+            "RESULT_VECTOR_INDEX_FAILED",
+            result.error_message or "Result version index failed.",
+        )
+    return _complete_step(
+        state,
+        "index_result_version_node",
+        current_step="index_result_version",
+        progress=96,
         vector_index_status=result.status,
         vector_index_count=result.indexed_count,
     )
@@ -595,6 +620,9 @@ save_initial_version_node = node_guard(
     save_initial_version_node,
 )
 index_vector_node = node_guard("index_vector_node", index_vector_node)
+index_result_version_node = node_guard(
+    "index_result_version_node", index_result_version_node
+)
 structure_diagnosis_node = node_guard(
     "structure_diagnosis_node",
     structure_diagnosis_node,

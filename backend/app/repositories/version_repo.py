@@ -198,6 +198,28 @@ class VersionRepository:
                 (quality_score, version_id),
             )
 
+    def update_vector_index_status(
+        self,
+        version_id: int,
+        status: str,
+        *,
+        increment_generation: bool = False,
+    ) -> None:
+        generation_sql = (
+            "vector_index_generation = vector_index_generation + 1,"
+            if increment_generation
+            else ""
+        )
+        with connect(self.settings) as connection:
+            connection.execute(
+                f"""
+                UPDATE taxonomy_version
+                SET {generation_sql} vector_index_status = ?
+                WHERE id = ?
+                """,
+                (status, version_id),
+            )
+
 
 def _minor_version(version_no: str) -> int:
     if not version_no.startswith("v1."):

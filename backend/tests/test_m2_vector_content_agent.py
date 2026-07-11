@@ -319,5 +319,12 @@ def test_graph_topology_runs_planning_between_structure_and_content(tmp_path):
     graph = build_taxonomy_graph(settings=_settings(tmp_path))
     edges = {(edge.source, edge.target) for edge in graph.get_graph().edges}
 
-    assert ("structure_diagnosis_node", "diagnosis_planning_node") in edges
+    assert (
+        "structure_diagnosis_node",
+        "baseline_quality_evaluation_node",
+    ) in edges
+    assert (
+        "baseline_quality_evaluation_node",
+        "diagnosis_planning_node",
+    ) in edges
     assert ("diagnosis_planning_node", "content_diagnosis_node") in edges
