@@ -245,6 +245,19 @@ def index_result_version_node(state: TaxonomyGraphState) -> StateUpdate:
         _require_current_version_id(state),
         changed_category_ids=state.affected_node_ids or None,
     )
+    if result.status == "failed":
+        raise WorkflowNodeError(
+            "RESULT_VECTOR_INDEX_FAILED",
+            result.error_message or "Result version index failed.",
+        )
+    return _complete_step(
+        state,
+        "index_result_version_node",
+        current_step="index_result_version",
+        progress=96,
+        vector_index_status=result.status,
+        vector_index_count=result.indexed_count,
+    )
 
 
 def index_verification_versions_node(state: TaxonomyGraphState) -> StateUpdate:
@@ -273,19 +286,6 @@ def index_verification_versions_node(state: TaxonomyGraphState) -> StateUpdate:
         progress=35,
         vector_index_status=combined_status,
         vector_index_count=sum(item.indexed_count for item in results),
-    )
-    if result.status == "failed":
-        raise WorkflowNodeError(
-            "RESULT_VECTOR_INDEX_FAILED",
-            result.error_message or "Result version index failed.",
-        )
-    return _complete_step(
-        state,
-        "index_result_version_node",
-        current_step="index_result_version",
-        progress=96,
-        vector_index_status=result.status,
-        vector_index_count=result.indexed_count,
     )
 
 

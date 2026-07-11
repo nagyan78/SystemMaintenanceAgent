@@ -136,6 +136,8 @@ class SuggestionAgent:
         suggestion = AdjustmentSuggestion.model_validate(args["suggestion"])
         if self.uses_internal_submit_tool:
             payload = _load_observation(observation)
+            if not payload.get("valid"):
+                return None
             suggestion_id = int(payload["suggestion_id"])
         else:
             suggestion_id = self.suggestion_repo.create_suggestion(

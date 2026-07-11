@@ -90,15 +90,23 @@ function onStep(data: Record<string, unknown>) {
   emit('progress', data)
 }
 
+function closeSource() {
+  source?.close()
+  source = null
+}
+
 function onInterrupt(data: Record<string, unknown>) {
+  closeSource()
   emit('interrupt', data)
 }
 
 function onCompleted() {
+  closeSource()
   emit('completed')
 }
 
 function onFailed(data: Record<string, unknown>) {
+  closeSource()
   emit('failed', (data.message as string) || 'workflow failed')
 }
 

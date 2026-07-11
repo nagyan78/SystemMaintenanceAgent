@@ -275,3 +275,102 @@ def test_graph_topology_routes_content_to_suggestion_and_m4_execution_after_vali
     assert ("execute_action_node", "save_new_version_node") in edges
     assert ("save_new_version_node", "index_result_version_node") in edges
     assert ("result_quality_evaluation_node", "verification_node") in edges
+
+
+class FakeSuggestionLLMValidationFail:
+    """LLM that first submits an invalid suggestion, then a valid one.
+
+    Exercises the internal submit_suggestion tool path where
+    uses_internal_submit_tool=True and validation can fail.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, messages):
+        self.calls += 1
+        if self.calls == 1:
+            return AIMessage(
+                content="Thought: 提交建议。",
+                tool_calls=[
+                    {
+                        "id": "call_submit_bad",
+                        "name": "submit_suggestion",
+                        "args": {
+                            "suggestion": {
+                                "issue_id": 1,
+                                "version_id": 1,
+                                "action_type": "clean_synonym",
+                                "target_node_id": 999,
+                                "target_node_name": "不存在",
+                                "old_parent_id": None,
+                                "new_parent_id": None,
+                                "old_name": None,
+                                "new_name": None,
+                                "action_payload": {"synonyms_to_remove": ["AirPods"]},
+                                "reason": "测试",
+                                "suggestion": "删除同义词",
+                                "risk_level": "medium",
+                                "confidence": 0.9,
+                                "need_confirm": True,
+                            }
+                        },
+                    }
+                ],
+            )
+        return AIMessage(
+            content="Thought: 修正建议后重新提交。",
+            tool_calls=[
+                {
+                    "id": "call_submit_good",
+                    "name": "submit_suggestion",
+                    "args": {
+                        "suggestion": {
+                            "issue_id": 1,
+                            "version_id": 1,
+                            "action_type": "clean_synonym",
+                            "target_node_id": 11,
+                            "target_node_name": "苹果",
+                            "old_parent_id": None,
+                            "new_parent_id": None,
+                            "old_name": None,
+                            "new_name": None,
+                            "action_payload": {"synonyms_to_remove": ["AirPods"]},
+                            "reason": "水果节点混入电子产品词",
+                            "suggestion": "删除 AirPods 同义词",
+                            "risk_level": "medium",
+                            "confidence": 0.9,
+                            "need_confirm": True,
+                        }
+                    },
+                }
+            ],
+        )
+
+
+def test_suggestion_agent_internal_submit_validation_failure_recovers(tmp_path):
+    """Internal submit_suggestion tool validation failure must not crash with KeyError.
+
+    Regression test: when uses_internal_submit_tool=True and the LLM submits
+    an invalid suggestion, the tool returns {"valid": false} without
+    suggestion_id. The agent must return None and let the LLM retry, not
+    raise KeyError('suggestion_id').
+    """
+    from backend.app.services.suggestion_service import SuggestionAgent
+
+    settings = _settings(tmp_path)
+    version_id = _insert_version_with_issue(settings, "synonym_pollution")
+
+    agent = SuggestionAgent(
+        settings,
+        llm=FakeSuggestionLLMValidationFail(),
+    )
+
+    result = agent.run(version_id)
+
+    assert result.generated_count == 1
+    assert result.suggestions[0].action_type == "clean_synonym"
+    assert agent.llm.calls >= 2
