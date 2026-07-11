@@ -191,6 +191,13 @@ class VersionRepository:
             current = self.get_version(parent_id)
         return False
 
+    def update_quality_score(self, version_id: int, quality_score: float) -> None:
+        with connect(self.settings) as connection:
+            connection.execute(
+                "UPDATE taxonomy_version SET quality_score = ? WHERE id = ?",
+                (quality_score, version_id),
+            )
+
 
 def _minor_version(version_no: str) -> int:
     if not version_no.startswith("v1."):

@@ -91,9 +91,13 @@ class ReportService:
         quality_score = (
             float(version["quality_score"])
             if version.get("quality_score") is not None
-            else _calc_quality_score(overview.node_count, total_issues)
+            else None
         )
-        quality_label = _quality_label(quality_score)
+        quality_line = (
+            f"体系健康度：{_quality_label(quality_score)}（{quality_score:.1f}/100）"
+            if quality_score is not None
+            else "体系健康度：待执行 quality-v1 评价"
+        )
         suggestion_lines = _render_suggestions(suggestions)
         operation_lines = _render_operations(operation_logs)
         return f"""# 产品标准体系诊断报告
@@ -141,10 +145,9 @@ class ReportService:
 
 ## 8. 质量评分
 
-体系健康度：{quality_label}（{quality_score:.1f}/100）
+{quality_line}
 
-> 计算公式：基础分 100 - 结构问题扣分 - 内容问题扣分。问题越多扣分越多。
-> 详细规则见 `_calc_quality_score` 函数。
+> 版本分数只读取持久化的 `quality-v1` 评价；未评价时不使用报告内临时公式补分。
 
 ## 9. 后续优化建议
 
@@ -193,13 +196,6 @@ def _list_operation_logs(settings: Settings, version_id: int) -> list[dict]:
             (version_id,),
         ).fetchall()
     return [dict(row) for row in rows]
-
-
-def _calc_quality_score(node_count: int, total_issues: int) -> float:
-    """Simple health score: start at 100, penalize per issue, floor at 0."""
-    base = 100.0
-    issue_penalty = min(total_issues * 0.1, 90.0)
-    return max(base - issue_penalty, 0.0)
 
 
 def _quality_label(score: float) -> str:

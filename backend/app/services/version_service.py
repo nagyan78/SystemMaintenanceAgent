@@ -84,7 +84,7 @@ class VersionService:
             else taxonomy_repo.list_node_records(base_version_id)
         )
         recalculated = _recalculate_tree(snapshot_nodes)
-        quality_score = _calc_quality_score(recalculated)
+        quality_score = None
         new_version_id, new_version_no = version_repo.create_next_version(
             file_id=int(base_version["file_id"]),
             description=f"基于 {base_version['version_no']} 执行审核批次 {review_batch_id}",
@@ -197,7 +197,7 @@ class VersionService:
             raise ValueError(f"Taxonomy version {version_id} was not found.")
         nodes = TaxonomyRepository(self.settings).list_node_records(version_id)
         new_version_no = self._next_version_no(int(target["file_id"]))
-        quality_score = _calc_quality_score(nodes)
+        quality_score = None
         new_version_id = version_repo.create_version(
             file_id=int(target["file_id"]),
             version_no=new_version_no,
@@ -279,15 +279,3 @@ def _recalculate_tree(nodes: list[TaxonomyNodeRecord]) -> list[TaxonomyNodeRecor
 
 def _split_synonyms(syn_list: str) -> list[str]:
     return [item.strip() for item in syn_list.replace("，", ",").split(",") if item.strip()]
-
-
-def _calc_quality_score(nodes: list[TaxonomyNodeRecord]) -> float:
-    missing_parent_count = sum(
-        1
-        for node in nodes
-        if node.parent_id is not None and node.parent_id not in {item.category_id for item in nodes}
-    )
-    duplicate_names = len(nodes) - len({(node.parent_id, node.category_name) for node in nodes})
-    max_depth_penalty = sum(max(node.level - 7, 0) for node in nodes) * 0.2
-    score = 100.0 - missing_parent_count - duplicate_names * 0.5 - max_depth_penalty
-    return max(round(score, 1), 0.0)

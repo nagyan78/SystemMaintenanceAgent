@@ -44,8 +44,12 @@ def test_graph_contains_explicit_mode_nodes_and_verify_has_no_forbidden_edge() -
         "generate_failed_report_node",
     }.issubset(node_ids)
     assert ("__start__", "resolve_input_node") in edges
-    assert ("load_verification_context_node", "index_vector_node") in edges
-    assert ("index_vector_node", "generate_report_node") in edges
+    assert ("load_verification_context_node", "create_analysis_run_node") in edges
+    assert ("index_vector_node", "verify_base_quality_evaluation_node") in edges
+    assert (
+        "verify_base_quality_evaluation_node",
+        "verify_result_quality_evaluation_node",
+    ) in edges
 
 
 def test_required_node_failure_routes_to_failed_report() -> None:

@@ -151,6 +151,30 @@ def init_db(settings: Settings) -> None:
                 UNIQUE(workflow_id, round)
             );
 
+            CREATE TABLE IF NOT EXISTS quality_evaluation (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                version_id INTEGER NOT NULL,
+                workflow_id TEXT NOT NULL,
+                analysis_run_id TEXT NOT NULL,
+                evaluation_role TEXT NOT NULL,
+                score_version TEXT NOT NULL,
+                total_score REAL NOT NULL,
+                available_points REAL NOT NULL,
+                coverage_ratio REAL NOT NULL,
+                dimensions TEXT NOT NULL,
+                available_dimensions TEXT NOT NULL,
+                metrics TEXT NOT NULL,
+                detector_versions TEXT NOT NULL,
+                risks TEXT NOT NULL,
+                narrative TEXT NOT NULL DEFAULT '',
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(
+                    workflow_id, analysis_run_id, version_id,
+                    score_version, evaluation_role
+                )
+            );
+
             CREATE UNIQUE INDEX IF NOT EXISTS idx_category_node_version_category
             ON category_node(version_id, category_id);
 

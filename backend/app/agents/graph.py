@@ -5,6 +5,7 @@ from langgraph.graph import END, START, StateGraph
 
 from backend.app.agents.nodes import (
     build_tree_node,
+    baseline_quality_evaluation_node,
     configure_workflow_runtime,
     content_diagnosis_node,
     create_analysis_run_node,
@@ -20,8 +21,11 @@ from backend.app.agents.nodes import (
     resolve_input_node,
     save_initial_version_node,
     save_new_version_node,
+    result_quality_evaluation_node,
     structure_diagnosis_node,
     validate_action_node,
+    verify_base_quality_evaluation_node,
+    verify_result_quality_evaluation_node,
     wait_human_review_node,
 )
 from backend.app.agents.states import TaxonomyGraphState
@@ -112,7 +116,7 @@ def route_after_index(state: TaxonomyGraphState) -> str:
     if state.status == "failed":
         return "generate_failed_report_node"
     if state.workflow_mode == "verify":
-        return "generate_report_node"
+        return "verify_base_quality_evaluation_node"
     return "structure_diagnosis_node"
 
 
@@ -135,6 +139,16 @@ def build_taxonomy_graph(
     builder.add_node("save_initial_version_node", save_initial_version_node)
     builder.add_node("index_vector_node", index_vector_node)
     builder.add_node("structure_diagnosis_node", structure_diagnosis_node)
+    builder.add_node(
+        "baseline_quality_evaluation_node", baseline_quality_evaluation_node
+    )
+    builder.add_node("result_quality_evaluation_node", result_quality_evaluation_node)
+    builder.add_node(
+        "verify_base_quality_evaluation_node", verify_base_quality_evaluation_node
+    )
+    builder.add_node(
+        "verify_result_quality_evaluation_node", verify_result_quality_evaluation_node
+    )
     builder.add_node("diagnosis_planning_node", diagnosis_planning_node)
     builder.add_node("content_diagnosis_node", content_diagnosis_node)
     builder.add_node("generate_suggestion_node", generate_suggestion_node)
@@ -190,9 +204,9 @@ def build_taxonomy_graph(
     )
     builder.add_conditional_edges(
         "load_verification_context_node",
-        lambda state: route_after_required_node(state, "index_vector_node"),
+        lambda state: route_after_required_node(state, "create_analysis_run_node"),
         {
-            "index_vector_node": "index_vector_node",
+            "create_analysis_run_node": "create_analysis_run_node",
             "generate_failed_report_node": "generate_failed_report_node",
         },
     )
@@ -209,15 +223,43 @@ def build_taxonomy_graph(
         route_after_index,
         {
             "structure_diagnosis_node": "structure_diagnosis_node",
-            "generate_report_node": "generate_report_node",
+            "verify_base_quality_evaluation_node": "verify_base_quality_evaluation_node",
             "generate_failed_report_node": "generate_failed_report_node",
         },
     )
     builder.add_conditional_edges(
         "structure_diagnosis_node",
+        lambda state: route_after_required_node(
+            state, "baseline_quality_evaluation_node"
+        ),
+        {
+            "baseline_quality_evaluation_node": "baseline_quality_evaluation_node",
+            "generate_failed_report_node": "generate_failed_report_node",
+        },
+    )
+    builder.add_conditional_edges(
+        "baseline_quality_evaluation_node",
         lambda state: route_after_required_node(state, "diagnosis_planning_node"),
         {
             "diagnosis_planning_node": "diagnosis_planning_node",
+            "generate_failed_report_node": "generate_failed_report_node",
+        },
+    )
+    builder.add_conditional_edges(
+        "verify_base_quality_evaluation_node",
+        lambda state: route_after_required_node(
+            state, "verify_result_quality_evaluation_node"
+        ),
+        {
+            "verify_result_quality_evaluation_node": "verify_result_quality_evaluation_node",
+            "generate_failed_report_node": "generate_failed_report_node",
+        },
+    )
+    builder.add_conditional_edges(
+        "verify_result_quality_evaluation_node",
+        lambda state: route_after_required_node(state, "generate_report_node"),
+        {
+            "generate_report_node": "generate_report_node",
             "generate_failed_report_node": "generate_failed_report_node",
         },
     )

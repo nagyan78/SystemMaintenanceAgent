@@ -19,6 +19,7 @@ from backend.app.services.content_diagnosis_service import (
 from backend.app.services.diagnosis_service import DiagnosisService
 from backend.app.services.excel_service import ExcelService
 from backend.app.services.report_service import ReportService
+from backend.app.services.quality_evaluation_service import QualityEvaluationService
 from backend.app.services.review_service import ReviewService
 from backend.app.services.suggestion_service import SuggestionAgent
 from backend.app.services.taxonomy_service import TaxonomyService
@@ -246,6 +247,79 @@ def structure_diagnosis_node(state: TaxonomyGraphState) -> StateUpdate:
         progress=55,
         structure_issue_count=result.issue_count,
         structure_issue_summary=result.summary,
+    )
+
+
+def _quality_evaluation_update(
+    state: TaxonomyGraphState,
+    *,
+    node_name: str,
+    version_id: int,
+    role: str,
+    result_field: str,
+    progress: int,
+) -> StateUpdate:
+    if state.analysis_run_id is None:
+        raise WorkflowNodeError(
+            "MISSING_ANALYSIS_RUN",
+            "Quality evaluation requires analysis_run_id.",
+        )
+    result = QualityEvaluationService(_runtime_settings).evaluate(
+        workflow_id=state.workflow_id,
+        analysis_run_id=state.analysis_run_id,
+        version_id=version_id,
+        evaluation_role=role,
+    )
+    return _complete_step(
+        state,
+        node_name,
+        current_step=node_name.removesuffix("_node"),
+        progress=progress,
+        **{result_field: result.id},
+    )
+
+
+def baseline_quality_evaluation_node(state: TaxonomyGraphState) -> StateUpdate:
+    return _quality_evaluation_update(
+        state,
+        node_name="baseline_quality_evaluation_node",
+        version_id=_require_current_version_id(state),
+        role="baseline",
+        result_field="evaluation_before_id",
+        progress=58,
+    )
+
+
+def result_quality_evaluation_node(state: TaxonomyGraphState) -> StateUpdate:
+    return _quality_evaluation_update(
+        state,
+        node_name="result_quality_evaluation_node",
+        version_id=_require_current_version_id(state),
+        role="result",
+        result_field="evaluation_after_id",
+        progress=97,
+    )
+
+
+def verify_base_quality_evaluation_node(state: TaxonomyGraphState) -> StateUpdate:
+    return _quality_evaluation_update(
+        state,
+        node_name="verify_base_quality_evaluation_node",
+        version_id=int(state.base_version_id),
+        role="verify_base",
+        result_field="evaluation_before_id",
+        progress=45,
+    )
+
+
+def verify_result_quality_evaluation_node(state: TaxonomyGraphState) -> StateUpdate:
+    return _quality_evaluation_update(
+        state,
+        node_name="verify_result_quality_evaluation_node",
+        version_id=int(state.result_version_id),
+        role="verify_result",
+        result_field="evaluation_after_id",
+        progress=65,
     )
 
 
@@ -524,6 +598,18 @@ index_vector_node = node_guard("index_vector_node", index_vector_node)
 structure_diagnosis_node = node_guard(
     "structure_diagnosis_node",
     structure_diagnosis_node,
+)
+baseline_quality_evaluation_node = node_guard(
+    "baseline_quality_evaluation_node", baseline_quality_evaluation_node
+)
+result_quality_evaluation_node = node_guard(
+    "result_quality_evaluation_node", result_quality_evaluation_node
+)
+verify_base_quality_evaluation_node = node_guard(
+    "verify_base_quality_evaluation_node", verify_base_quality_evaluation_node
+)
+verify_result_quality_evaluation_node = node_guard(
+    "verify_result_quality_evaluation_node", verify_result_quality_evaluation_node
 )
 diagnosis_planning_node = node_guard(
     "diagnosis_planning_node",
