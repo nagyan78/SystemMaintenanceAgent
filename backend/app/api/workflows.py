@@ -15,6 +15,7 @@ from backend.app.agents.graph import (
 from backend.app.repositories.file_repo import FileRepository
 from backend.app.repositories.task_repo import TaskRepository
 from backend.app.schemas.workflow import StartWorkflowRequest, parse_resume_request
+from backend.app.services.workflow_context_service import WorkflowContextService
 
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
@@ -46,16 +47,21 @@ def start_taxonomy_workflow(
     background_tasks: BackgroundTasks,
 ) -> StartWorkflowResponse:
     settings = request.app.state.settings
-    if FileRepository(settings).get_file(payload.file_id) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found.")
+    try:
+        context = WorkflowContextService(settings).resolve(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
-    workflow_id = create_workflow_id(payload.file_id)
+    workflow_id = create_workflow_id(context.file_id)
     thread_id = create_thread_id(workflow_id)
     task_repo = TaskRepository(settings)
     task_id = task_repo.create_workflow_task(
-        file_id=payload.file_id,
+        file_id=context.file_id,
         workflow_id=workflow_id,
         thread_id=thread_id,
+        workflow_mode=context.mode,
+        base_version_id=context.base_version_id,
+        result_version_id=context.result_version_id,
     )
     task_repo.record_event(
         workflow_id=workflow_id,
@@ -66,12 +72,12 @@ def start_taxonomy_workflow(
         status="running",
         progress=0,
         message="taxonomy workflow started",
-        payload={"file_id": payload.file_id},
+        payload=context.model_dump(),
     )
     background_tasks.add_task(
         _run_workflow,
         settings,
-        payload.file_id,
+        context,
         task_id,
         workflow_id,
     )
@@ -80,7 +86,9 @@ def start_taxonomy_workflow(
         workflow_id=workflow_id,
         thread_id=thread_id,
         status="running",
-        current_step="parse_excel",
+        current_step=(
+            "parse_excel" if context.mode == "import" else "load_version_context"
+        ),
         progress=0,
     )
 
@@ -239,11 +247,16 @@ def resume_workflow(
     return result
 
 
-def _run_workflow(settings, file_id: int, task_id: str, workflow_id: str) -> None:
+def _run_workflow(settings, context, task_id: str, workflow_id: str) -> None:
     state = create_initial_state(
-        file_id=file_id,
+        file_id=context.file_id,
         task_id=task_id,
         workflow_id=workflow_id,
+        workflow_mode=context.mode,
+        base_version_id=context.base_version_id,
+        result_version_id=context.result_version_id,
+        affected_node_ids=context.affected_node_ids,
+        max_rounds=context.max_rounds,
     )
     task_repo = TaskRepository(settings)
     try:

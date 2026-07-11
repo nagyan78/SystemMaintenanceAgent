@@ -2,12 +2,14 @@
 
 from collections.abc import Callable
 from typing import Any
+from uuid import uuid4
 
 from langgraph.types import interrupt
 
 from backend.app.agents.states import TaxonomyGraphState
 from backend.app.config import Settings, get_settings
 from backend.app.repositories.task_repo import TaskRepository
+from backend.app.repositories.analysis_run_repo import AnalysisRunRepository
 from backend.app.schemas.issue import DiagnosisPlan
 from backend.app.services.action_service import ActionService
 from backend.app.services.content_diagnosis_service import (
@@ -107,6 +109,71 @@ def _require_review_batch_id(state: TaxonomyGraphState) -> str:
     return state.review_batch_id
 
 
+def resolve_input_node(state: TaxonomyGraphState) -> StateUpdate:
+    if state.workflow_mode == "import":
+        _require_file_id(state)
+    elif state.workflow_mode == "maintain" and state.base_version_id is None:
+        raise WorkflowNodeError("MISSING_VERSION_ID", "Maintain requires base_version_id.")
+    elif state.workflow_mode == "verify" and (
+        state.base_version_id is None or state.result_version_id is None
+    ):
+        raise WorkflowNodeError(
+            "MISSING_VERSION_ID",
+            "Verify requires base_version_id and result_version_id.",
+        )
+    return _complete_step(
+        state,
+        "resolve_input_node",
+        current_step="resolve_input",
+        progress=2,
+    )
+
+
+def load_version_context_node(state: TaxonomyGraphState) -> StateUpdate:
+    version = VersionService(_runtime_settings).get_version(int(state.base_version_id))
+    if version is None:
+        raise WorkflowNodeError("VERSION_NOT_FOUND", "Base version was not found.")
+    return _complete_step(
+        state,
+        "load_version_context_node",
+        current_step="load_version_context",
+        progress=5,
+        file_id=int(version["file_id"]),
+        current_version_id=int(version["id"]),
+        version_no=str(version["version_no"]),
+    )
+
+
+def load_verification_context_node(state: TaxonomyGraphState) -> StateUpdate:
+    version = VersionService(_runtime_settings).get_version(int(state.result_version_id))
+    if version is None:
+        raise WorkflowNodeError("VERSION_NOT_FOUND", "Result version was not found.")
+    return _complete_step(
+        state,
+        "load_verification_context_node",
+        current_step="load_verification_context",
+        progress=5,
+        file_id=int(version["file_id"]),
+        current_version_id=int(version["id"]),
+        version_no=str(version["version_no"]),
+    )
+
+
+def create_analysis_run_node(state: TaxonomyGraphState) -> StateUpdate:
+    run_id = AnalysisRunRepository(_runtime_settings).create_or_get(
+        workflow_id=state.workflow_id,
+        round_no=state.round,
+        analyzed_version_id=_require_current_version_id(state),
+    )
+    return _complete_step(
+        state,
+        "create_analysis_run_node",
+        current_step="create_analysis_run",
+        progress=max(state.progress, 8),
+        analysis_run_id=run_id,
+    )
+
+
 def parse_excel_node(state: TaxonomyGraphState) -> StateUpdate:
     file_id = _require_file_id(state)
     result = ExcelService(_runtime_settings).parse_uploaded_file(file_id)
@@ -168,7 +235,9 @@ def index_vector_node(state: TaxonomyGraphState) -> StateUpdate:
 
 def structure_diagnosis_node(state: TaxonomyGraphState) -> StateUpdate:
     result = DiagnosisService(_runtime_settings).run_structure_diagnosis(
-        _require_current_version_id(state)
+        _require_current_version_id(state),
+        workflow_id=state.workflow_id,
+        analysis_run_id=state.analysis_run_id,
     )
     return _complete_step(
         state,
@@ -199,7 +268,12 @@ def content_diagnosis_node(state: TaxonomyGraphState) -> StateUpdate:
     version_id = _require_current_version_id(state)
     plan = DiagnosisPlan.model_validate(state.diagnosis_plan or {})
     plan.estimated_candidates = min(plan.estimated_candidates, 50)  # hard cap to prevent excessive API calls
-    issues = ContentDiagnosisAgent(_runtime_settings).run(version_id, plan)
+    issues = ContentDiagnosisAgent(_runtime_settings).run(
+        version_id,
+        plan,
+        workflow_id=state.workflow_id,
+        analysis_run_id=state.analysis_run_id,
+    )
     return _complete_step(
         state,
         "content_diagnosis_node",
@@ -211,7 +285,11 @@ def content_diagnosis_node(state: TaxonomyGraphState) -> StateUpdate:
 
 def generate_suggestion_node(state: TaxonomyGraphState) -> StateUpdate:
     version_id = _require_current_version_id(state)
-    result = SuggestionAgent(_runtime_settings).run(version_id)
+    result = SuggestionAgent(_runtime_settings).run(
+        version_id,
+        workflow_id=state.workflow_id,
+        analysis_run_id=state.analysis_run_id,
+    )
     if result.generated_count == 0:
         return _complete_step(
             state,
@@ -234,6 +312,8 @@ def wait_human_review_node(state: TaxonomyGraphState) -> StateUpdate:
     review_batch_id = _require_review_batch_id(state)
     interrupt_payload = {
         "type": "human_review",
+        "interrupt_type": "human_review",
+        "interrupt_id": state.interrupt_id or str(uuid4()),
         "review_batch_id": review_batch_id,
         "suggestion_count": state.suggestion_count,
         "required_actions": ["approve", "reject", "edit"],
@@ -246,6 +326,7 @@ def wait_human_review_node(state: TaxonomyGraphState) -> StateUpdate:
             progress=80,
             interrupt_payload=interrupt_payload,
             result_payload={"review_batch_id": review_batch_id},
+            interrupt_id=interrupt_payload["interrupt_id"],
         )
     decision = interrupt(interrupt_payload)
     review_decision = decision.get("decision")
@@ -263,6 +344,8 @@ def wait_human_review_node(state: TaxonomyGraphState) -> StateUpdate:
         status="running",
         review_decision=review_decision,
         review_payload=decision,
+        interrupt_type="human_review",
+        interrupt_id=interrupt_payload["interrupt_id"],
         approved_action_count=approved_count,
     )
 
@@ -285,7 +368,12 @@ def validate_action_node(state: TaxonomyGraphState) -> StateUpdate:
 def execute_action_node(state: TaxonomyGraphState) -> StateUpdate:
     version_id = _require_current_version_id(state)
     review_batch_id = _require_review_batch_id(state)
-    result = ActionService(_runtime_settings).execute_actions(version_id, review_batch_id)
+    result = ActionService(_runtime_settings).execute_actions(
+        version_id,
+        review_batch_id,
+        workflow_id=state.workflow_id,
+        analysis_run_id=state.analysis_run_id,
+    )
     return _complete_step(
         state,
         "execute_action_node",
@@ -344,6 +432,29 @@ def generate_report_node(state: TaxonomyGraphState) -> StateUpdate:
     )
 
 
+def generate_failed_report_node(state: TaxonomyGraphState) -> StateUpdate:
+    report_path = state.report_path
+    version_id = state.current_version_id or state.base_version_id
+    if version_id is not None:
+        try:
+            report_path = str(
+                ReportService(_runtime_settings)
+                .generate_diagnosis_report(version_id)
+                .report_path
+            )
+        except Exception:
+            report_path = state.report_path
+    update = {
+        "status": "failed",
+        "current_step": "failed",
+        "report_path": report_path,
+        "error_code": state.error_code or "WORKFLOW_FAILED",
+        "error_message": state.error_message or "Workflow failed.",
+    }
+    _record_progress(state, "generate_failed_report_node", {**update, "progress": state.progress})
+    return update
+
+
 def _record_progress(
     state: TaxonomyGraphState,
     node_name: str,
@@ -394,6 +505,16 @@ def _record_failure(
 
 
 parse_excel_node = node_guard("parse_excel_node", parse_excel_node)
+resolve_input_node = node_guard("resolve_input_node", resolve_input_node)
+load_version_context_node = node_guard(
+    "load_version_context_node", load_version_context_node
+)
+load_verification_context_node = node_guard(
+    "load_verification_context_node", load_verification_context_node
+)
+create_analysis_run_node = node_guard(
+    "create_analysis_run_node", create_analysis_run_node
+)
 build_tree_node = node_guard("build_tree_node", build_tree_node)
 save_initial_version_node = node_guard(
     "save_initial_version_node",
@@ -417,3 +538,6 @@ validate_action_node = node_guard("validate_action_node", validate_action_node)
 execute_action_node = node_guard("execute_action_node", execute_action_node)
 save_new_version_node = node_guard("save_new_version_node", save_new_version_node)
 generate_report_node = node_guard("generate_report_node", generate_report_node)
+generate_failed_report_node = node_guard(
+    "generate_failed_report_node", generate_failed_report_node
+)

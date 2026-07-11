@@ -1,5 +1,4 @@
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from uuid import uuid4
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -8,12 +7,17 @@ from backend.app.agents.nodes import (
     build_tree_node,
     configure_workflow_runtime,
     content_diagnosis_node,
+    create_analysis_run_node,
     diagnosis_planning_node,
     execute_action_node,
     generate_report_node,
+    generate_failed_report_node,
     generate_suggestion_node,
     index_vector_node,
+    load_verification_context_node,
+    load_version_context_node,
     parse_excel_node,
+    resolve_input_node,
     save_initial_version_node,
     save_new_version_node,
     structure_diagnosis_node,
@@ -25,8 +29,7 @@ from backend.app.config import Settings
 
 
 def create_workflow_id(file_id: int) -> str:
-    timestamp = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d%H%M%S")
-    return f"import_{file_id}_{timestamp}"
+    return f"workflow_{uuid4().hex}"
 
 
 def create_thread_id(workflow_id: str) -> str:
@@ -37,12 +40,22 @@ def create_initial_state(
     file_id: int,
     task_id: str | None = None,
     workflow_id: str | None = None,
+    workflow_mode: str = "import",
+    base_version_id: int | None = None,
+    result_version_id: int | None = None,
+    affected_node_ids: list[int] | None = None,
+    max_rounds: int = 2,
 ) -> TaxonomyGraphState:
     resolved_workflow_id = workflow_id or create_workflow_id(file_id)
     return TaxonomyGraphState(
         workflow_id=resolved_workflow_id,
         thread_id=create_thread_id(resolved_workflow_id),
         file_id=file_id,
+        workflow_mode=workflow_mode,
+        base_version_id=base_version_id,
+        result_version_id=result_version_id,
+        affected_node_ids=affected_node_ids or [],
+        max_rounds=max_rounds,
         task_id=task_id or resolved_workflow_id,
         status="pending",
     )
@@ -53,6 +66,8 @@ def create_memory_checkpointer() -> InMemorySaver:
 
 
 def route_after_suggestion(state: TaxonomyGraphState, *, enable_suggestion_review: bool = True) -> str:
+    if state.status == "failed":
+        return "generate_failed_report_node"
     if not enable_suggestion_review:
         return "generate_report_node"
     if state.suggestion_count == 0 or state.review_batch_id is None:
@@ -61,6 +76,8 @@ def route_after_suggestion(state: TaxonomyGraphState, *, enable_suggestion_revie
 
 
 def route_after_review(state: TaxonomyGraphState) -> str:
+    if state.status == "failed":
+        return "generate_failed_report_node"
     if state.review_decision == "reject":
         return "generate_report_node"
     if state.approved_action_count == 0:
@@ -70,8 +87,33 @@ def route_after_review(state: TaxonomyGraphState) -> str:
 
 def route_after_validate(state: TaxonomyGraphState) -> str:
     if state.status == "failed" and state.current_step == "validate_action_node":
-        return "generate_report_node"
+        return "generate_failed_report_node"
     return "execute_action_node"
+
+
+def route_after_resolve(state: TaxonomyGraphState) -> str:
+    if state.status == "failed":
+        return "generate_failed_report_node"
+    return {
+        "import": "parse_excel_node",
+        "maintain": "load_version_context_node",
+        "verify": "load_verification_context_node",
+    }[state.workflow_mode]
+
+
+def route_after_required_node(
+    state: TaxonomyGraphState,
+    success_target: str,
+) -> str:
+    return "generate_failed_report_node" if state.status == "failed" else success_target
+
+
+def route_after_index(state: TaxonomyGraphState) -> str:
+    if state.status == "failed":
+        return "generate_failed_report_node"
+    if state.workflow_mode == "verify":
+        return "generate_report_node"
+    return "structure_diagnosis_node"
 
 
 def build_taxonomy_graph(
@@ -84,6 +126,10 @@ def build_taxonomy_graph(
         configure_workflow_runtime(settings)
     builder = StateGraph(TaxonomyGraphState)
 
+    builder.add_node("resolve_input_node", resolve_input_node)
+    builder.add_node("load_version_context_node", load_version_context_node)
+    builder.add_node("load_verification_context_node", load_verification_context_node)
+    builder.add_node("create_analysis_run_node", create_analysis_run_node)
     builder.add_node("parse_excel_node", parse_excel_node)
     builder.add_node("build_tree_node", build_tree_node)
     builder.add_node("save_initial_version_node", save_initial_version_node)
@@ -97,15 +143,100 @@ def build_taxonomy_graph(
     builder.add_node("execute_action_node", execute_action_node)
     builder.add_node("save_new_version_node", save_new_version_node)
     builder.add_node("generate_report_node", generate_report_node)
+    builder.add_node("generate_failed_report_node", generate_failed_report_node)
 
-    builder.add_edge(START, "parse_excel_node")
-    builder.add_edge("parse_excel_node", "build_tree_node")
-    builder.add_edge("build_tree_node", "save_initial_version_node")
-    builder.add_edge("save_initial_version_node", "index_vector_node")
-    builder.add_edge("index_vector_node", "structure_diagnosis_node")
-    builder.add_edge("structure_diagnosis_node", "diagnosis_planning_node")
-    builder.add_edge("diagnosis_planning_node", "content_diagnosis_node")
-    builder.add_edge("content_diagnosis_node", "generate_suggestion_node")
+    builder.add_edge(START, "resolve_input_node")
+    builder.add_conditional_edges(
+        "resolve_input_node",
+        route_after_resolve,
+        {
+            "parse_excel_node": "parse_excel_node",
+            "load_version_context_node": "load_version_context_node",
+            "load_verification_context_node": "load_verification_context_node",
+            "generate_failed_report_node": "generate_failed_report_node",
+        },
+    )
+    builder.add_conditional_edges(
+        "parse_excel_node",
+        lambda state: route_after_required_node(state, "build_tree_node"),
+        {
+            "build_tree_node": "build_tree_node",
+            "generate_failed_report_node": "generate_failed_report_node",
+        },
+    )
+    builder.add_conditional_edges(
+        "build_tree_node",
+        lambda state: route_after_required_node(state, "save_initial_version_node"),
+        {
+            "save_initial_version_node": "save_initial_version_node",
+            "generate_failed_report_node": "generate_failed_report_node",
+        },
+    )
+    builder.add_conditional_edges(
+        "save_initial_version_node",
+        lambda state: route_after_required_node(state, "create_analysis_run_node"),
+        {
+            "create_analysis_run_node": "create_analysis_run_node",
+            "generate_failed_report_node": "generate_failed_report_node",
+        },
+    )
+    builder.add_conditional_edges(
+        "load_version_context_node",
+        lambda state: route_after_required_node(state, "create_analysis_run_node"),
+        {
+            "create_analysis_run_node": "create_analysis_run_node",
+            "generate_failed_report_node": "generate_failed_report_node",
+        },
+    )
+    builder.add_conditional_edges(
+        "load_verification_context_node",
+        lambda state: route_after_required_node(state, "index_vector_node"),
+        {
+            "index_vector_node": "index_vector_node",
+            "generate_failed_report_node": "generate_failed_report_node",
+        },
+    )
+    builder.add_conditional_edges(
+        "create_analysis_run_node",
+        lambda state: route_after_required_node(state, "index_vector_node"),
+        {
+            "index_vector_node": "index_vector_node",
+            "generate_failed_report_node": "generate_failed_report_node",
+        },
+    )
+    builder.add_conditional_edges(
+        "index_vector_node",
+        route_after_index,
+        {
+            "structure_diagnosis_node": "structure_diagnosis_node",
+            "generate_report_node": "generate_report_node",
+            "generate_failed_report_node": "generate_failed_report_node",
+        },
+    )
+    builder.add_conditional_edges(
+        "structure_diagnosis_node",
+        lambda state: route_after_required_node(state, "diagnosis_planning_node"),
+        {
+            "diagnosis_planning_node": "diagnosis_planning_node",
+            "generate_failed_report_node": "generate_failed_report_node",
+        },
+    )
+    builder.add_conditional_edges(
+        "diagnosis_planning_node",
+        lambda state: route_after_required_node(state, "content_diagnosis_node"),
+        {
+            "content_diagnosis_node": "content_diagnosis_node",
+            "generate_failed_report_node": "generate_failed_report_node",
+        },
+    )
+    builder.add_conditional_edges(
+        "content_diagnosis_node",
+        lambda state: route_after_required_node(state, "generate_suggestion_node"),
+        {
+            "generate_suggestion_node": "generate_suggestion_node",
+            "generate_failed_report_node": "generate_failed_report_node",
+        },
+    )
     builder.add_conditional_edges(
         "generate_suggestion_node",
         lambda state: route_after_suggestion(
@@ -115,6 +246,7 @@ def build_taxonomy_graph(
         {
             "wait_human_review_node": "wait_human_review_node",
             "generate_report_node": "generate_report_node",
+            "generate_failed_report_node": "generate_failed_report_node",
         },
     )
     builder.add_conditional_edges(
@@ -123,6 +255,7 @@ def build_taxonomy_graph(
         {
             "validate_action_node": "validate_action_node",
             "generate_report_node": "generate_report_node",
+            "generate_failed_report_node": "generate_failed_report_node",
         },
     )
     builder.add_conditional_edges(
@@ -130,11 +263,26 @@ def build_taxonomy_graph(
         route_after_validate,
         {
             "execute_action_node": "execute_action_node",
-            "generate_report_node": "generate_report_node",
+            "generate_failed_report_node": "generate_failed_report_node",
         },
     )
-    builder.add_edge("execute_action_node", "save_new_version_node")
-    builder.add_edge("save_new_version_node", "generate_report_node")
+    builder.add_conditional_edges(
+        "execute_action_node",
+        lambda state: route_after_required_node(state, "save_new_version_node"),
+        {
+            "save_new_version_node": "save_new_version_node",
+            "generate_failed_report_node": "generate_failed_report_node",
+        },
+    )
+    builder.add_conditional_edges(
+        "save_new_version_node",
+        lambda state: route_after_required_node(state, "generate_report_node"),
+        {
+            "generate_report_node": "generate_report_node",
+            "generate_failed_report_node": "generate_failed_report_node",
+        },
+    )
     builder.add_edge("generate_report_node", END)
+    builder.add_edge("generate_failed_report_node", END)
 
     return builder.compile(checkpointer=checkpointer)
