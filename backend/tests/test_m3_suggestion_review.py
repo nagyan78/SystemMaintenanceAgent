@@ -273,4 +273,5 @@ def test_graph_topology_routes_content_to_suggestion_and_m4_execution_after_vali
     assert ("generate_suggestion_node", "wait_human_review_node") in edges
     assert ("validate_action_node", "execute_action_node") in edges
     assert ("execute_action_node", "save_new_version_node") in edges
-    assert ("save_new_version_node", "generate_report_node") in edges
+    assert ("save_new_version_node", "index_result_version_node") in edges
+    assert ("result_quality_evaluation_node", "verification_node") in edges

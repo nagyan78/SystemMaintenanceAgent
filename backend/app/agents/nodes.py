@@ -369,6 +369,96 @@ def verification_node(state: TaxonomyGraphState) -> StateUpdate:
         current_round=state.round,
         max_rounds=state.max_rounds,
     )
+
+
+def apply_continue_decision(
+    state: TaxonomyGraphState,
+    *,
+    decision: str,
+) -> StateUpdate:
+    if decision == "finish":
+        return {
+            "review_payload": {"decision": "finish"},
+            "interrupt_type": None,
+            "interrupt_id": None,
+        }
+    if decision != "continue":
+        raise ValueError("Continue decision must be continue or finish.")
+    if state.round >= state.max_rounds:
+        raise ValueError("Cannot continue because max_rounds has been reached.")
+    result_version_id = state.result_version_id or state.current_version_id
+    if result_version_id is None:
+        raise ValueError("Continue requires a result version.")
+    return {
+        "base_version_id": result_version_id,
+        "current_version_id": result_version_id,
+        "result_version_id": None,
+        "round": state.round + 1,
+        "analysis_run_id": None,
+        "diagnosis_plan": None,
+        "review_batch_id": None,
+        "review_decision": None,
+        "review_payload": {"decision": "continue"},
+        "action_batch_id": None,
+        "executed_nodes": [],
+        "approved_action_count": 0,
+        "executed_action_count": 0,
+        "failed_action_count": 0,
+        "suggestion_count": 0,
+        "content_issue_count": 0,
+        "structure_issue_count": 0,
+        "structure_issue_summary": {},
+        "evaluation_before_id": None,
+        "evaluation_after_id": None,
+        "verification_payload": None,
+        "interrupt_type": None,
+        "interrupt_id": None,
+    }
+
+
+def wait_continue_node(state: TaxonomyGraphState) -> StateUpdate:
+    interrupt_id = f"continue:{state.workflow_id}:{state.round}"
+    interrupt_payload = {
+        "type": "continue_optimization",
+        "interrupt_type": "continue_optimization",
+        "interrupt_id": interrupt_id,
+        "round": state.round,
+        "max_rounds": state.max_rounds,
+        "required_actions": ["continue", "finish"],
+        "verification": state.verification_payload or {},
+    }
+    if state.task_id:
+        TaskRepository(_runtime_settings).update_task(
+            task_id=state.task_id,
+            status="waiting_continue",
+            current_step="continue_optimization",
+            progress=99,
+            interrupt_payload=interrupt_payload,
+            interrupt_id=interrupt_id,
+        )
+    decision_payload = interrupt(interrupt_payload)
+    updates = apply_continue_decision(
+        state,
+        decision=str(decision_payload.get("decision")),
+    )
+    return _complete_step(
+        state,
+        "wait_continue_node",
+        current_step="continue_decided",
+        progress=99,
+        status="running",
+        **updates,
+    )
+
+
+def wait_manual_intervention_node(state: TaxonomyGraphState) -> StateUpdate:
+    update = {
+        "status": "waiting_manual_intervention",
+        "current_step": "manual_intervention",
+        "progress": 99,
+    }
+    _record_progress(state, "wait_manual_intervention_node", update)
+    return update
     return _complete_step(
         state,
         "verification_node",
@@ -537,6 +627,7 @@ def save_new_version_node(state: TaxonomyGraphState) -> StateUpdate:
         current_step="save_new_version",
         progress=96,
         new_version_id=result.new_version_id,
+        result_version_id=result.new_version_id,
         current_version_id=result.new_version_id,
         version_no=result.new_version_no,
         node_count=result.node_count,
@@ -556,6 +647,22 @@ def generate_report_node(state: TaxonomyGraphState) -> StateUpdate:
         current_step="completed",
         progress=100,
         status="completed",
+        report_id=version_id,
+        report_path=str(result.report_path),
+    )
+
+
+def generate_degraded_report_node(state: TaxonomyGraphState) -> StateUpdate:
+    version_id = state.current_version_id or state.base_version_id
+    if version_id is None:
+        raise WorkflowNodeError("MISSING_VERSION_ID", "Workflow requires version_id.")
+    result = ReportService(_runtime_settings).generate_diagnosis_report(version_id)
+    return _complete_step(
+        state,
+        "generate_degraded_report_node",
+        current_step="completed_degraded",
+        progress=100,
+        status="completed_degraded",
         report_id=version_id,
         report_path=str(result.report_path),
     )
@@ -670,6 +777,10 @@ verify_result_quality_evaluation_node = node_guard(
     "verify_result_quality_evaluation_node", verify_result_quality_evaluation_node
 )
 verification_node = node_guard("verification_node", verification_node)
+wait_continue_node = node_guard("wait_continue_node", wait_continue_node)
+wait_manual_intervention_node = node_guard(
+    "wait_manual_intervention_node", wait_manual_intervention_node
+)
 diagnosis_planning_node = node_guard(
     "diagnosis_planning_node",
     diagnosis_planning_node,
@@ -683,6 +794,9 @@ validate_action_node = node_guard("validate_action_node", validate_action_node)
 execute_action_node = node_guard("execute_action_node", execute_action_node)
 save_new_version_node = node_guard("save_new_version_node", save_new_version_node)
 generate_report_node = node_guard("generate_report_node", generate_report_node)
+generate_degraded_report_node = node_guard(
+    "generate_degraded_report_node", generate_degraded_report_node
+)
 generate_failed_report_node = node_guard(
     "generate_failed_report_node", generate_failed_report_node
 )

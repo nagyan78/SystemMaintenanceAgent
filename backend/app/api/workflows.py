@@ -154,11 +154,24 @@ def workflow_events(task_id: str, request: Request) -> StreamingResponse:
             if current is None:
                 return
             task_status = current["status"]
-            if task_status == "waiting_review":
+            if task_status in {"waiting_review", "waiting_continue"}:
                 yield format_sse(interrupt_event(current.get("interrupt_payload")))
+                seen_terminal = True
+            elif task_status == "waiting_manual_intervention":
+                yield format_sse(
+                    {
+                        "event": "workflow_manual_intervention",
+                        "data": {"task_id": task_id, "status": task_status},
+                    }
+                )
                 seen_terminal = True
             elif task_status == "completed":
                 yield format_sse(completed_event(task_id, current.get("result_payload")))
+                seen_terminal = True
+            elif task_status == "completed_degraded":
+                event = completed_event(task_id, current.get("result_payload"))
+                event["event"] = "workflow_completed_degraded"
+                yield format_sse(event)
                 seen_terminal = True
             elif task_status == "failed":
                 yield format_sse(

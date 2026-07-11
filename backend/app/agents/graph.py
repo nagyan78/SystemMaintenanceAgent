@@ -13,6 +13,7 @@ from backend.app.agents.nodes import (
     execute_action_node,
     generate_report_node,
     generate_failed_report_node,
+    generate_degraded_report_node,
     generate_suggestion_node,
     index_vector_node,
     index_result_version_node,
@@ -28,6 +29,8 @@ from backend.app.agents.nodes import (
     verify_base_quality_evaluation_node,
     verify_result_quality_evaluation_node,
     verification_node,
+    wait_continue_node,
+    wait_manual_intervention_node,
     wait_human_review_node,
 )
 from backend.app.agents.states import TaxonomyGraphState
@@ -122,6 +125,29 @@ def route_after_index(state: TaxonomyGraphState) -> str:
     return "structure_diagnosis_node"
 
 
+def route_after_verification(state: TaxonomyGraphState) -> str:
+    if state.status == "failed":
+        return "generate_failed_report_node"
+    payload = state.verification_payload or {}
+    next_decision = payload.get("next_decision")
+    verification_status = payload.get("status")
+    if next_decision == "manual_intervention":
+        return "wait_manual_intervention_node"
+    if next_decision == "ask_continue":
+        return "wait_continue_node"
+    if verification_status == "degraded":
+        return "generate_degraded_report_node"
+    return "generate_report_node"
+
+
+def route_after_continue(state: TaxonomyGraphState) -> str:
+    if state.status == "failed":
+        return "generate_failed_report_node"
+    if (state.review_payload or {}).get("decision") == "continue":
+        return "create_analysis_run_node"
+    return "generate_report_node"
+
+
 def build_taxonomy_graph(
     checkpointer=None,
     settings: Settings | None = None,
@@ -153,6 +179,10 @@ def build_taxonomy_graph(
         "verify_result_quality_evaluation_node", verify_result_quality_evaluation_node
     )
     builder.add_node("verification_node", verification_node)
+    builder.add_node("wait_continue_node", wait_continue_node)
+    builder.add_node(
+        "wait_manual_intervention_node", wait_manual_intervention_node
+    )
     builder.add_node("diagnosis_planning_node", diagnosis_planning_node)
     builder.add_node("content_diagnosis_node", content_diagnosis_node)
     builder.add_node("generate_suggestion_node", generate_suggestion_node)
@@ -162,6 +192,7 @@ def build_taxonomy_graph(
     builder.add_node("save_new_version_node", save_new_version_node)
     builder.add_node("generate_report_node", generate_report_node)
     builder.add_node("generate_failed_report_node", generate_failed_report_node)
+    builder.add_node("generate_degraded_report_node", generate_degraded_report_node)
 
     builder.add_edge(START, "resolve_input_node")
     builder.add_conditional_edges(
@@ -348,13 +379,27 @@ def build_taxonomy_graph(
     )
     builder.add_conditional_edges(
         "verification_node",
-        lambda state: route_after_required_node(state, "generate_report_node"),
+        route_after_verification,
         {
+            "generate_report_node": "generate_report_node",
+            "generate_degraded_report_node": "generate_degraded_report_node",
+            "wait_continue_node": "wait_continue_node",
+            "wait_manual_intervention_node": "wait_manual_intervention_node",
+            "generate_failed_report_node": "generate_failed_report_node",
+        },
+    )
+    builder.add_conditional_edges(
+        "wait_continue_node",
+        route_after_continue,
+        {
+            "create_analysis_run_node": "create_analysis_run_node",
             "generate_report_node": "generate_report_node",
             "generate_failed_report_node": "generate_failed_report_node",
         },
     )
     builder.add_edge("generate_report_node", END)
+    builder.add_edge("generate_degraded_report_node", END)
     builder.add_edge("generate_failed_report_node", END)
+    builder.add_edge("wait_manual_intervention_node", END)
 
     return builder.compile(checkpointer=checkpointer)
