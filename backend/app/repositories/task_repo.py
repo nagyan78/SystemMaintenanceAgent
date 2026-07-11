@@ -32,6 +32,11 @@ class TaskRepository:
         file_id: int,
         workflow_id: str,
         thread_id: str,
+        workflow_mode: str = "import",
+        base_version_id: int | None = None,
+        result_version_id: int | None = None,
+        round_no: int = 1,
+        analysis_run_id: str | None = None,
     ) -> str:
         task_id = f"workflow_{uuid4().hex[:12]}"
         with connect(self.settings) as connection:
@@ -40,8 +45,10 @@ class TaskRepository:
                 INSERT INTO task_record (
                     id, file_id, task_type, status, current_step, progress,
                     workflow_id, thread_id
+                    , workflow_mode, base_version_id, result_version_id,
+                    round, analysis_run_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -52,6 +59,11 @@ class TaskRepository:
                     0,
                     workflow_id,
                     thread_id,
+                    workflow_mode,
+                    base_version_id,
+                    result_version_id,
+                    round_no,
+                    analysis_run_id,
                 ),
             )
         return task_id
@@ -63,6 +75,9 @@ class TaskRepository:
                 SELECT id, file_id, task_type, status, current_step, progress,
                        error_message, workflow_id, thread_id, version_id,
                        interrupt_payload, result_payload, created_time, updated_time
+                       , workflow_mode, base_version_id, result_version_id, round,
+                       analysis_run_id, interrupt_id, consumed_interrupt_id,
+                       resume_result_payload
                 FROM task_record
                 WHERE id = ?
                 """,
@@ -81,6 +96,7 @@ class TaskRepository:
         error_message: str | None = None,
         result_payload: dict[str, Any] | None = None,
         interrupt_payload: dict[str, Any] | None = None,
+        interrupt_id: str | None = None,
     ) -> None:
         current = self.get_task(task_id)
         if current is None:
@@ -104,6 +120,9 @@ class TaskRepository:
             )
             if interrupt_payload is not None
             else current.get("interrupt_payload"),
+            "interrupt_id": interrupt_id
+            if interrupt_id is not None
+            else current.get("interrupt_id"),
             "updated_time": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(
                 timespec="seconds"
             ),
@@ -119,6 +138,7 @@ class TaskRepository:
                     error_message = ?,
                     result_payload = ?,
                     interrupt_payload = ?,
+                    interrupt_id = ?,
                     updated_time = ?
                 WHERE id = ?
                 """,
@@ -130,7 +150,33 @@ class TaskRepository:
                     updates["error_message"],
                     updates["result_payload"],
                     updates["interrupt_payload"],
+                    updates["interrupt_id"],
                     updates["updated_time"],
+                    task_id,
+                ),
+            )
+
+    def save_resume_result(
+        self,
+        *,
+        task_id: str,
+        interrupt_id: str,
+        result: dict[str, Any],
+    ) -> None:
+        with connect(self.settings) as connection:
+            connection.execute(
+                """
+                UPDATE task_record
+                SET consumed_interrupt_id = ?, resume_result_payload = ?,
+                    updated_time = ?
+                WHERE id = ?
+                """,
+                (
+                    interrupt_id,
+                    json.dumps(_json_ready(result), ensure_ascii=False),
+                    datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(
+                        timespec="seconds"
+                    ),
                     task_id,
                 ),
             )

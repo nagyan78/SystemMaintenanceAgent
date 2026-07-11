@@ -167,6 +167,14 @@ def init_db(settings: Settings) -> None:
                 "version_id": "INTEGER",
                 "interrupt_payload": "TEXT",
                 "result_payload": "TEXT",
+                "workflow_mode": "TEXT DEFAULT 'import'",
+                "base_version_id": "INTEGER",
+                "result_version_id": "INTEGER",
+                "round": "INTEGER DEFAULT 1",
+                "analysis_run_id": "TEXT",
+                "interrupt_id": "TEXT",
+                "consumed_interrupt_id": "TEXT",
+                "resume_result_payload": "TEXT",
             },
         )
         _ensure_columns(

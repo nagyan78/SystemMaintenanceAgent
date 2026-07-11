@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from langgraph.types import Command
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from backend.app.agents.graph import (
     build_taxonomy_graph,
@@ -14,14 +14,11 @@ from backend.app.agents.graph import (
 )
 from backend.app.repositories.file_repo import FileRepository
 from backend.app.repositories.task_repo import TaskRepository
+from backend.app.schemas.workflow import StartWorkflowRequest, parse_resume_request
 
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 _WORKFLOW_CHECKPOINTER = None
-
-
-class StartWorkflowRequest(BaseModel):
-    file_id: int
 
 
 class StartWorkflowResponse(BaseModel):
@@ -31,15 +28,6 @@ class StartWorkflowResponse(BaseModel):
     status: str
     current_step: str
     progress: int
-
-
-class ResumeWorkflowRequest(BaseModel):
-    decision: str
-    approved_suggestion_ids: list[int] = []
-    rejected_suggestion_ids: list[int] = []
-    edits: list[dict[str, Any]] = []
-    operator: str = "local_user"
-    reject_reason: str | None = None
 
 
 def _get_workflow_checkpointer():
@@ -182,7 +170,7 @@ def workflow_events(task_id: str, request: Request) -> StreamingResponse:
 @router.post("/{task_id}/resume")
 def resume_workflow(
     task_id: str,
-    payload: ResumeWorkflowRequest,
+    payload: dict[str, Any],
     request: Request,
 ) -> dict[str, Any]:
     settings = request.app.state.settings
@@ -190,8 +178,41 @@ def resume_workflow(
     task = task_repo.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
-    if task["status"] != "waiting_review":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Task is not waiting for review.")
+    stored_interrupt = _loads(task.get("interrupt_payload"))
+    normalized = dict(payload)
+    normalized.setdefault(
+        "interrupt_type",
+        stored_interrupt.get("interrupt_type") or "human_review",
+    )
+    normalized.setdefault(
+        "interrupt_id",
+        task.get("interrupt_id")
+        or stored_interrupt.get("interrupt_id")
+        or f"legacy:{task_id}",
+    )
+    try:
+        resume_request = parse_resume_request(normalized)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=exc.errors(),
+        ) from exc
+    expected_status = {
+        "human_review": "waiting_review",
+        "continue_optimization": "waiting_continue",
+    }[resume_request.interrupt_type]
+    stored_type = stored_interrupt.get("interrupt_type") or (
+        "human_review" if task["status"] == "waiting_review" else None
+    )
+    if task["status"] != expected_status or (
+        stored_type is not None and stored_type != resume_request.interrupt_type
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Resume request does not match the active workflow interrupt.",
+        )
+    if task.get("consumed_interrupt_id") == resume_request.interrupt_id:
+        return _loads(task.get("resume_result_payload"))
     try:
         graph = build_taxonomy_graph(
             _get_workflow_checkpointer(),
@@ -199,7 +220,7 @@ def resume_workflow(
             enable_suggestion_review=True,
         )
         result = graph.invoke(
-            Command(resume=payload.model_dump()),
+            Command(resume=resume_request.model_dump()),
             config={"configurable": {"thread_id": task["thread_id"]}},
         )
     except Exception as exc:
@@ -210,6 +231,11 @@ def resume_workflow(
             error_message=str(exc),
         )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    task_repo.save_resume_result(
+        task_id=task_id,
+        interrupt_id=resume_request.interrupt_id,
+        result=result,
+    )
     return result
 
 
