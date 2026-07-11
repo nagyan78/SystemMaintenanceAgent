@@ -640,7 +640,14 @@ def generate_report_node(state: TaxonomyGraphState) -> StateUpdate:
     version_id = state.current_version_id or state.base_version_id
     if version_id is None:
         raise WorkflowNodeError("MISSING_VERSION_ID", "Workflow requires version_id.")
-    result = ReportService(_runtime_settings).generate_diagnosis_report(version_id)
+    result = ReportService(_runtime_settings).generate_diagnosis_report(
+        version_id,
+        workflow_id=state.workflow_id if state.analysis_run_id else None,
+        analysis_run_id=state.analysis_run_id,
+        analyzed_version_id=state.base_version_id or version_id,
+        result_version_id=state.result_version_id,
+        verification=state.verification_payload,
+    )
     return _complete_step(
         state,
         "generate_report_node",
@@ -656,7 +663,14 @@ def generate_degraded_report_node(state: TaxonomyGraphState) -> StateUpdate:
     version_id = state.current_version_id or state.base_version_id
     if version_id is None:
         raise WorkflowNodeError("MISSING_VERSION_ID", "Workflow requires version_id.")
-    result = ReportService(_runtime_settings).generate_diagnosis_report(version_id)
+    result = ReportService(_runtime_settings).generate_diagnosis_report(
+        version_id,
+        workflow_id=state.workflow_id if state.analysis_run_id else None,
+        analysis_run_id=state.analysis_run_id,
+        analyzed_version_id=state.base_version_id or version_id,
+        result_version_id=state.result_version_id,
+        verification=state.verification_payload,
+    )
     return _complete_step(
         state,
         "generate_degraded_report_node",
@@ -675,7 +689,14 @@ def generate_failed_report_node(state: TaxonomyGraphState) -> StateUpdate:
         try:
             report_path = str(
                 ReportService(_runtime_settings)
-                .generate_diagnosis_report(version_id)
+                .generate_diagnosis_report(
+                    version_id,
+                    workflow_id=state.workflow_id if state.analysis_run_id else None,
+                    analysis_run_id=state.analysis_run_id,
+                    analyzed_version_id=state.base_version_id or version_id,
+                    result_version_id=state.result_version_id,
+                    verification=state.verification_payload,
+                )
                 .report_path
             )
         except Exception:
