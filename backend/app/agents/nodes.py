@@ -24,6 +24,7 @@ from backend.app.services.review_service import ReviewService
 from backend.app.services.suggestion_service import SuggestionAgent
 from backend.app.services.taxonomy_service import TaxonomyService
 from backend.app.services.vector_index_service import VectorIndexService
+from backend.app.services.verification_service import VerificationService
 from backend.app.services.version_service import VersionService
 
 
@@ -348,6 +349,35 @@ def verify_result_quality_evaluation_node(state: TaxonomyGraphState) -> StateUpd
     )
 
 
+def verification_node(state: TaxonomyGraphState) -> StateUpdate:
+    if state.base_version_id is None or state.current_version_id is None:
+        raise WorkflowNodeError(
+            "MISSING_VERIFICATION_VERSION",
+            "Verification requires base and result versions.",
+        )
+    if state.evaluation_before_id is None or state.evaluation_after_id is None:
+        raise WorkflowNodeError(
+            "MISSING_VERIFICATION_EVALUATION",
+            "Verification requires before and after evaluations.",
+        )
+    result = VerificationService(_runtime_settings).verify(
+        base_version_id=state.base_version_id,
+        result_version_id=state.current_version_id,
+        affected_node_ids=state.affected_node_ids,
+        evaluation_before_id=state.evaluation_before_id,
+        evaluation_after_id=state.evaluation_after_id,
+        current_round=state.round,
+        max_rounds=state.max_rounds,
+    )
+    return _complete_step(
+        state,
+        "verification_node",
+        current_step="verification",
+        progress=98,
+        verification_payload=result.model_dump(),
+    )
+
+
 def diagnosis_planning_node(state: TaxonomyGraphState) -> StateUpdate:
     version_id = _require_current_version_id(state)
     plan = DiagnosisPlanningAgent(_runtime_settings).run(
@@ -639,6 +669,7 @@ verify_base_quality_evaluation_node = node_guard(
 verify_result_quality_evaluation_node = node_guard(
     "verify_result_quality_evaluation_node", verify_result_quality_evaluation_node
 )
+verification_node = node_guard("verification_node", verification_node)
 diagnosis_planning_node = node_guard(
     "diagnosis_planning_node",
     diagnosis_planning_node,

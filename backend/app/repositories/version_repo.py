@@ -220,6 +220,13 @@ class VersionRepository:
                 (status, version_id),
             )
 
+    def update_verification_status(self, version_id: int, status: str) -> None:
+        with connect(self.settings) as connection:
+            connection.execute(
+                "UPDATE taxonomy_version SET verification_status = ? WHERE id = ?",
+                (status, version_id),
+            )
+
 
 def _minor_version(version_no: str) -> int:
     if not version_no.startswith("v1."):

@@ -31,3 +31,13 @@ class QualityEvaluation(BaseModel):
     detector_versions: dict[str, str] = Field(default_factory=dict)
     risks: list[dict[str, Any]] = Field(default_factory=list)
     narrative: str = ""
+
+
+class VerificationResult(BaseModel):
+    status: Literal["passed", "partially_passed", "failed", "degraded"]
+    resolved_fingerprints: list[str] = Field(default_factory=list)
+    unresolved_fingerprints: list[str] = Field(default_factory=list)
+    introduced_fingerprints: list[str] = Field(default_factory=list)
+    quality_delta: float
+    next_decision: Literal["finish", "ask_continue", "manual_intervention"]
+    reason: str

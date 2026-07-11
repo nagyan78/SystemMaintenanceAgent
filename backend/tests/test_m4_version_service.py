@@ -140,4 +140,5 @@ def test_m4_graph_routes_validate_to_execute_save_and_report(tmp_path):
     assert ("execute_action_node", "save_new_version_node") in edges
     assert ("save_new_version_node", "index_result_version_node") in edges
     assert ("index_result_version_node", "result_quality_evaluation_node") in edges
-    assert ("result_quality_evaluation_node", "generate_report_node") in edges
+    assert ("result_quality_evaluation_node", "verification_node") in edges
+    assert ("verification_node", "generate_report_node") in edges

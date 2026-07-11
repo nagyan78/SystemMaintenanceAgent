@@ -27,6 +27,7 @@ from backend.app.agents.nodes import (
     validate_action_node,
     verify_base_quality_evaluation_node,
     verify_result_quality_evaluation_node,
+    verification_node,
     wait_human_review_node,
 )
 from backend.app.agents.states import TaxonomyGraphState
@@ -151,6 +152,7 @@ def build_taxonomy_graph(
     builder.add_node(
         "verify_result_quality_evaluation_node", verify_result_quality_evaluation_node
     )
+    builder.add_node("verification_node", verification_node)
     builder.add_node("diagnosis_planning_node", diagnosis_planning_node)
     builder.add_node("content_diagnosis_node", content_diagnosis_node)
     builder.add_node("generate_suggestion_node", generate_suggestion_node)
@@ -259,9 +261,9 @@ def build_taxonomy_graph(
     )
     builder.add_conditional_edges(
         "verify_result_quality_evaluation_node",
-        lambda state: route_after_required_node(state, "generate_report_node"),
+        lambda state: route_after_required_node(state, "verification_node"),
         {
-            "generate_report_node": "generate_report_node",
+            "verification_node": "verification_node",
             "generate_failed_report_node": "generate_failed_report_node",
         },
     )
@@ -338,6 +340,14 @@ def build_taxonomy_graph(
     )
     builder.add_conditional_edges(
         "result_quality_evaluation_node",
+        lambda state: route_after_required_node(state, "verification_node"),
+        {
+            "verification_node": "verification_node",
+            "generate_failed_report_node": "generate_failed_report_node",
+        },
+    )
+    builder.add_conditional_edges(
+        "verification_node",
         lambda state: route_after_required_node(state, "generate_report_node"),
         {
             "generate_report_node": "generate_report_node",
