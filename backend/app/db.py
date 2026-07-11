@@ -200,6 +200,19 @@ def init_db(settings: Settings) -> None:
             "operation_log",
             {"workflow_id": "TEXT", "analysis_run_id": "TEXT"},
         )
+        _ensure_columns(
+            connection,
+            "taxonomy_version",
+            {
+                "parent_version_id": "INTEGER",
+                "source_workflow_id": "TEXT",
+                "analysis_run_id": "TEXT",
+                "action_batch_id": "TEXT",
+                "vector_index_status": "TEXT DEFAULT 'unknown'",
+                "vector_index_generation": "INTEGER DEFAULT 0",
+                "verification_status": "TEXT",
+            },
+        )
         connection.execute("DROP INDEX IF EXISTS idx_issue_unique_rule")
         connection.execute(
             """
@@ -208,6 +221,19 @@ def init_db(settings: Settings) -> None:
                 analysis_run_id, detector_version, issue_type, node_id, description
             )
             """
+        )
+        _create_unique_index_if_clean(
+            connection,
+            table_name="taxonomy_version",
+            index_name="idx_version_file_version_no",
+            columns=("file_id", "version_no"),
+        )
+        _create_unique_index_if_clean(
+            connection,
+            table_name="taxonomy_version",
+            index_name="idx_version_action_batch",
+            columns=("action_batch_id",),
+            where="action_batch_id IS NOT NULL",
         )
 
 
@@ -225,3 +251,29 @@ def _ensure_columns(
             connection.execute(
                 f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
             )
+
+
+def _create_unique_index_if_clean(
+    connection: sqlite3.Connection,
+    *,
+    table_name: str,
+    index_name: str,
+    columns: tuple[str, ...],
+    where: str | None = None,
+) -> None:
+    column_sql = ", ".join(columns)
+    where_sql = f"WHERE {where}" if where else ""
+    duplicate = connection.execute(
+        f"""
+        SELECT 1 FROM {table_name}
+        {where_sql}
+        GROUP BY {column_sql}
+        HAVING COUNT(*) > 1
+        LIMIT 1
+        """
+    ).fetchone()
+    if duplicate is None:
+        connection.execute(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} "
+            f"ON {table_name}({column_sql}) {where_sql}"
+        )

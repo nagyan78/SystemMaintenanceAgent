@@ -140,6 +140,7 @@ class ReviewService:
         save_result = VersionService(self.settings).save_new_version(
             base_version_id=latest_version_id,
             review_batch_id=review_batch_id,
+            action_batch_id=action_result.action_batch_id,
             nodes=action_result.nodes,
         )
         return {

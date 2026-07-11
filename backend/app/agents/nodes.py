@@ -309,6 +309,9 @@ def save_new_version_node(state: TaxonomyGraphState) -> StateUpdate:
     result = VersionService(_runtime_settings).save_new_version(
         base_version_id=current_version_id,
         review_batch_id=review_batch_id,
+        action_batch_id=state.action_batch_id,
+        workflow_id=state.workflow_id,
+        analysis_run_id=state.analysis_run_id,
         nodes=nodes,
     )
     return _complete_step(

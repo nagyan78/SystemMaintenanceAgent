@@ -58,20 +58,40 @@ class VersionService:
         base_version_id: int,
         review_batch_id: str,
         nodes: list[TaxonomyNodeRecord] | None = None,
+        *,
+        action_batch_id: str | None = None,
+        workflow_id: str | None = None,
+        analysis_run_id: str | None = None,
     ) -> SaveVersionResult:
         version_repo = VersionRepository(self.settings)
         taxonomy_repo = TaxonomyRepository(self.settings)
         base_version = version_repo.get_version(base_version_id)
         if base_version is None:
             raise ValueError(f"Taxonomy version {base_version_id} was not found.")
-        snapshot_nodes = nodes or taxonomy_repo.list_node_records(base_version_id)
+        resolved_action_batch_id = action_batch_id or review_batch_id
+        existing = version_repo.get_by_action_batch(resolved_action_batch_id)
+        if existing is not None:
+            return SaveVersionResult(
+                source_version_id=base_version_id,
+                new_version_id=int(existing["id"]),
+                new_version_no=str(existing["version_no"]),
+                node_count=taxonomy_repo.count_nodes(int(existing["id"])),
+                quality_score=existing.get("quality_score"),
+            )
+        snapshot_nodes = (
+            nodes
+            if nodes is not None
+            else taxonomy_repo.list_node_records(base_version_id)
+        )
         recalculated = _recalculate_tree(snapshot_nodes)
-        new_version_no = self._next_version_no(int(base_version["file_id"]))
         quality_score = _calc_quality_score(recalculated)
-        new_version_id = version_repo.create_version(
+        new_version_id, new_version_no = version_repo.create_next_version(
             file_id=int(base_version["file_id"]),
-            version_no=new_version_no,
             description=f"基于 {base_version['version_no']} 执行审核批次 {review_batch_id}",
+            parent_version_id=base_version_id,
+            source_workflow_id=workflow_id,
+            analysis_run_id=analysis_run_id,
+            action_batch_id=resolved_action_batch_id,
             quality_score=quality_score,
         )
         taxonomy_repo.bulk_insert_nodes(version_id=new_version_id, nodes=recalculated)
@@ -82,11 +102,14 @@ class VersionService:
         failed_count = sum(1 for item in suggestions if item.status == "failed")
         OperationLogRepository(self.settings).create_log(
             version_id=new_version_id,
+            workflow_id=workflow_id,
+            analysis_run_id=analysis_run_id,
             operator="local_user",
             operation_type="save_new_version",
             operation_detail={
                 "base_version_id": base_version_id,
                 "review_batch_id": review_batch_id,
+                "action_batch_id": resolved_action_batch_id,
                 "node_count": len(recalculated),
             },
         )
