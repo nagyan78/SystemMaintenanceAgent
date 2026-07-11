@@ -167,18 +167,71 @@ class TaskRepository:
             connection.execute(
                 """
                 UPDATE task_record
-                SET consumed_interrupt_id = ?, resume_result_payload = ?,
+                SET resume_result_payload = ?,
                     updated_time = ?
-                WHERE id = ?
+                WHERE id = ? AND consumed_interrupt_id = ?
                 """,
                 (
-                    interrupt_id,
                     json.dumps(_json_ready(result), ensure_ascii=False),
                     datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(
                         timespec="seconds"
                     ),
                     task_id,
+                    interrupt_id,
                 ),
+            )
+
+    def claim_interrupt(
+        self,
+        task_id: str,
+        interrupt_id: str,
+    ) -> tuple[str, dict[str, Any] | None]:
+        with connect(self.settings) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT interrupt_id, consumed_interrupt_id, resume_result_payload
+                FROM task_record WHERE id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            if row is None or row["interrupt_id"] != interrupt_id:
+                return "mismatch", None
+            if row["consumed_interrupt_id"] == interrupt_id:
+                if row["resume_result_payload"]:
+                    return "consumed", _loads(row["resume_result_payload"])
+                return "in_progress", None
+            if row["consumed_interrupt_id"] is not None:
+                return "mismatch", None
+            connection.execute(
+                """
+                UPDATE task_record
+                SET consumed_interrupt_id = ?, resume_result_payload = NULL,
+                    updated_time = ?
+                WHERE id = ? AND interrupt_id = ?
+                  AND consumed_interrupt_id IS NULL
+                """,
+                (
+                    interrupt_id,
+                    datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(
+                        timespec="seconds"
+                    ),
+                    task_id,
+                    interrupt_id,
+                ),
+            )
+            return "claimed", None
+
+    def release_interrupt_claim(self, task_id: str, interrupt_id: str) -> None:
+        with connect(self.settings) as connection:
+            connection.execute(
+                """
+                UPDATE task_record
+                SET consumed_interrupt_id = NULL, resume_result_payload = NULL
+                WHERE id = ? AND consumed_interrupt_id = ?
+                  AND resume_result_payload IS NULL
+                """,
+                (task_id, interrupt_id),
             )
 
     def list_events(

@@ -60,7 +60,7 @@ class VersionRepository:
         analysis_run_id: str | None,
         action_batch_id: str,
         quality_score: float | None = None,
-    ) -> tuple[int, str]:
+    ) -> tuple[int, str, bool]:
         with connect(self.settings) as connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
@@ -68,7 +68,7 @@ class VersionRepository:
                 (action_batch_id,),
             ).fetchone()
             if existing:
-                return int(existing["id"]), str(existing["version_no"])
+                return int(existing["id"]), str(existing["version_no"]), False
             rows = connection.execute(
                 "SELECT version_no FROM taxonomy_version WHERE file_id = ?",
                 (file_id,),
@@ -97,7 +97,7 @@ class VersionRepository:
                     action_batch_id,
                 ),
             )
-            return int(cursor.lastrowid), version_no
+            return int(cursor.lastrowid), version_no, True
 
     def get_version(self, version_id: int) -> dict | None:
         with connect(self.settings) as connection:

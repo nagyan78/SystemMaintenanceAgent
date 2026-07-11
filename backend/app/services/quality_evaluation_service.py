@@ -49,9 +49,16 @@ class QualityEvaluationService:
         hierarchy = _remaining(20.0, deep_count + wide_count, node_count)
         redundancy = _remaining(15.0, duplicate_excess, node_count)
         naming = _remaining(10.0, naming_count, node_count)
-        semantic_available = False
-        available_detector_families = 4
-        total_detector_families = 5
+        detector_availability = {
+            "structure": True,
+            "hierarchy": True,
+            "semantic": False,
+            "redundancy": True,
+            "naming": True,
+        }
+        semantic_available = detector_availability["semantic"]
+        available_detector_families = sum(detector_availability.values())
+        total_detector_families = len(detector_availability)
         coverage_ratio = round(
             available_detector_families / total_detector_families,
             4,
@@ -92,6 +99,11 @@ class QualityEvaluationService:
                 "duplicate_excess": duplicate_excess,
                 "naming_issues": naming_count,
                 "vector_index_status": version.get("vector_index_status") or "unknown",
+                "detector_availability": detector_availability,
+                "semantic_unavailable_reason": (
+                    "A ready vector index is not equivalent to a completed, "
+                    "versioned semantic detector run."
+                ),
             },
             detector_versions={
                 "structure": "quality-structure-v1",

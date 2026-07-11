@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 from backend.app.config import Settings
 from backend.app.repositories.operation_log_repo import OperationLogRepository
 from backend.app.repositories.suggestion_repo import SuggestionRepository
@@ -85,7 +87,7 @@ class VersionService:
         )
         recalculated = _recalculate_tree(snapshot_nodes)
         quality_score = None
-        new_version_id, new_version_no = version_repo.create_next_version(
+        new_version_id, new_version_no, created = version_repo.create_next_version(
             file_id=int(base_version["file_id"]),
             description=f"基于 {base_version['version_no']} 执行审核批次 {review_batch_id}",
             parent_version_id=base_version_id,
@@ -94,6 +96,15 @@ class VersionService:
             action_batch_id=resolved_action_batch_id,
             quality_score=quality_score,
         )
+        if not created:
+            existing = version_repo.get_version(new_version_id)
+            return SaveVersionResult(
+                source_version_id=base_version_id,
+                new_version_id=new_version_id,
+                new_version_no=new_version_no,
+                node_count=taxonomy_repo.count_nodes(new_version_id),
+                quality_score=existing.get("quality_score") if existing else None,
+            )
         taxonomy_repo.bulk_insert_nodes(version_id=new_version_id, nodes=recalculated)
         suggestions = SuggestionRepository(self.settings).list_suggestions(
             review_batch_id=review_batch_id
@@ -190,31 +201,44 @@ class VersionService:
         self,
         version_id: int,
         operator: str = "local_user",
+        *,
+        workflow_id: str | None = None,
+        analysis_run_id: str | None = None,
+        action_batch_id: str | None = None,
     ) -> SaveVersionResult:
         version_repo = VersionRepository(self.settings)
         target = version_repo.get_version(version_id)
         if target is None:
             raise ValueError(f"Taxonomy version {version_id} was not found.")
         nodes = TaxonomyRepository(self.settings).list_node_records(version_id)
-        new_version_no = self._next_version_no(int(target["file_id"]))
         quality_score = None
-        new_version_id = version_repo.create_version(
+        latest = version_repo.get_latest_for_file(int(target["file_id"]))
+        parent_version_id = int(latest["id"]) if latest else version_id
+        resolved_action_batch_id = action_batch_id or f"rollback:{uuid4().hex}"
+        new_version_id, new_version_no, created = version_repo.create_next_version(
             file_id=int(target["file_id"]),
-            version_no=new_version_no,
             description=f"回滚到 {target['version_no']} 的快照",
+            parent_version_id=parent_version_id,
+            source_workflow_id=workflow_id,
+            analysis_run_id=analysis_run_id,
+            action_batch_id=resolved_action_batch_id,
             quality_score=quality_score,
         )
-        TaxonomyRepository(self.settings).bulk_insert_nodes(
-            version_id=new_version_id,
-            nodes=_recalculate_tree(nodes),
-        )
+        if created:
+            TaxonomyRepository(self.settings).bulk_insert_nodes(
+                version_id=new_version_id,
+                nodes=_recalculate_tree(nodes),
+            )
         OperationLogRepository(self.settings).create_log(
             version_id=new_version_id,
+            workflow_id=workflow_id,
+            analysis_run_id=analysis_run_id,
             operator=operator,
             operation_type="rollback_version",
             operation_detail={
                 "rollback_from_version_id": version_id,
                 "rollback_from_version_no": target["version_no"],
+                "action_batch_id": resolved_action_batch_id,
             },
         )
         return SaveVersionResult(
@@ -224,20 +248,6 @@ class VersionService:
             node_count=len(nodes),
             quality_score=quality_score,
         )
-
-    def _next_version_no(self, file_id: int) -> str:
-        versions = VersionRepository(self.settings).list_versions(file_id=file_id)
-        max_minor = -1
-        for version in versions:
-            version_no = str(version["version_no"])
-            if not version_no.startswith("v1."):
-                continue
-            try:
-                max_minor = max(max_minor, int(version_no.split(".", 1)[1]))
-            except ValueError:
-                continue
-        return f"v1.{max_minor + 1 if max_minor >= 0 else 0}"
-
 
 def _recalculate_tree(nodes: list[TaxonomyNodeRecord]) -> list[TaxonomyNodeRecord]:
     node_map = {node.category_id: node for node in nodes}

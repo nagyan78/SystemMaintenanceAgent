@@ -99,6 +99,7 @@ def test_task_repository_persists_and_replays_consumed_interrupt(tmp_path) -> No
         },
         interrupt_id="int-1",
     )
+    assert repo.claim_interrupt(task_id, "int-1")[0] == "claimed"
     repo.save_resume_result(
         task_id=task_id,
         interrupt_id="int-1",
@@ -110,3 +111,35 @@ def test_task_repository_persists_and_replays_consumed_interrupt(tmp_path) -> No
     assert task["base_version_id"] == 1
     assert task["consumed_interrupt_id"] == "int-1"
     assert json.loads(task["resume_result_payload"])["round"] == 2
+
+
+def test_task_repository_atomically_claims_exact_active_interrupt(tmp_path) -> None:
+    settings = _settings(tmp_path)
+    init_db(settings)
+    repo = TaskRepository(settings)
+    task_id = repo.create_workflow_task(
+        file_id=1,
+        workflow_id="wf-claim",
+        thread_id="thread-claim",
+    )
+    repo.update_task(
+        task_id=task_id,
+        status="waiting_continue",
+        interrupt_payload={
+            "interrupt_type": "continue_optimization",
+            "interrupt_id": "active-int",
+        },
+        interrupt_id="active-int",
+    )
+
+    assert repo.claim_interrupt(task_id, "wrong-int")[0] == "mismatch"
+    assert repo.claim_interrupt(task_id, "active-int")[0] == "claimed"
+    assert repo.claim_interrupt(task_id, "active-int")[0] == "in_progress"
+    repo.save_resume_result(
+        task_id=task_id,
+        interrupt_id="active-int",
+        result={"status": "running"},
+    )
+    status, result = repo.claim_interrupt(task_id, "active-int")
+    assert status == "consumed"
+    assert result == {"status": "running"}

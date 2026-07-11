@@ -14,6 +14,7 @@ from backend.app.agents.graph import (
 )
 from backend.app.repositories.file_repo import FileRepository
 from backend.app.repositories.task_repo import TaskRepository
+from backend.app.repositories.quality_repo import QualityRepository
 from backend.app.schemas.workflow import StartWorkflowRequest, parse_resume_request
 from backend.app.services.workflow_context_service import WorkflowContextService
 
@@ -100,6 +101,17 @@ def get_workflow_status(task_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
     payload = _loads(task.get("result_payload"))
     interrupt_payload = _loads(task.get("interrupt_payload"))
+    quality_repo = QualityRepository(request.app.state.settings)
+    evaluation_before = (
+        quality_repo.get(int(payload["evaluation_before_id"]))
+        if payload.get("evaluation_before_id")
+        else None
+    )
+    evaluation_after = (
+        quality_repo.get(int(payload["evaluation_after_id"]))
+        if payload.get("evaluation_after_id")
+        else None
+    )
     return {
         "task_id": task["id"],
         "status": task["status"],
@@ -119,6 +131,8 @@ def get_workflow_status(task_id: str, request: Request) -> dict[str, Any]:
         "result_version_id": payload.get("result_version_id") or task.get("result_version_id"),
         "evaluation_before_id": payload.get("evaluation_before_id"),
         "evaluation_after_id": payload.get("evaluation_after_id"),
+        "evaluation_before": evaluation_before.model_dump() if evaluation_before else None,
+        "evaluation_after": evaluation_after.model_dump() if evaluation_after else None,
         "verification": payload.get("verification_payload"),
         "interrupt_type": interrupt_payload.get("interrupt_type"),
         "interrupt_id": interrupt_payload.get("interrupt_id") or task.get("interrupt_id"),
@@ -237,6 +251,10 @@ def resume_workflow(
     stored_type = stored_interrupt.get("interrupt_type") or (
         "human_review" if task["status"] == "waiting_review" else None
     )
+    if task.get("consumed_interrupt_id") == resume_request.interrupt_id and task.get(
+        "resume_result_payload"
+    ):
+        return _loads(task.get("resume_result_payload"))
     if task["status"] != expected_status or (
         stored_type is not None and stored_type != resume_request.interrupt_type
     ):
@@ -244,8 +262,21 @@ def resume_workflow(
             status_code=status.HTTP_409_CONFLICT,
             detail="Resume request does not match the active workflow interrupt.",
         )
-    if task.get("consumed_interrupt_id") == resume_request.interrupt_id:
-        return _loads(task.get("resume_result_payload"))
+    claim_status, claimed_result = task_repo.claim_interrupt(
+        task_id,
+        resume_request.interrupt_id,
+    )
+    if claim_status == "consumed":
+        return claimed_result or {}
+    if claim_status != "claimed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Resume request interrupt_id does not match the active interrupt."
+                if claim_status == "mismatch"
+                else "The active interrupt is already being resumed."
+            ),
+        )
     try:
         graph = build_taxonomy_graph(
             _get_workflow_checkpointer(),
@@ -257,6 +288,7 @@ def resume_workflow(
             config={"configurable": {"thread_id": task["thread_id"]}},
         )
     except Exception as exc:
+        task_repo.release_interrupt_claim(task_id, resume_request.interrupt_id)
         task_repo.update_task(
             task_id=task_id,
             status="failed",

@@ -13,6 +13,8 @@
         v-if="evaluationBeforeId || evaluationAfterId || verification"
         :evaluation-before-id="evaluationBeforeId"
         :evaluation-after-id="evaluationAfterId"
+        :evaluation-before="evaluationBefore"
+        :evaluation-after="evaluationAfter"
         :verification="verification"
       />
       <section class="card">
@@ -67,6 +69,8 @@ const interruptType = ref<'human_review' | 'continue_optimization' | ''>('')
 const interruptId = ref('')
 const evaluationBeforeId = ref<number | null>(state.evaluationBeforeId)
 const evaluationAfterId = ref<number | null>(state.evaluationAfterId)
+const evaluationBefore = ref<Record<string, unknown> | null>(state.evaluationBefore)
+const evaluationAfter = ref<Record<string, unknown> | null>(state.evaluationAfter)
 const verification = ref<Record<string, unknown> | null>(state.verification)
 const timer = ref<number | null>(null)
 
@@ -154,6 +158,8 @@ async function refresh() {
     interruptId.value = data.interrupt_id || ''
     evaluationBeforeId.value = data.evaluation_before_id || null
     evaluationAfterId.value = data.evaluation_after_id || null
+    evaluationBefore.value = data.evaluation_before || null
+    evaluationAfter.value = data.evaluation_after || null
     verification.value = data.verification || null
     patch({
       taskId,
@@ -165,6 +171,8 @@ async function refresh() {
       resultVersionId: data.result_version_id || null,
       evaluationBeforeId: data.evaluation_before_id || null,
       evaluationAfterId: data.evaluation_after_id || null,
+      evaluationBefore: data.evaluation_before || null,
+      evaluationAfter: data.evaluation_after || null,
       verification: data.verification || null,
       round: data.round || state.round,
       maxRounds: data.max_rounds || state.maxRounds,

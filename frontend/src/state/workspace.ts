@@ -19,6 +19,8 @@ export type WorkspaceState = {
   reviewBatchId: string | null
   evaluationBeforeId: number | null
   evaluationAfterId: number | null
+  evaluationBefore: Record<string, unknown> | null
+  evaluationAfter: Record<string, unknown> | null
   verification: Record<string, unknown> | null
   round: number
   maxRounds: number
@@ -46,6 +48,8 @@ const defaultState = (): WorkspaceState => ({
   reviewBatchId: null,
   evaluationBeforeId: null,
   evaluationAfterId: null,
+  evaluationBefore: null,
+  evaluationAfter: null,
   verification: null,
   round: 1,
   maxRounds: 2,

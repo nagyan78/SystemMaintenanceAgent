@@ -10,11 +10,11 @@
     <div class="quality-grid">
       <div>
         <span>修改前评价</span>
-        <strong>#{{ evaluationBeforeId || '—' }}</strong>
+        <strong>{{ scoreText(evaluationBefore, evaluationBeforeId) }}</strong>
       </div>
       <div>
         <span>修改后评价</span>
-        <strong>#{{ evaluationAfterId || '—' }}</strong>
+        <strong>{{ scoreText(evaluationAfter, evaluationAfterId) }}</strong>
       </div>
       <div>
         <span>可用维度</span>
@@ -35,6 +35,8 @@ import { computed } from 'vue'
 const props = defineProps<{
   evaluationBeforeId?: number | null
   evaluationAfterId?: number | null
+  evaluationBefore?: Record<string, unknown> | null
+  evaluationAfter?: Record<string, unknown> | null
   verification?: Record<string, unknown> | null
 }>()
 
@@ -54,7 +56,8 @@ const introduced_fingerprints = computed(() =>
     : [],
 )
 const available_dimensions = computed<Record<string, boolean>>(() => {
-  const value = props.verification?.available_dimensions
+  const value = props.evaluationAfter?.available_dimensions
+    || props.evaluationBefore?.available_dimensions
   return value && typeof value === 'object' ? value as Record<string, boolean> : {}
 })
 const availabilityText = computed(() => {
@@ -66,6 +69,13 @@ const qualityDelta = computed(() => {
   const value = props.verification?.quality_delta
   return typeof value === 'number' ? `${value >= 0 ? '+' : ''}${value}` : '待验证'
 })
+
+function scoreText(value: Record<string, unknown> | null | undefined, id?: number | null) {
+  const score = value?.total_score
+  const available = value?.available_points
+  if (typeof score === 'number' && typeof available === 'number') return `${score}/${available}`
+  return id ? `#${id}` : '—'
+}
 </script>
 
 <style scoped>

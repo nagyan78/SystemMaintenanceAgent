@@ -17,6 +17,7 @@ from backend.app.agents.nodes import (
     generate_suggestion_node,
     index_vector_node,
     index_result_version_node,
+    index_verification_versions_node,
     load_verification_context_node,
     load_version_context_node,
     parse_excel_node,
@@ -125,6 +126,14 @@ def route_after_index(state: TaxonomyGraphState) -> str:
     return "structure_diagnosis_node"
 
 
+def route_after_analysis_run(state: TaxonomyGraphState) -> str:
+    if state.status == "failed":
+        return "generate_failed_report_node"
+    if state.workflow_mode == "verify":
+        return "index_verification_versions_node"
+    return "index_vector_node"
+
+
 def route_after_verification(state: TaxonomyGraphState) -> str:
     if state.status == "failed":
         return "generate_failed_report_node"
@@ -135,7 +144,7 @@ def route_after_verification(state: TaxonomyGraphState) -> str:
         return "wait_manual_intervention_node"
     if next_decision == "ask_continue":
         return "wait_continue_node"
-    if verification_status == "degraded":
+    if verification_status == "degraded" or state.vector_index_status == "skipped":
         return "generate_degraded_report_node"
     return "generate_report_node"
 
@@ -167,6 +176,9 @@ def build_taxonomy_graph(
     builder.add_node("save_initial_version_node", save_initial_version_node)
     builder.add_node("index_vector_node", index_vector_node)
     builder.add_node("index_result_version_node", index_result_version_node)
+    builder.add_node(
+        "index_verification_versions_node", index_verification_versions_node
+    )
     builder.add_node("structure_diagnosis_node", structure_diagnosis_node)
     builder.add_node(
         "baseline_quality_evaluation_node", baseline_quality_evaluation_node
@@ -247,9 +259,20 @@ def build_taxonomy_graph(
     )
     builder.add_conditional_edges(
         "create_analysis_run_node",
-        lambda state: route_after_required_node(state, "index_vector_node"),
+        route_after_analysis_run,
         {
             "index_vector_node": "index_vector_node",
+            "index_verification_versions_node": "index_verification_versions_node",
+            "generate_failed_report_node": "generate_failed_report_node",
+        },
+    )
+    builder.add_conditional_edges(
+        "index_verification_versions_node",
+        lambda state: route_after_required_node(
+            state, "verify_base_quality_evaluation_node"
+        ),
+        {
+            "verify_base_quality_evaluation_node": "verify_base_quality_evaluation_node",
             "generate_failed_report_node": "generate_failed_report_node",
         },
     )

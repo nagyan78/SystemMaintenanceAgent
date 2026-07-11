@@ -1,7 +1,11 @@
+import sqlite3
+
 from backend.app.config import Settings
 from backend.app.db import init_db
 from backend.app.repositories.version_repo import VersionRepository
+from backend.app.repositories.taxonomy_repo import TaxonomyRepository
 from backend.app.schemas.workflow import StartWorkflowRequest
+from backend.app.schemas.taxonomy import TaxonomyNodeRecord
 from backend.app.services.version_service import VersionService
 from backend.app.services.workflow_context_service import WorkflowContextService
 
@@ -98,3 +102,75 @@ def test_save_new_version_is_idempotent_by_action_batch(tmp_path) -> None:
     assert VersionRepository(settings).get_version(first.new_version_id)[
         "parent_version_id"
     ] == base_id
+
+
+def test_action_batch_race_does_not_reinsert_existing_snapshot(
+    tmp_path, monkeypatch
+) -> None:
+    settings = _settings(tmp_path)
+    base_id, _ = _versions(settings)
+    service = VersionService(settings)
+    nodes = [
+        TaxonomyNodeRecord(
+            category_id=1,
+            category_name="根",
+            parent_id=None,
+            level=1,
+            path_ids="1",
+            path_names="根",
+            is_leaf=1,
+        )
+    ]
+    first = service.save_new_version(
+        base_version_id=base_id,
+        review_batch_id="review-race",
+        action_batch_id="batch-race",
+        nodes=nodes,
+    )
+    monkeypatch.setattr(
+        VersionRepository,
+        "get_by_action_batch",
+        lambda self, action_batch_id: None,
+    )
+
+    raced = service.save_new_version(
+        base_version_id=base_id,
+        review_batch_id="review-race",
+        action_batch_id="batch-race",
+        nodes=[nodes[0].model_copy(update={"category_name": "竞争写入"})],
+    )
+
+    assert raced.new_version_id == first.new_version_id
+    assert TaxonomyRepository(settings).get_node_detail(
+        first.new_version_id, 1
+    )["category_name"] == "根"
+
+
+def test_init_db_rejects_duplicate_versions_instead_of_skipping_constraint(
+    tmp_path,
+) -> None:
+    settings = _settings(tmp_path)
+    with sqlite3.connect(tmp_path / "app.db") as connection:
+        connection.executescript(
+            """
+            CREATE TABLE taxonomy_version (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id INTEGER NOT NULL,
+                version_no TEXT NOT NULL,
+                description TEXT,
+                quality_score REAL,
+                snapshot_path TEXT,
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO taxonomy_version(file_id, version_no) VALUES (1, 'v1.0');
+            INSERT INTO taxonomy_version(file_id, version_no) VALUES (1, 'v1.0');
+            """
+        )
+
+    try:
+        init_db(settings)
+    except RuntimeError as exc:
+        assert "idx_version_file_version_no" in str(exc)
+        assert "duplicate" in str(exc).lower()
+    else:
+        raise AssertionError("duplicate legacy versions were silently accepted")

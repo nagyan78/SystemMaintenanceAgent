@@ -40,11 +40,23 @@ export type WorkflowStatus = {
   result_version_id?: number
   evaluation_before_id?: number
   evaluation_after_id?: number
+  evaluation_before?: QualityEvaluationSummary | null
+  evaluation_after?: QualityEvaluationSummary | null
   verification?: Record<string, unknown>
   interrupt_type?: 'human_review' | 'continue_optimization'
   interrupt_id?: string
   round?: number
   max_rounds?: number
+}
+
+export type QualityEvaluationSummary = {
+  id?: number
+  total_score: number
+  available_points: number
+  coverage_ratio: number
+  available_dimensions: Record<string, boolean>
+  dimensions: Record<string, number>
+  score_version: string
 }
 
 export type HumanReviewResumeRequest = {

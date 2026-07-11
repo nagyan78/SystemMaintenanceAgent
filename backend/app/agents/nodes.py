@@ -245,6 +245,35 @@ def index_result_version_node(state: TaxonomyGraphState) -> StateUpdate:
         _require_current_version_id(state),
         changed_category_ids=state.affected_node_ids or None,
     )
+
+
+def index_verification_versions_node(state: TaxonomyGraphState) -> StateUpdate:
+    if state.base_version_id is None or state.result_version_id is None:
+        raise WorkflowNodeError(
+            "MISSING_VERIFICATION_VERSION",
+            "Verify indexing requires base and result versions.",
+        )
+    results = [
+        VectorIndexService(_runtime_settings).index_version(state.base_version_id),
+        VectorIndexService(_runtime_settings).index_version(state.result_version_id),
+    ]
+    failed = next((item for item in results if item.status == "failed"), None)
+    if failed is not None:
+        raise WorkflowNodeError(
+            "VERIFY_VECTOR_INDEX_FAILED",
+            failed.error_message or "Verification vector index failed.",
+        )
+    combined_status = (
+        "skipped" if any(item.status == "skipped" for item in results) else "ready"
+    )
+    return _complete_step(
+        state,
+        "index_verification_versions_node",
+        current_step="index_verification_versions",
+        progress=35,
+        vector_index_status=combined_status,
+        vector_index_count=sum(item.indexed_count for item in results),
+    )
     if result.status == "failed":
         raise WorkflowNodeError(
             "RESULT_VECTOR_INDEX_FAILED",
@@ -369,6 +398,13 @@ def verification_node(state: TaxonomyGraphState) -> StateUpdate:
         current_round=state.round,
         max_rounds=state.max_rounds,
     )
+    return _complete_step(
+        state,
+        "verification_node",
+        current_step="verification",
+        progress=98,
+        verification_payload=result.model_dump(),
+    )
 
 
 def apply_continue_decision(
@@ -459,13 +495,6 @@ def wait_manual_intervention_node(state: TaxonomyGraphState) -> StateUpdate:
     }
     _record_progress(state, "wait_manual_intervention_node", update)
     return update
-    return _complete_step(
-        state,
-        "verification_node",
-        current_step="verification",
-        progress=98,
-        verification_payload=result.model_dump(),
-    )
 
 
 def diagnosis_planning_node(state: TaxonomyGraphState) -> StateUpdate:
@@ -780,6 +809,9 @@ save_initial_version_node = node_guard(
 index_vector_node = node_guard("index_vector_node", index_vector_node)
 index_result_version_node = node_guard(
     "index_result_version_node", index_result_version_node
+)
+index_verification_versions_node = node_guard(
+    "index_verification_versions_node", index_verification_versions_node
 )
 structure_diagnosis_node = node_guard(
     "structure_diagnosis_node",

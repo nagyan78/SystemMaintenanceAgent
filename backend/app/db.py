@@ -296,8 +296,12 @@ def _create_unique_index_if_clean(
         LIMIT 1
         """
     ).fetchone()
-    if duplicate is None:
-        connection.execute(
-            f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} "
-            f"ON {table_name}({column_sql}) {where_sql}"
+    if duplicate is not None:
+        raise RuntimeError(
+            f"Cannot create required unique index {index_name}: "
+            f"duplicate values exist in {table_name}({column_sql})."
         )
+    connection.execute(
+        f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} "
+        f"ON {table_name}({column_sql}) {where_sql}"
+    )

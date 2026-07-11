@@ -1,4 +1,6 @@
 from backend.app.agents.graph import build_taxonomy_graph
+from backend.app.agents.nodes import configure_workflow_runtime, verification_node
+from backend.app.agents.states import TaxonomyGraphState
 from backend.app.config import Settings
 from backend.app.db import init_db
 from backend.app.repositories.taxonomy_repo import TaxonomyRepository
@@ -131,3 +133,40 @@ def test_graph_runs_verification_after_result_evaluation() -> None:
 
     assert ("result_quality_evaluation_node", "verification_node") in edges
     assert ("verify_result_quality_evaluation_node", "verification_node") in edges
+
+
+def test_verification_node_returns_structured_state_update(tmp_path) -> None:
+    settings = _settings(tmp_path)
+    base_id, result_id = _seed_versions(settings)
+    evaluator = QualityEvaluationService(settings)
+    before = evaluator.evaluate(
+        workflow_id="wf-node",
+        analysis_run_id="run-node",
+        version_id=base_id,
+        evaluation_role="verify_base",
+    )
+    after = evaluator.evaluate(
+        workflow_id="wf-node",
+        analysis_run_id="run-node",
+        version_id=result_id,
+        evaluation_role="verify_result",
+    )
+    configure_workflow_runtime(settings)
+
+    update = verification_node(
+        TaxonomyGraphState(
+            workflow_id="wf-node",
+            thread_id="thread-node",
+            workflow_mode="verify",
+            base_version_id=base_id,
+            current_version_id=result_id,
+            result_version_id=result_id,
+            analysis_run_id="run-node",
+            evaluation_before_id=before.id,
+            evaluation_after_id=after.id,
+            affected_node_ids=[2, 4],
+        )
+    )
+
+    assert update["current_step"] == "verification"
+    assert update["verification_payload"]["next_decision"] == "manual_intervention"

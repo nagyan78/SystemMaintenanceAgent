@@ -43,6 +43,12 @@ def test_verification_routes_to_continue_degraded_manual_or_success() -> None:
     assert route_after_verification(
         _state(verification_payload={"next_decision": "finish", "status": "passed"})
     ) == "generate_report_node"
+    assert route_after_verification(
+        _state(
+            vector_index_status="skipped",
+            verification_payload={"next_decision": "finish", "status": "passed"},
+        )
+    ) == "generate_degraded_report_node"
 
 
 def test_continue_promotes_result_and_clears_round_scoped_state() -> None:

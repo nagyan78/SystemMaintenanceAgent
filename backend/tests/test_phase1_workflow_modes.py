@@ -45,7 +45,11 @@ def test_graph_contains_explicit_mode_nodes_and_verify_has_no_forbidden_edge() -
     }.issubset(node_ids)
     assert ("__start__", "resolve_input_node") in edges
     assert ("load_verification_context_node", "create_analysis_run_node") in edges
-    assert ("index_vector_node", "verify_base_quality_evaluation_node") in edges
+    assert ("create_analysis_run_node", "index_verification_versions_node") in edges
+    assert (
+        "index_verification_versions_node",
+        "verify_base_quality_evaluation_node",
+    ) in edges
     assert (
         "verify_base_quality_evaluation_node",
         "verify_result_quality_evaluation_node",
