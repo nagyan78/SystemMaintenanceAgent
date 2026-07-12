@@ -5,7 +5,7 @@ const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.me
 assert.equal(packageJson.scripts['test:contract'], 'node tests/navigation-contract.test.mjs')
 
 const routerSource = readFileSync(new URL('../src/router/index.ts', import.meta.url), 'utf8')
-for (const route of ['/upload', '/workflow/:taskId', '/review/:reviewBatchId', '/versions', '/report/:versionId', '/evaluation']) {
+for (const route of ['/upload', '/workflow/:taskId', '/review/:reviewBatchId', '/versions', '/report/:versionId', '/evaluation', '/triage']) {
   assert.ok(routerSource.includes(route), `missing route ${route}`)
 }
 
@@ -53,6 +53,9 @@ for (const eventName of ['agent_step', 'agent_tool_completed', 'candidate_comple
   assert.ok(workflowSource.includes(eventName), `workflow must consume ${eventName}`)
 }
 assert.ok(workflowSource.includes('cancelWorkflow'), 'workflow must expose safe cancellation')
+for (const label of ['Model calls', 'Token', 'Wall time', 'Batch decision', 'Triage']) assert.ok(workflowSource.includes(label), `workflow budget missing ${label}`)
+const triageSource = readFileSync(new URL('../src/views/TriageView.vue', import.meta.url), 'utf8')
+for (const label of ['确认问题', '确认正常', '仍不确定', '检测器分歧']) assert.ok(triageSource.includes(label), `triage view missing ${label}`)
 
 const reviewSource = readFileSync(new URL('../src/views/ReviewView.vue', import.meta.url), 'utf8')
 const actionPreviewSource = readFileSync(new URL('../src/components/ActionPreview.vue', import.meta.url), 'utf8')

@@ -23,6 +23,9 @@ from backend.app.services.suggestion_service import SuggestionAgent
 from backend.app.services.taxonomy_service import TaxonomyService
 from backend.app.services.vector_index_service import VectorIndexService
 from backend.app.services.version_service import VersionService
+from backend.app.services.adaptive_planning_service import AdaptivePlanningService
+from backend.app.schemas.planning import DiagnosisBatchFeedback, MaintenancePlan
+from backend.app.repositories.triage_repo import TriageRepository
 
 
 StateUpdate = dict[str, Any]
@@ -198,11 +201,10 @@ def structure_diagnosis_node(state: TaxonomyGraphState) -> StateUpdate:
 def diagnosis_planning_node(state: TaxonomyGraphState) -> StateUpdate:
     version_id = _require_current_version_id(state)
     if state.enable_ai_analysis:
-        plan = DiagnosisPlanningAgent(_current_settings()).run(
-            structure_stats=state.structure_issue_summary,
-            tree_overview=TaxonomyService(_current_settings()).get_planning_overview(version_id),
-        )
+        maintenance = AdaptivePlanningService().create(workflow_id=state.workflow_id, version_id=version_id, candidate_budget=20)
+        plan = DiagnosisPlan(sample_strategy=maintenance.strategy, estimated_candidates=sum(item.candidate_budget for item in maintenance.targets))
     else:
+        maintenance = None
         plan = DiagnosisPlan(sample_strategy="focused", estimated_candidates=0)
     return _complete_step(
         state,
@@ -210,6 +212,8 @@ def diagnosis_planning_node(state: TaxonomyGraphState) -> StateUpdate:
         current_step="diagnosis_planning",
         progress=62,
         diagnosis_plan=plan.model_dump(),
+        maintenance_plan=maintenance.model_dump() if maintenance else None,
+        plan_revision=maintenance.revision if maintenance else 1,
     )
 
 
@@ -228,6 +232,14 @@ def content_diagnosis_node(state: TaxonomyGraphState) -> StateUpdate:
         work_item_counts = subgraph_result.get("work_item_counts", {})
     else:
         issues_count, analysis_run_id, work_item_counts = 0, None, {}
+    triage_count = len(TriageRepository(_current_settings()).list(state.workflow_id))
+    plan_update = {}
+    if state.maintenance_plan:
+        maintenance = MaintenancePlan.model_validate(state.maintenance_plan)
+        processed = sum(int(work_item_counts.get(key, 0)) for key in ("succeeded", "clean", "inconclusive", "permanent_failed"))
+        feedback = DiagnosisBatchFeedback(batch_id=analysis_run_id or "rules", plan_revision=maintenance.revision, processed=processed, issues=issues_count, clean=int(work_item_counts.get("clean",0)), inconclusive=int(work_item_counts.get("inconclusive",0)), failed=int(work_item_counts.get("permanent_failed",0)), model_calls=processed, tokens=0, wall_seconds=0)
+        revised = AdaptivePlanningService().revise(maintenance, feedback)
+        plan_update = {"maintenance_plan": revised.model_dump(), "plan_revision": revised.revision, "plan_decision": revised.decision, "stop_reason": revised.stop_reason, "model_calls_used": feedback.model_calls, "tokens_used": feedback.tokens, "wall_seconds_used": feedback.wall_seconds}
     return _complete_step(
         state,
         "content_diagnosis_node",
@@ -236,6 +248,8 @@ def content_diagnosis_node(state: TaxonomyGraphState) -> StateUpdate:
         content_issue_count=issues_count,
         analysis_run_id=analysis_run_id,
         work_item_counts=work_item_counts,
+        triage_count=triage_count,
+        **plan_update,
     )
 
 

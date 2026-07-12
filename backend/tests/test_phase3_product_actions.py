@@ -106,3 +106,14 @@ def test_review_preview_api_returns_diff_without_nodes(tmp_path):
     payload = response.json()
     assert payload["valid"] is True and len(payload["diff"]["split"]) == 1
     assert "nodes" not in payload
+
+
+def test_delete_leaf_checks_real_reference_table(tmp_path):
+    settings = _settings(tmp_path); version_id = _seed_version(settings)
+    issue_id = _create_issue(settings, version_id, 30, "redundant_leaf")
+    suggestion = _suggest(settings, version_id, issue_id, "delete_leaf_node", 30, {})
+    from backend.app.db import connect
+    with connect(settings) as connection:
+        connection.execute("INSERT INTO category_reference(version_id,category_id,reference_type,reference_key) VALUES(?,?,?,?)",(version_id,30,"catalog","external-1"))
+    with pytest.raises(ValueError, match="外部引用"):
+        ActionService(settings).execute_suggestion_records(version_id=version_id, review_batch_id="phase3", approved=[suggestion])

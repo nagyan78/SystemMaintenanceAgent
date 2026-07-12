@@ -32,6 +32,9 @@ class Settings(BaseModel):
     agent_embedding_max_concurrency: int = Field(default_factory=lambda: int(os.getenv("AGENT_EMBEDDING_MAX_CONCURRENCY", "4")))
     agent_work_item_max_attempts: int = Field(default_factory=lambda: int(os.getenv("AGENT_WORK_ITEM_MAX_ATTEMPTS", "3")))
     agent_lease_seconds: int = Field(default_factory=lambda: int(os.getenv("AGENT_LEASE_SECONDS", "120")))
+    llm_fallback_enabled: bool = Field(default_factory=lambda: os.getenv("LLM_FALLBACK_ENABLED", "true").lower() in {"1","true","yes"})
+    llm_max_calls: int = Field(default_factory=lambda: int(os.getenv("LLM_MAX_CALLS", "100")))
+    llm_max_tokens: int = Field(default_factory=lambda: int(os.getenv("LLM_MAX_TOKENS", "100000")))
     max_tree_depth_threshold: int = 7
     max_children_threshold: int = 80
     max_upload_size_bytes: int = 50 * 1024 * 1024

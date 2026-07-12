@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from pydantic import BaseModel, Field, model_validator
 from backend.app.repositories.tool_cache_repo import ToolCacheRepository
 from backend.app.services.tool_cache import DataRevisionResolver, normalized_args_hash
@@ -35,7 +36,15 @@ class ToolRegistry:
             cached=self.repo.get(self.workflow_id,self.version_id,name,key,revision)
             if cached is not None: self.metrics.cache_hits+=1; return cached
         if spec.side_effect and not values.get("idempotency_key"): raise ValueError("side-effect tool requires idempotency_key")
-        result=self.functions[name](**values)
+        executor=ThreadPoolExecutor(max_workers=1)
+        future=executor.submit(self.functions[name], **values)
+        try:
+            result=future.result(timeout=spec.timeout_ms/1000)
+        except FutureTimeoutError as exc:
+            future.cancel(); executor.shutdown(wait=False, cancel_futures=True)
+            raise TimeoutError(f"tool {name} timed out after {spec.timeout_ms}ms") from exc
+        else:
+            executor.shutdown(wait=True)
         if isinstance(result,list): result=result[:spec.result_limit]
         if isinstance(result,dict): result={k:v for k,v in result.items() if k not in spec.redacted_fields}
         if spec.cache_ttl_seconds: self.repo.put(self.workflow_id,self.version_id,name,key,revision,result,spec.cache_ttl_seconds)

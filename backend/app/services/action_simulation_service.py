@@ -12,6 +12,8 @@ from backend.app.tools.validation_tools import extract_move_new_parent_id, resol
 
 
 class SnapshotActionApplier:
+    def __init__(self, reference_checker=None):
+        self.reference_checker = reference_checker
     def apply(self, nodes: dict[int, TaxonomyNodeRecord], suggestion: SuggestionRecord) -> None:
         handler = getattr(self, f"_{suggestion.action_type}", None)
         if handler is None:
@@ -103,7 +105,7 @@ class SnapshotActionApplier:
         self._node(nodes, payload.target_node_id)
         if any(item.parent_id == payload.target_node_id for item in nodes.values()):
             raise ValueError("delete_leaf_node 只允许删除叶子节点")
-        if suggestion.action_payload.get("external_reference_count", 0):
+        if self.reference_checker and self.reference_checker(suggestion.version_id, payload.target_node_id):
             raise ValueError("delete_leaf_node 目标存在外部引用")
         del nodes[payload.target_node_id]
 
@@ -116,7 +118,8 @@ class SnapshotActionApplier:
 
 class ActionSimulationService:
     def __init__(self, settings: Settings) -> None:
-        self.settings, self.applier = settings, SnapshotActionApplier()
+        repo = TaxonomyRepository(settings)
+        self.settings, self.applier = settings, SnapshotActionApplier(repo.count_external_references)
 
     def simulate(self, version_id: int, suggestions: list[SuggestionRecord]) -> ActionPreview:
         source = TaxonomyRepository(self.settings).list_node_records(version_id, include_deprecated=True)

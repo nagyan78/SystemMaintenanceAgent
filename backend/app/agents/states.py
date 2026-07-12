@@ -48,8 +48,16 @@ class TaxonomyGraphState(BaseModel):
     model_provider: str | None = None
     model_name: str | None = None
     diagnosis_plan: dict[str, Any] | None = None
+    maintenance_plan: dict[str, Any] | None = None
+    plan_revision: int = 1
+    plan_decision: str = "initial"
+    stop_reason: str | None = None
+    model_calls_used: int = 0
+    tokens_used: int = 0
+    wall_seconds_used: float = 0
     analysis_run_id: str | None = None
     work_item_counts: dict[str, int] = Field(default_factory=dict)
+    triage_count: int = 0
     suggestion_count: int = 0
     approved_action_count: int = 0
     executed_action_count: int = 0

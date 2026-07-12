@@ -56,6 +56,7 @@ class VectorIndexService:
                 for node, text, vector in zip(nodes, texts, vectors, strict=True)
             ]
         )
+        VersionRepository(self.settings).increment_vector_index_generation(version_id)
         return IndexResult(
             version_id=version_id,
             status="completed",

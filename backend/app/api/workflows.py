@@ -136,6 +136,13 @@ def get_workflow_status(task_id: str, request: Request) -> dict[str, Any]:
         "end_time": task.get("end_time"),
         "analysis_run_id": payload.get("analysis_run_id"),
         "work_item_counts": payload.get("work_item_counts", {}),
+        "plan_revision": payload.get("plan_revision", 1),
+        "plan_decision": payload.get("plan_decision", "initial"),
+        "stop_reason": payload.get("stop_reason"),
+        "model_calls_used": payload.get("model_calls_used", 0),
+        "tokens_used": payload.get("tokens_used", 0),
+        "wall_seconds_used": payload.get("wall_seconds_used", 0),
+        "triage_count": payload.get("triage_count", 0),
     }
 
 

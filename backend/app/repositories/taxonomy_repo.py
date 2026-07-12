@@ -213,6 +213,13 @@ class TaxonomyRepository:
                 ).fetchone()[0]
             )
 
+    def count_external_references(self, version_id: int, category_id: int) -> int:
+        with connect(self.settings) as connection:
+            return int(connection.execute(
+                "SELECT COUNT(*) FROM category_reference WHERE version_id=? AND category_id=?",
+                (version_id, category_id),
+            ).fetchone()[0])
+
     def get_overview_counts(self, version_id: int) -> dict:
         with connect(self.settings) as connection:
             row = connection.execute(

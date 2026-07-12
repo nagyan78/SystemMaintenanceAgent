@@ -81,6 +81,7 @@ const navItems = computed<NavItem[]>(() => {
     },
     { label: '版本管理', icon: '🗂', to: '/versions', match: '/versions' },
     { label: '质量评价', icon: '📊', to: '/evaluation', match: '/evaluation' },
+    { label: '人工分流', icon: '⚖', to: '/triage', match: '/triage' },
     {
       label: '报告',
       icon: '📄',
@@ -105,6 +106,7 @@ const title = computed(() => {
   if (route.path.startsWith('/tree')) return '分类树'
   if (route.path.startsWith('/diagnosis')) return '诊断问题'
   if (route.path.startsWith('/evaluation')) return '质量评价'
+  if (route.path.startsWith('/triage')) return '人工分流'
   return '上传与启动'
 })
 

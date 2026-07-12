@@ -16,6 +16,8 @@ from backend.app.schemas.issue import DiagnosisIssueRecord
 from backend.app.schemas.suggestion import AdjustmentSuggestion
 from backend.app.tools.validation_tools import validate_suggestion_action
 from backend.app.vectorstores.qdrant_store import QdrantStore
+from backend.app.repositories.triage_repo import TriageRepository
+from backend.app.services.tool_registry import ToolRegistry, ToolSpec
 
 
 @dataclass(frozen=True)
@@ -58,24 +60,28 @@ class AgentToolFactory:
         diagnosis = self.diagnosis
         store = self.store
         settings = self.settings
+        registry = ToolRegistry(settings, scope.workflow_id if scope else "unscoped", scope.version_id if scope else 0, "content_diagnosis")
+        registry.register(ToolSpec(name="get_node_detail", owner_agents={"content_diagnosis"}, read_only=True, side_effect=False, timeout_ms=3000, cost_level="low", cache_ttl_seconds=300, result_limit=1, scoped_arguments={"version_id"}), lambda version_id, category_id: taxonomy.get_node_detail(version_id, category_id) or {})
+        registry.register(ToolSpec(name="get_node_path", owner_agents={"content_diagnosis"}, read_only=True, side_effect=False, timeout_ms=3000, cost_level="low", cache_ttl_seconds=300, result_limit=1, scoped_arguments={"version_id"}), lambda version_id, category_id: taxonomy.get_node_path(version_id, category_id))
+        registry.register(ToolSpec(name="get_children", owner_agents={"content_diagnosis"}, read_only=True, side_effect=False, timeout_ms=3000, cost_level="low", cache_ttl_seconds=300, result_limit=100, scoped_arguments={"version_id"}), lambda version_id, parent_id: taxonomy.get_children(version_id, parent_id))
 
         @tool
         def get_node_detail(version_id: int, category_id: int) -> dict:
             """查询当前版本节点详情。"""
             _enforce_scope(scope, version_id)
-            return taxonomy.get_node_detail(version_id, category_id) or {}
+            return registry.invoke("get_node_detail", {"version_id": version_id, "category_id": category_id}) if scope else (taxonomy.get_node_detail(version_id, category_id) or {})
 
         @tool
         def get_node_path(version_id: int, category_id: int) -> str:
             """查询当前版本节点路径。"""
             _enforce_scope(scope, version_id)
-            return taxonomy.get_node_path(version_id, category_id)
+            return registry.invoke("get_node_path", {"version_id": version_id, "category_id": category_id}) if scope else taxonomy.get_node_path(version_id, category_id)
 
         @tool
         def get_children(version_id: int, parent_id: int) -> list[dict]:
             """查询当前版本直接子节点。"""
             _enforce_scope(scope, version_id)
-            return taxonomy.get_children(version_id, parent_id)[:100]
+            return registry.invoke("get_children", {"version_id": version_id, "parent_id": parent_id}) if scope else taxonomy.get_children(version_id, parent_id)[:100]
 
         @tool
         def search_similar_nodes(version_id: int, node_text: str, top_k: int = 10) -> list[dict]:
@@ -92,12 +98,20 @@ class AgentToolFactory:
             """提交当前作用域的一条诊断结果。"""
             version_id = int(issue["version_id"])
             _enforce_scope(scope, version_id)
+            confidence = _coerce_confidence(issue.get("confidence", 0.0))
+            if confidence < 0.6 or issue.get("detector_disagreement") or issue.get("inconclusive"):
+                triage_id = TriageRepository(settings).create(
+                    workflow_id=scope.workflow_id if scope else "unscoped",
+                    version_id=version_id,
+                    issue={**issue, "confidence": confidence},
+                )
+                return f"triage_{triage_id}"
             record = DiagnosisIssueRecord(
                 issue_type=issue["issue_type"], node_id=issue.get("node_id"),
                 node_name=issue.get("node_name"),
                 description=issue.get("description") or issue.get("reason") or "内容诊断问题",
                 reason=issue.get("reason", ""), risk_level=issue.get("risk_level", "low"),
-                confidence=_coerce_confidence(issue.get("confidence", 0.0)),
+                confidence=confidence,
                 status=issue.get("status", "pending"), path=issue.get("path"),
                 evidence=issue.get("evidence") or issue.get("reason"), source="model_analysis",
             )

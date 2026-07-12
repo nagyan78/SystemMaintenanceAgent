@@ -12,6 +12,7 @@ from backend.app.api import (
     reviews,
     suggestions,
     taxonomy,
+    triage,
     versions,
     workflows,
 )
@@ -51,6 +52,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(chat.router, prefix="/api")
     app.include_router(agent_runs.router, prefix="/api")
     app.include_router(evaluations.router, prefix="/api")
+    app.include_router(triage.router, prefix="/api")
     # Final-demo compatibility routes. The Vue client continues to use /api,
     # while these aliases match the concise public contract in 最终方案.
     app.add_api_route("/upload", files.upload_file, methods=["POST"], tags=["demo"])
