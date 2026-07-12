@@ -52,6 +52,12 @@ for (const eventName of ['agent_step', 'agent_tool_completed', 'candidate_comple
 }
 assert.ok(workflowSource.includes('cancelWorkflow'), 'workflow must expose safe cancellation')
 
+const reviewSource = readFileSync(new URL('../src/views/ReviewView.vue', import.meta.url), 'utf8')
+const actionPreviewSource = readFileSync(new URL('../src/components/ActionPreview.vue', import.meta.url), 'utf8')
+assert.ok(reviewSource.includes('ActionPreview'), 'review must render action preview')
+assert.ok(reviewSource.includes('previewReviewBatch'), 'review must request server-side simulation')
+assert.ok(actionPreviewSource.includes('执行前模拟'), 'action preview must explain simulation')
+
 const progressSource = readFileSync(new URL('../src/components/AgentRunProgress.vue', import.meta.url), 'utf8')
 for (const label of ['候选总数', '已处理', '发现问题', '正常', '不确定', '失败', '剩余']) {
   assert.ok(progressSource.includes(label), `agent progress must show ${label}`)

@@ -13,6 +13,7 @@ from backend.app.tools.validation_tools import (
     resolve_clean_synonym_update,
     validate_suggestion_action,
 )
+from backend.app.services.action_simulation_service import ActionSimulationService, SnapshotActionApplier
 
 
 class ActionService:
@@ -64,13 +65,15 @@ class ActionService:
         review_batch_id: str,
         approved: list[SuggestionRecord],
         operator: str = "local_user",
+        persist_side_effects: bool = True,
     ) -> ExecuteActionsResult:
         validations = self.validate_suggestion_records(approved)
         failed_validations = [item for item in validations if not item.valid]
         if failed_validations:
-            for item in failed_validations:
-                if item.suggestion_id is not None:
-                    self.suggestion_repo.update_status(item.suggestion_id, "failed")
+            if persist_side_effects:
+                for item in failed_validations:
+                    if item.suggestion_id is not None:
+                        self.suggestion_repo.update_status(item.suggestion_id, "failed")
             joined = "; ".join(item.reason for item in failed_validations)
             raise ValueError(f"动作校验失败：{joined}")
         if not approved:
@@ -83,28 +86,15 @@ class ActionService:
                 nodes=self.taxonomy_repo.list_node_records(version_id),
             )
 
-        nodes = {
-            node.category_id: node
-            for node in self.taxonomy_repo.list_node_records(version_id)
-        }
         action_batch_id = str(uuid4())
-        failures: list[dict[str, Any]] = []
-        for suggestion in approved:
-            try:
-                self._apply_action(nodes, suggestion)
-            except ValueError as exc:
-                failures.append(
-                    {
-                        "suggestion_id": suggestion.id,
-                        "action_type": suggestion.action_type,
-                        "reason": str(exc),
-                    }
-                )
+        preview = ActionSimulationService(self.settings).simulate(version_id, approved)
+        failures: list[dict[str, Any]] = preview.errors
 
         if failures:
-            for failure in failures:
-                self.suggestion_repo.update_status(int(failure["suggestion_id"]), "failed")
-            self.log_repo.create_log(
+            if persist_side_effects:
+                for failure in failures:
+                    self.suggestion_repo.update_status(int(failure["suggestion_id"]), "failed")
+                self.log_repo.create_log(
                 version_id=version_id,
                 operator=operator,
                 operation_type="execute_actions_failed",
@@ -113,12 +103,13 @@ class ActionService:
                     "action_batch_id": action_batch_id,
                     "failures": failures,
                 },
-            )
+                )
             raise ValueError(f"动作执行失败：{failures[0]['reason']}")
 
-        for suggestion in approved:
-            self.suggestion_repo.update_status(suggestion.id, "executed")
-        self.log_repo.create_log(
+        if persist_side_effects:
+            for suggestion in approved:
+                self.suggestion_repo.update_status(suggestion.id, "executed")
+            self.log_repo.create_log(
             version_id=version_id,
             operator=operator,
             operation_type="execute_actions",
@@ -128,14 +119,14 @@ class ActionService:
                 "executed_count": len(approved),
                 "suggestion_ids": [item.id for item in approved],
             },
-        )
+            )
         return ExecuteActionsResult(
             source_version_id=version_id,
             review_batch_id=review_batch_id,
             action_batch_id=action_batch_id,
             executed_count=len(approved),
             failed_count=0,
-            nodes=list(nodes.values()),
+            nodes=preview.nodes,
         )
 
     def _apply_action(
@@ -143,26 +134,7 @@ class ActionService:
         nodes: dict[int, TaxonomyNodeRecord],
         suggestion: SuggestionRecord,
     ) -> None:
-        if suggestion.action_type == "clean_synonym":
-            self._clean_synonym(nodes, suggestion)
-            return
-        if suggestion.action_type == "rename_node":
-            self._rename_node(nodes, suggestion)
-            return
-        if suggestion.action_type == "move_node":
-            self._move_node(nodes, suggestion)
-            return
-        if suggestion.action_type == "mark_as_valid":
-            return
-        if suggestion.action_type == "split_subtree":
-            # M4 MVP records the reviewed split plan but deliberately does not
-            # mutate the taxonomy snapshot. This is a successful no-op, not an
-            # execution failure (see F07 §2.3 and §4).
-            return
-        if suggestion.action_type == "add_node":
-            self._add_node(nodes, suggestion)
-            return
-        raise ValueError(f"{suggestion.action_type} 在 M4 MVP 中不自动执行。")
+        SnapshotActionApplier().apply(nodes, suggestion)
 
     def _clean_synonym(
         self,

@@ -7,6 +7,7 @@ from backend.app.config import Settings, get_settings
 from backend.app.db import connect
 from backend.app.repositories.taxonomy_repo import TaxonomyRepository
 from backend.app.schemas.suggestion import ActionValidationResult, AdjustmentSuggestion
+from backend.app.schemas.action import DeprecateNodePayload, DeleteLeafPayload, MergeNodePayload, SplitSubtreePayload
 
 REMOVE_SYNONYM_KEYS = (
     "synonyms_to_remove",
@@ -33,6 +34,8 @@ ALLOWED_ACTION_TYPES = {
     "merge_node",
     "clean_synonym",
     "split_subtree",
+    "deprecate_node",
+    "delete_leaf_node",
     "mark_as_valid",
 }
 
@@ -62,6 +65,9 @@ def validate_suggestion_action(
         return _invalid("confidence 必须在 0 到 1 之间。")
     if suggestion.need_confirm is False and suggestion.risk_level in {"medium", "high"}:
         return _invalid("中高风险建议必须 need_confirm=true。")
+    if suggestion.action_type in {"merge_node", "split_subtree", "deprecate_node", "delete_leaf_node"}:
+        if not suggestion.need_confirm or suggestion.risk_level != "high":
+            return _invalid("结构治理动作必须为 high risk 且 need_confirm=true。")
     if not _issue_exists(runtime_settings, suggestion.version_id, suggestion.issue_id):
         return _invalid("issue_id 不存在。")
     if suggestion.action_type != "add_node" and suggestion.target_node_id is None:
@@ -121,8 +127,26 @@ def validate_suggestion_action(
         ):
             return _invalid("move_node 不能移动到自身子树下。")
     if suggestion.action_type == "merge_node":
-        if not suggestion.action_payload.get("source_node_id") or not suggestion.action_payload.get("target_node_id"):
-            return _invalid("merge_node 必须包含 source_node_id 和 target_node_id。")
+        try:
+            MergeNodePayload.model_validate(suggestion.action_payload)
+        except Exception as exc:
+            return _invalid(f"merge_node payload 非法：{exc}")
+    if suggestion.action_type == "split_subtree":
+        if "groups" in suggestion.action_payload:
+            try:
+                SplitSubtreePayload.model_validate(suggestion.action_payload)
+            except Exception as exc:
+                return _invalid(f"split_subtree payload 非法：{exc}")
+    if suggestion.action_type == "deprecate_node":
+        try:
+            DeprecateNodePayload.model_validate({**suggestion.action_payload, "target_node_id": suggestion.action_payload.get("target_node_id", suggestion.target_node_id)})
+        except Exception as exc:
+            return _invalid(f"deprecate_node payload 非法：{exc}")
+    if suggestion.action_type == "delete_leaf_node":
+        try:
+            DeleteLeafPayload.model_validate({**suggestion.action_payload, "target_node_id": suggestion.action_payload.get("target_node_id", suggestion.target_node_id)})
+        except Exception as exc:
+            return _invalid(f"delete_leaf_node payload 非法：{exc}")
     return ActionValidationResult(valid=True)
 
 

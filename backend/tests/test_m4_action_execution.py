@@ -170,7 +170,7 @@ def test_clean_synonym_generates_new_version_without_changing_base(tmp_path):
     assert log_count >= 1
 
 
-def test_split_subtree_is_recorded_as_successful_noop_in_m4_mvp(tmp_path):
+def test_legacy_split_plan_is_rejected_instead_of_recorded_as_noop(tmp_path):
     settings = _settings(tmp_path)
     base_version_id = _seed_version(settings)
     issue_id = _create_issue(settings, base_version_id, 20, "wide_node")
@@ -185,15 +185,13 @@ def test_split_subtree_is_recorded_as_successful_noop_in_m4_mvp(tmp_path):
         payload={"plan": "按语义拆分为多个中间类目"},
     )
 
-    result = ActionService(settings).execute_actions(base_version_id, review_batch_id)
-
-    assert result.executed_count == 1
-    assert result.failed_count == 0
-    assert result.nodes == TaxonomyRepository(settings).list_node_records(base_version_id)
+    import pytest
+    with pytest.raises(ValueError, match="high risk"):
+        ActionService(settings).execute_actions(base_version_id, review_batch_id)
     suggestions = SuggestionRepository(settings).list_suggestions(
         review_batch_id=review_batch_id
     )
-    assert [item.status for item in suggestions] == ["executed"]
+    assert [item.status for item in suggestions] == ["failed"]
 
 
 def test_clean_synonym_accepts_ai_payload_aliases(tmp_path):

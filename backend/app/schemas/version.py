@@ -51,6 +51,9 @@ class VersionDiff(BaseModel):
     renamed: list[dict] = Field(default_factory=list)
     moved: list[dict] = Field(default_factory=list)
     synonym_changed: list[dict] = Field(default_factory=list)
+    merged: list[dict] = Field(default_factory=list)
+    split: list[dict] = Field(default_factory=list)
+    deprecated: list[dict] = Field(default_factory=list)
 
 
 class ExportResult(BaseModel):

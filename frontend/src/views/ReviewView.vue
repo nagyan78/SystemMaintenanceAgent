@@ -2,6 +2,7 @@
   <AppShell>
     <div class="page-stack">
       <SuggestionTable :title="`Review batch ${reviewBatchId}`" :suggestions="suggestions" :selected-ids="selectedIds" @toggle="toggle" />
+      <ActionPreview v-if="preview" :preview="preview" />
       <section class="card">
         <div class="card-head">
           <div>
@@ -19,6 +20,7 @@
         </div>
         <div class="action-row">
           <button class="button primary" :disabled="loading || selectedIds.length === 0" @click="applyDecision('approve')">接受选中建议</button>
+          <button class="button secondary" :disabled="loading || selectedIds.length === 0" @click="loadPreview">预览选中动作</button>
           <button class="button secondary" :disabled="loading || statusCounts.pending + statusCounts.edited === 0" @click="applyDecision('reject')">拒绝其余建议</button>
           <RouterLink v-if="taskId" class="button secondary" :to="`/workflow/${taskId}`">查看工作流</RouterLink>
           <RouterLink class="button secondary" :to="state.fileId ? `/versions?file_id=${state.fileId}` : '/versions'">查看版本</RouterLink>
@@ -36,8 +38,9 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
 import SuggestionTable from '../components/SuggestionTable.vue'
-import { applyReviewDecision, getReviewBatch } from '../api/reviews'
-import type { SuggestionRecord } from '../api/reviews'
+import ActionPreview from '../components/ActionPreview.vue'
+import { applyReviewDecision, getReviewBatch, previewReviewBatch } from '../api/reviews'
+import type { ActionPreviewResult, SuggestionRecord } from '../api/reviews'
 import { resumeWorkflow } from '../api/workflows'
 import { useWorkspace } from '../state/workspace'
 
@@ -51,6 +54,7 @@ const selectedIds = ref<number[]>([])
 const loading = ref(false)
 const error = ref('')
 const message = ref('')
+const preview = ref<ActionPreviewResult | null>(null)
 const currentReportVersionId = computed(() => state.newVersionId || state.currentVersionId)
 const statusCounts = computed(() => suggestions.value.reduce(
   (counts, item) => {
@@ -70,6 +74,14 @@ function toggle(id: number) {
   selectedIds.value = selectedIds.value.includes(id)
     ? selectedIds.value.filter(value => value !== id)
     : [...selectedIds.value, id]
+}
+
+async function loadPreview() {
+  loading.value = true
+  error.value = ''
+  try { preview.value = await previewReviewBatch(reviewBatchId, selectedIds.value) }
+  catch (err) { error.value = err instanceof Error ? err.message : '动作预览失败' }
+  finally { loading.value = false }
 }
 
 async function applyDecision(decision: 'approve' | 'reject') {

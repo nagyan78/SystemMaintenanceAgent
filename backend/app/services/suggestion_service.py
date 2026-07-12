@@ -147,7 +147,7 @@ class SuggestionAgent:
                 issue,
                 action_type="split_subtree",
                 suggestion="建议为该过宽节点设计更细的中间分类，拆分前需人工确认拆分方案。",
-                risk_level="medium",
+                risk_level="high",
                 action_payload={"strategy": "manual_split_plan"},
             )
         elif issue_type in {"duplicate_name", "deep_level"}:

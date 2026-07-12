@@ -65,3 +65,14 @@ export function applyReviewDecision(reviewBatchId: string, payload: ReviewDecisi
 export function executeReviewBatch(reviewBatchId: string, operator = 'local_user') {
   return apiPost<ExecuteReviewResult>(`/reviews/${reviewBatchId}/execute`, { operator })
 }
+
+export type ActionPreviewResult = {
+  valid: boolean
+  errors: Array<Record<string, unknown>>
+  diff: Record<string, Array<Record<string, unknown>>>
+  review_hash: string
+}
+
+export function previewReviewBatch(reviewBatchId: string, suggestionIds: number[]) {
+  return apiPost<ActionPreviewResult>(`/reviews/${reviewBatchId}/preview`, { suggestion_ids: suggestionIds })
+}

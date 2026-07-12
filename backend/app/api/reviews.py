@@ -4,6 +4,8 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from backend.app.services.review_service import ReviewService
+from backend.app.repositories.suggestion_repo import SuggestionRepository
+from backend.app.services.action_simulation_service import ActionSimulationService
 
 router = APIRouter(prefix="/reviews", tags=["reviews"])
 
@@ -19,6 +21,10 @@ class ReviewDecisionRequest(BaseModel):
 
 class ExecuteReviewRequest(BaseModel):
     operator: str = "local_user"
+
+
+class PreviewReviewRequest(BaseModel):
+    suggestion_ids: list[int] = Field(default_factory=list)
 
 
 @router.get("/{review_batch_id}")
@@ -66,3 +72,17 @@ def execute_review_batch(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post("/{review_batch_id}/preview")
+def preview_review_batch(review_batch_id: str, payload: PreviewReviewRequest, request: Request) -> dict[str, Any]:
+    repo = SuggestionRepository(request.app.state.settings)
+    batch = repo.list_suggestions(review_batch_id=review_batch_id)
+    selected = [item for item in batch if not payload.suggestion_ids or item.id in payload.suggestion_ids]
+    if not selected:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No suggestions selected.")
+    version_ids = {item.version_id for item in selected}
+    if len(version_ids) != 1:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Preview requires one base version.")
+    preview = ActionSimulationService(request.app.state.settings).simulate(version_ids.pop(), selected)
+    return preview.model_dump(exclude={"nodes"})

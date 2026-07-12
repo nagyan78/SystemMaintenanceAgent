@@ -76,6 +76,7 @@ def init_db(settings: Settings) -> None:
                 category_group_name TEXT,
                 syn_list TEXT,
                 is_leaf INTEGER DEFAULT 0,
+                node_status TEXT NOT NULL DEFAULT 'active',
                 created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (version_id) REFERENCES taxonomy_version(id)
             );
@@ -226,6 +227,11 @@ def init_db(settings: Settings) -> None:
                 "start_time": "DATETIME",
                 "end_time": "DATETIME",
             },
+        )
+        _ensure_columns(
+            connection,
+            "category_node",
+            {"node_status": "TEXT NOT NULL DEFAULT 'active'"},
         )
         _ensure_columns(
             connection,

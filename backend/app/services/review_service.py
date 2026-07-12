@@ -136,11 +136,11 @@ class ReviewService:
             review_batch_id=review_batch_id,
             approved=approved,
             operator=operator,
+            persist_side_effects=False,
         )
-        save_result = VersionService(self.settings).save_new_version(
-            base_version_id=latest_version_id,
-            review_batch_id=review_batch_id,
-            nodes=action_result.nodes,
+        save_result = VersionService(self.settings).save_executed_action_batch(
+            base_version_id=latest_version_id, review_batch_id=review_batch_id,
+            nodes=action_result.nodes, suggestion_ids=[item.id for item in approved], operator=operator,
         )
         return {
             "review_batch_id": review_batch_id,

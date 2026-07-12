@@ -10,6 +10,8 @@ ActionType = Literal[
     "merge_node",
     "clean_synonym",
     "split_subtree",
+    "deprecate_node",
+    "delete_leaf_node",
     "mark_as_valid",
 ]
 RiskLevel = Literal["low", "medium", "high"]

@@ -6,6 +6,8 @@ from backend.app.repositories.version_repo import VersionRepository
 from backend.app.schemas.taxonomy import TaxonomyNodeRecord
 from backend.app.schemas.version import CreateVersionResult, SaveVersionResult, VersionDiff
 from backend.app.services.taxonomy_service import TaxonomyService
+from backend.app.db import connect
+import json
 
 
 class VersionService:
@@ -64,7 +66,7 @@ class VersionService:
         base_version = version_repo.get_version(base_version_id)
         if base_version is None:
             raise ValueError(f"Taxonomy version {base_version_id} was not found.")
-        snapshot_nodes = nodes or taxonomy_repo.list_node_records(base_version_id)
+        snapshot_nodes = nodes or taxonomy_repo.list_node_records(base_version_id, include_deprecated=True)
         recalculated = _recalculate_tree(snapshot_nodes)
         new_version_no = self._next_version_no(int(base_version["file_id"]))
         quality_score = _calc_quality_score(recalculated)
@@ -100,15 +102,48 @@ class VersionService:
             quality_score=quality_score,
         )
 
+    def save_executed_action_batch(
+        self, *, base_version_id: int, review_batch_id: str,
+        nodes: list[TaxonomyNodeRecord], suggestion_ids: list[int], operator: str,
+    ) -> SaveVersionResult:
+        base = VersionRepository(self.settings).get_version(base_version_id)
+        if base is None:
+            raise ValueError(f"Taxonomy version {base_version_id} was not found.")
+        recalculated = recalculate_tree(nodes)
+        new_version_no = self._next_version_no(int(base["file_id"]))
+        quality_score = _calc_quality_score(recalculated)
+        with connect(self.settings) as connection:
+            cursor = connection.execute(
+                "INSERT INTO taxonomy_version(file_id,version_no,description,quality_score) VALUES(?,?,?,?)",
+                (int(base["file_id"]), new_version_no, f"基于 {base['version_no']} 执行审核批次 {review_batch_id}", quality_score),
+            )
+            new_version_id = int(cursor.lastrowid)
+            connection.executemany(
+                """INSERT INTO category_node(version_id,category_id,category_name,parent_id,level,path_ids,path_names,category_group_id,category_pids,category_group_name,syn_list,is_leaf,node_status)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                [(new_version_id, n.category_id, n.category_name, n.parent_id, n.level, n.path_ids, n.path_names,
+                  n.category_group_id, n.category_pids, n.category_group_name, n.syn_list, n.is_leaf, n.node_status) for n in recalculated],
+            )
+            if suggestion_ids:
+                placeholders = ",".join("?" for _ in suggestion_ids)
+                connection.execute(f"UPDATE adjustment_suggestion SET status='executed' WHERE id IN ({placeholders})", suggestion_ids)
+            connection.execute(
+                "INSERT INTO operation_log(version_id,operator,operation_type,operation_detail) VALUES(?,?,?,?)",
+                (new_version_id, operator, "execute_and_save_actions", json.dumps({"base_version_id": base_version_id, "review_batch_id": review_batch_id, "suggestion_ids": suggestion_ids}, ensure_ascii=False)),
+            )
+        return SaveVersionResult(source_version_id=base_version_id, new_version_id=new_version_id,
+            new_version_no=new_version_no, node_count=len(recalculated), executed_count=len(suggestion_ids),
+            failed_count=0, quality_score=quality_score)
+
     def get_version_diff(self, from_id: int, to_id: int) -> VersionDiff:
         taxonomy_repo = TaxonomyRepository(self.settings)
         from_nodes = {
             int(item["category_id"]): item
-            for item in taxonomy_repo.list_nodes(from_id)
+            for item in taxonomy_repo.list_nodes(from_id, include_deprecated=True)
         }
         to_nodes = {
             int(item["category_id"]): item
-            for item in taxonomy_repo.list_nodes(to_id)
+            for item in taxonomy_repo.list_nodes(to_id, include_deprecated=True)
         }
         added_ids = sorted(set(to_nodes).difference(from_nodes))
         deleted_ids = sorted(set(from_nodes).difference(to_nodes))
@@ -116,6 +151,7 @@ class VersionService:
         renamed = []
         moved = []
         synonym_changed = []
+        deprecated = []
         for category_id in common_ids:
             before = from_nodes[category_id]
             after = to_nodes[category_id]
@@ -153,6 +189,13 @@ class VersionService:
                         ],
                     }
                 )
+            if before.get("node_status", "active") != after.get("node_status", "active"):
+                deprecated.append({
+                    "category_id": category_id,
+                    "category_name": after["category_name"],
+                    "old_status": before.get("node_status", "active"),
+                    "new_status": after.get("node_status", "active"),
+                })
         return VersionDiff(
             from_version_id=from_id,
             to_version_id=to_id,
@@ -161,6 +204,7 @@ class VersionService:
             renamed=renamed,
             moved=moved,
             synonym_changed=synonym_changed,
+            deprecated=deprecated,
         )
 
     def rollback_version(
@@ -172,7 +216,7 @@ class VersionService:
         target = version_repo.get_version(version_id)
         if target is None:
             raise ValueError(f"Taxonomy version {version_id} was not found.")
-        nodes = TaxonomyRepository(self.settings).list_node_records(version_id)
+        nodes = TaxonomyRepository(self.settings).list_node_records(version_id, include_deprecated=True)
         new_version_no = self._next_version_no(int(target["file_id"]))
         quality_score = _calc_quality_score(nodes)
         new_version_id = version_repo.create_version(
@@ -216,7 +260,7 @@ class VersionService:
         return f"v1.{max_minor + 1 if max_minor >= 0 else 0}"
 
 
-def _recalculate_tree(nodes: list[TaxonomyNodeRecord]) -> list[TaxonomyNodeRecord]:
+def recalculate_tree(nodes: list[TaxonomyNodeRecord]) -> list[TaxonomyNodeRecord]:
     node_map = {node.category_id: node for node in nodes}
     children: dict[int | None, list[TaxonomyNodeRecord]] = {}
     for node in nodes:
@@ -252,6 +296,9 @@ def _recalculate_tree(nodes: list[TaxonomyNodeRecord]) -> list[TaxonomyNodeRecor
         if node.category_id not in recalculated:
             visit(node, [], [])
     return [recalculated[node.category_id] for node in sorted(nodes, key=lambda item: item.category_id)]
+
+
+_recalculate_tree = recalculate_tree
 
 
 def _split_synonyms(syn_list: str) -> list[str]:
