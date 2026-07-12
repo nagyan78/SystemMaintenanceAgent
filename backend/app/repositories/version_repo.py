@@ -6,6 +6,13 @@ class VersionRepository:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
+    def increment_vector_index_generation(self, version_id: int) -> int:
+        with connect(self.settings) as connection:
+            connection.execute("UPDATE taxonomy_version SET vector_index_generation=vector_index_generation+1 WHERE id=?", (version_id,))
+            row=connection.execute("SELECT vector_index_generation FROM taxonomy_version WHERE id=?", (version_id,)).fetchone()
+        if row is None: raise ValueError("version not found")
+        return int(row[0])
+
     def create_version(
         self,
         *,
@@ -32,7 +39,7 @@ class VersionRepository:
             row = connection.execute(
                 """
                 SELECT id, file_id, version_no, description, quality_score,
-                       snapshot_path, created_time
+                       snapshot_path, vector_index_generation, created_time
                 FROM taxonomy_version
                 WHERE id = ?
                 """,

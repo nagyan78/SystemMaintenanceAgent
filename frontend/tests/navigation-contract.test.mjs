@@ -5,7 +5,7 @@ const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.me
 assert.equal(packageJson.scripts['test:contract'], 'node tests/navigation-contract.test.mjs')
 
 const routerSource = readFileSync(new URL('../src/router/index.ts', import.meta.url), 'utf8')
-for (const route of ['/upload', '/workflow/:taskId', '/review/:reviewBatchId', '/versions', '/report/:versionId']) {
+for (const route of ['/upload', '/workflow/:taskId', '/review/:reviewBatchId', '/versions', '/report/:versionId', '/evaluation']) {
   assert.ok(routerSource.includes(route), `missing route ${route}`)
 }
 
@@ -44,6 +44,8 @@ for (const view of ['OverviewView', 'TreeView', 'DiagnosisView']) {
   assert.ok(routerSource.includes(`import ${view}`), `router must import ${view}`)
   assert.ok(routerSource.includes(`component: ${view}`), `router must mount ${view}`)
 }
+const evaluationSource = readFileSync(new URL('../src/components/EvaluationDashboard.vue', import.meta.url), 'utf8')
+for (const label of ['Precision', 'Recall', 'F1', '危险动作漏拦截率', 'Model calls', 'Token', 'Cache hit', 'P95 latency', 'Triage']) assert.ok(evaluationSource.includes(label), `evaluation dashboard missing ${label}`)
 for (const component of ['AgentRunProgress', 'AgentEventLog']) {
   assert.ok(workflowSource.includes(component), `workflow must use ${component}`)
 }

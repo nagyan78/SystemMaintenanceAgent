@@ -8,6 +8,7 @@ from backend.app.schemas.suggestion import AdjustmentSuggestion, SuggestionRecor
 from backend.app.services.action_service import ActionService
 from backend.app.services.version_service import VersionService
 from backend.app.tools.validation_tools import validate_suggestion_action
+from backend.app.services.agent_memory_service import AgentMemoryService
 
 
 class ReviewService:
@@ -23,6 +24,7 @@ class ReviewService:
         suggestion = self._require_mutable_suggestion(suggestion_id)
         self.suggestion_repo.update_status(suggestion_id, "approved")
         self._log(suggestion, operator, "approve_suggestion")
+        AgentMemoryService(self.settings).record_review_feedback(workflow_id=str(suggestion.action_payload.get("workflow_id") or "manual"), version_id=suggestion.version_id, suggestion=suggestion, decision="approve")
         return self.suggestion_repo.get_suggestion(suggestion_id) or suggestion
 
     def reject_suggestion(
@@ -39,6 +41,8 @@ class ReviewService:
             "reject_suggestion",
             {"reject_reason": reject_reason or ""},
         )
+        if reject_reason:
+            AgentMemoryService(self.settings).record_review_feedback(workflow_id=str(suggestion.action_payload.get("workflow_id") or "manual"), version_id=suggestion.version_id, suggestion=suggestion, decision="reject", reason=reject_reason)
         return self.suggestion_repo.get_suggestion(suggestion_id) or suggestion
 
     def edit_suggestion(

@@ -58,6 +58,7 @@ def init_db(settings: Settings) -> None:
                 description TEXT,
                 quality_score REAL,
                 snapshot_path TEXT,
+                vector_index_generation INTEGER NOT NULL DEFAULT 0,
                 created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (file_id) REFERENCES uploaded_file(id)
             );
@@ -196,6 +197,35 @@ def init_db(settings: Settings) -> None:
                 created_time DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS tool_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workflow_id TEXT NOT NULL, version_id INTEGER, tool_name TEXT NOT NULL,
+                args_hash TEXT NOT NULL, data_revision TEXT NOT NULL, result_json TEXT NOT NULL,
+                expires_time DATETIME NOT NULL, hit_count INTEGER NOT NULL DEFAULT 0,
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(workflow_id, version_id, tool_name, args_hash, data_revision)
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_memory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, memory_type TEXT NOT NULL,
+                scope_type TEXT NOT NULL, scope_key TEXT NOT NULL, content TEXT NOT NULL,
+                source_workflow_id TEXT, source_version_id INTEGER, valid_from_version_id INTEGER,
+                valid_until_version_id INTEGER, confidence REAL NOT NULL, created_time DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_evaluation (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, dataset_version TEXT NOT NULL, workflow_id TEXT NOT NULL,
+                metrics TEXT NOT NULL, agent_bundle_version TEXT, created_time DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS evaluation_baseline (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, baseline_id TEXT NOT NULL UNIQUE,
+                dataset_version TEXT NOT NULL UNIQUE, evaluation_id INTEGER NOT NULL,
+                agent_bundle_version TEXT NOT NULL, approved_by TEXT NOT NULL,
+                approved_time DATETIME DEFAULT CURRENT_TIMESTAMP, pinned INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY(evaluation_id) REFERENCES agent_evaluation(id)
+            );
+
             CREATE UNIQUE INDEX IF NOT EXISTS idx_category_node_version_category
             ON category_node(version_id, category_id);
 
@@ -227,6 +257,11 @@ def init_db(settings: Settings) -> None:
                 "start_time": "DATETIME",
                 "end_time": "DATETIME",
             },
+        )
+        _ensure_columns(
+            connection,
+            "taxonomy_version",
+            {"vector_index_generation": "INTEGER NOT NULL DEFAULT 0"},
         )
         _ensure_columns(
             connection,

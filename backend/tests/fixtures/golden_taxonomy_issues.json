@@ -1,0 +1,8 @@
+{
+  "dataset_version": "demo-v1",
+  "approved_by": "local_user",
+  "items": [
+    {"issue_id": "golden-001", "version_fixture": "demo-v1.xlsx", "node_id": 20, "issue_type": "wide_node", "expected_action": "split_subtree", "acceptable_targets": [20], "risk_level": "high"},
+    {"issue_id": "golden-002", "version_fixture": "demo-v1.xlsx", "node_id": 30, "issue_type": "semantic_duplicate", "expected_action": "merge_node", "acceptable_targets": [20, 30], "risk_level": "high"}
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "baseline_id": "demo-v1-reference-001",
+  "dataset_version": "demo-v1",
+  "agent_bundle_version": "agent-bundle-1.0.0",
+  "model_profile_version": "model-profile-1",
+  "prompt_version": "prompt-1",
+  "tool_registry_version": "tools-1",
+  "detector_version": "detectors-1",
+  "approved_by": "local_user",
+  "detection_f1": 0.82,
+  "action_executable_rate": 0.96,
+  "unsafe_action_escape_rate": 0.0
+}

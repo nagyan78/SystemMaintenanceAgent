@@ -8,6 +8,7 @@ import ReportView from '../views/ReportView.vue'
 import OverviewView from '../views/OverviewView.vue'
 import TreeView from '../views/TreeView.vue'
 import DiagnosisView from '../views/DiagnosisView.vue'
+import EvaluationView from '../views/EvaluationView.vue'
 
 const routes = [
   { path: '/', redirect: '/upload' },
@@ -19,6 +20,7 @@ const routes = [
   { path: '/overview/:versionId', component: OverviewView, props: true },
   { path: '/tree/:versionId', component: TreeView, props: true },
   { path: '/diagnosis/:versionId', component: DiagnosisView, props: true },
+  { path: '/evaluation', component: EvaluationView },
 ]
 
 const router = createRouter({

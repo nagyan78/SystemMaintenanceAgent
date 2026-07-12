@@ -80,6 +80,7 @@ const navItems = computed<NavItem[]>(() => {
       match: state.reviewBatchId ? `/review/${state.reviewBatchId}` : state.taskId ? `/workflow/${state.taskId}` : '',
     },
     { label: '版本管理', icon: '🗂', to: '/versions', match: '/versions' },
+    { label: '质量评价', icon: '📊', to: '/evaluation', match: '/evaluation' },
     {
       label: '报告',
       icon: '📄',
@@ -103,6 +104,7 @@ const title = computed(() => {
   if (route.path.startsWith('/overview')) return '体系概览'
   if (route.path.startsWith('/tree')) return '分类树'
   if (route.path.startsWith('/diagnosis')) return '诊断问题'
+  if (route.path.startsWith('/evaluation')) return '质量评价'
   return '上传与启动'
 })
 

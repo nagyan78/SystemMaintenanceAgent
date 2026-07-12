@@ -13,6 +13,7 @@ from backend.app.repositories.diagnosis_repo import DiagnosisRepository
 from backend.app.repositories.suggestion_repo import SuggestionRepository
 from backend.app.schemas.suggestion import AdjustmentSuggestion, SuggestionGenerationResult, SuggestionRecord
 from backend.app.services.tool_factory import AgentResourceLimits, AgentToolFactory
+from backend.app.services.agent_memory_service import AgentMemoryService
 from backend.app.tools.validation_tools import (
     validate_suggestion_action,
 )
@@ -74,9 +75,15 @@ class SuggestionAgent:
 
     def _generate_llm_suggestion_record(self, version_id: int, issue: dict[str, Any]) -> SuggestionRecord | None:
         llm_with_tools = self.llm.bind_tools(self.tools)
+        memory_context = AgentMemoryService(self.settings).get_suggestion_context(
+            version_id=version_id,
+            issue_type=str(issue.get("issue_type") or "unknown"),
+            target_node_id=issue.get("node_id"),
+            limit=5,
+        )
         messages: list[Any] = [
             SystemMessage(content=SUGGESTION_GENERATION_SYSTEM_PROMPT),
-            HumanMessage(content=_issue_prompt(version_id, issue)),
+            HumanMessage(content=_issue_prompt(version_id, issue) + "\n历史用户反馈（仅供参考，不得跳过本轮校验和人工审核）：\n" + json.dumps(memory_context, ensure_ascii=False)),
         ]
         for _ in range(self.max_retry):
             for _ in range(self.max_iter):
