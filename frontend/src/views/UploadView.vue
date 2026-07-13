@@ -260,7 +260,7 @@ async function startAnalysis() {
     })
     patch({ currentVersionId: result.version_id, taskId: result.task_id,
       reviewBatchId: result.review_batch_id || null, enableAiAnalysis: enableAiAnalysis.value,
-      modelProvider: modelProvider.value, modelName })
+      modelProvider: modelProvider.value, modelName, reportPath: result.report_path || null })
     await router.push(`/diagnosis/${result.version_id}`)
   } catch (e) { error.value = e instanceof Error ? e.message : '启动失败' }
   finally { loading.value = false }

@@ -143,6 +143,8 @@ def get_workflow_status(task_id: str, request: Request) -> dict[str, Any]:
         "tokens_used": payload.get("tokens_used", 0),
         "wall_seconds_used": payload.get("wall_seconds_used", 0),
         "triage_count": payload.get("triage_count", 0),
+        "candidate_count": payload.get("candidate_count", 0),
+        "ai_processed_count": payload.get("ai_processed_count", 0),
     }
 
 

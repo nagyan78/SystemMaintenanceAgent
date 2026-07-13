@@ -11,25 +11,26 @@
 
 ## Source of Truth
 
-先读 `dev-doc/README.md`。它定义文档优先级、当前有效文档和历史文档的使用方式。
+先读 `开发文档/README.md`。它定义文档优先级、当前有效文档和历史文档的使用方式。
 
 开工最小阅读顺序：
 
-1. `dev-doc/README.md`
-2. `dev-doc/CURRENT_IMPLEMENTATION.md`
-3. `dev-doc/ROADMAP.md`
-4. 与任务直接相关的 01～10 功能设计文档
-5. 涉及长期架构变更时读取 `dev-doc/12_标准产品体系维护多智能体最终设计.md`
+1. `开发文档/README.md`
+2. `开发文档/00_当前状态/当前实现情况.md`
+3. `开发文档/00_当前状态/当前开发路线图.md`
+4. 与任务直接相关的功能需求或 R1～R3 执行计划
+5. 涉及长期架构变更时读取 `开发文档/01_产品与架构/多智能体目标架构.md`
 
-代码和自动化测试高于描述性文档。`dev-doc/archive/` 中的旧索引、评审、阶段计划和执行 prompt 是历史资料，不是当前开发路线。
+代码和自动化测试高于描述性文档。`开发文档/99_历史归档/` 中的旧索引、评审、阶段计划和执行提示词是历史资料，不是当前开发路线。
 
 ## Current Direction
 
-当前优先完成 `ROADMAP.md` 的 R1“可信诊断与完整结果”：
+当前优先完成 `开发文档/03_开发执行计划/R1_可信诊断与完整结果_执行计划.md`：
 
 - 补齐 taxonomy/diagnosis 查询能力；
 - 建立全量轻筛查、候选召回、重点 Agent 深诊断的覆盖漏斗；
-- 让规划真实控制执行范围；
+- 让规划真实控制执行范围和 Token 预算；
+- Token 不足时保留已有结果并生成部分完成报告；
 - 完善节点、问题、证据和报告之间的可追溯关系。
 
 不要在 R1～R3 用户闭环完成前扩张为分布式多 Agent 平台。
@@ -65,7 +66,7 @@ npm.cmd run dev
 
 ## Verification Baseline
 
-2026-07-11 实测后端基线：56 passed，1 个第三方 Starlette TestClient 弃用警告。
+2026-07-13 实测后端基线：87 passed，1 个第三方 Starlette TestClient 弃用警告；前端 contract test 和 production build 通过。
 
 声明后端完成前运行全部后端测试；声明前端完成前运行 contract test 和 build。文档修改至少检查链接、文件名和状态声明。
 

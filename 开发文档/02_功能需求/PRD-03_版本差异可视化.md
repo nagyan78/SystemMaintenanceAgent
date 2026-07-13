@@ -8,7 +8,7 @@
 - **状态**：待评审
 - **作者**：调度达（AgentsOrchestrator）
 - **日期**：2026-07-09
-- **历史关联方案**：`../archive/功能增强脑暴与优先级.md`（D1）、`../archive/智能体协同-审核多轮与版本续跑修复方案.md`；当前 schema 为 `backend/app/schemas/version.py::VersionDiff`
+- **历史关联方案**：[功能增强脑暴与优先级](../99_历史归档/历史方案/功能增强脑暴与优先级.md)（D1）、[审核多轮与版本续跑修复方案](../99_历史归档/历史方案/审核多轮与版本续跑修复方案.md)；当前 schema 为 `backend/app/schemas/version.py::VersionDiff`
 
 ---
 

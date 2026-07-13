@@ -14,7 +14,9 @@ class DiagnosisRepository:
         *,
         version_id: int,
         issues: Iterable[DiagnosisIssueRecord],
+        issue_types: Iterable[str] | None = None,
     ) -> None:
+        issue_list = list(issues)
         values = [
             (
                 version_id,
@@ -30,13 +32,25 @@ class DiagnosisRepository:
                 issue.evidence,
                 issue.source,
             )
-            for issue in issues
+            for issue in issue_list
         ]
+        managed_types = sorted(set(issue_types or (issue.issue_type for issue in issue_list)))
         with connect(self.settings) as connection:
-            connection.execute(
-                "DELETE FROM diagnosis_issue WHERE version_id = ?",
-                (version_id,),
-            )
+            if managed_types:
+                placeholders = ",".join("?" for _ in managed_types)
+                connection.execute(
+                    f"""
+                    DELETE FROM diagnosis_issue
+                    WHERE version_id = ?
+                      AND issue_type IN ({placeholders})
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM adjustment_suggestion
+                          WHERE adjustment_suggestion.issue_id = diagnosis_issue.id
+                      )
+                    """,
+                    (version_id, *managed_types),
+                )
             connection.executemany(
                 """
                 INSERT OR IGNORE INTO diagnosis_issue (

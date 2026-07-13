@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from backend.app.repositories.version_repo import VersionRepository
-from backend.app.services.report_service import ReportService
+from backend.app.services.report_service import ReportService, report_file_name
 
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -21,7 +21,7 @@ def _report_metadata(request: Request, version_id: int) -> tuple[dict, Path]:
     version = VersionRepository(settings).get_version(version_id)
     if version is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found.")
-    report_name = f"{version['version_no']}_diagnosis_report.md"
+    report_name = report_file_name(version)
     return version, settings.report_dir / report_name
 
 
@@ -29,7 +29,7 @@ def _report_metadata(request: Request, version_id: int) -> tuple[dict, Path]:
 def list_reports(request: Request, file_id: int | None = None) -> list[dict]:
     reports = []
     for version in VersionRepository(request.app.state.settings).list_versions(file_id=file_id):
-        report_name = f"{version['version_no']}_diagnosis_report.md"
+        report_name = report_file_name(version)
         report_path = request.app.state.settings.report_dir / report_name
         reports.append({
             "version_id": version["id"], "version_no": version["version_no"],

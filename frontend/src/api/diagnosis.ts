@@ -11,6 +11,9 @@ export type DiagnosisSummary = {
   enable_ai_analysis: boolean
   model_provider?: string | null
   model_name?: string | null
+  ai_analysis_status?: 'completed' | 'partial' | 'not_requested' | null
+  ai_warning?: string | null
+  report_path?: string | null
 }
 
 export type DiagnosisIssue = {
@@ -40,10 +43,12 @@ export type DiagnosisRunConfig = {
   enable_ai_analysis: boolean
   model_provider: 'ollama' | 'deepseek'
   model_name: string
+  ai_candidate_limit?: number
+  ai_wall_seconds?: number
 }
 
 export function runDiagnosis(fileId: number, config: DiagnosisRunConfig) {
-  return apiPost<{ task_id: string; version_id: number; status: string; review_batch_id?: string | null }>('/diagnosis/run', { file_id: fileId, ...config })
+  return apiPost<{ task_id: string; version_id: number; status: string; review_batch_id?: string | null; ai_analysis_status?: string; ai_warning?: string | null; report_path?: string | null }>('/diagnosis/run', { file_id: fileId, ...config })
 }
 
 export function getDiagnosisSummary(versionId: number) {

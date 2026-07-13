@@ -4,7 +4,8 @@ M5 requires the frontend to consume *real* workflow events over SSE
 (``GET /api/workflows/{task_id}/events``) instead of polling a static
 progress value. The nodes already record every step into the
 ``workflow_event`` table via :class:`TaskRepository`; this module turns those
-rows into the SSE event shapes described in ``dev-doc/00_开发里程碑索引.md`` §8.5.
+rows into the SSE event shapes originally described in
+``开发文档/99_历史归档/旧里程碑/开发里程碑索引.md`` §8.5.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-# SSE event names (must match the M5 contract in dev-doc §8.5).
+# SSE event names retained from the historical M5 contract.
 EVENT_STEP = "workflow_step"
 EVENT_INTERRUPT = "workflow_interrupt"
 EVENT_THOUGHT = "agent_thought"

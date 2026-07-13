@@ -69,6 +69,10 @@ for (const label of ['候选总数', '已处理', '发现问题', '正常', '不
 }
 
 const diagnosisViewSource = readFileSync(new URL('../src/views/DiagnosisView.vue', import.meta.url), 'utf8')
+assert.ok(
+  diagnosisViewSource.includes(':to="`/report/${summary.version_id}`">查看报告</RouterLink>'),
+  'diagnosis result header must always expose the report for the loaded version',
+)
 for (const value of ['体系体检报告', '结构问题', '内容问题', '高风险问题', '综合评分', '问题原因', '检测依据', '建议动作']) {
   assert.ok(diagnosisViewSource.includes(value), `diagnosis report must display ${value}`)
 }

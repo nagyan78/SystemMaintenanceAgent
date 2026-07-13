@@ -100,7 +100,7 @@ class TaskRepository:
             row = connection.execute(
                 """
                 SELECT id, file_id, status, current_step, progress, version_id,
-                       result_payload, enable_ai_analysis, model_provider, model_name,
+                       error_message, result_payload, enable_ai_analysis, model_provider, model_name,
                        created_time, updated_time
                        , start_time, end_time
                 FROM task_record

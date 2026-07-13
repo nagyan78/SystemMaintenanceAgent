@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -13,6 +14,7 @@ from backend.app.agents.prompts import (
 )
 from backend.app.config import Settings, get_settings
 from backend.app.services.model_service import ModelService
+from backend.app.services.model_router import ModelBudgetExceededError
 from backend.app.repositories.taxonomy_repo import TaxonomyRepository
 from backend.app.schemas.issue import ContentIssue, DiagnosisPlan
 from backend.app.services.tool_factory import AgentResourceLimits, AgentToolFactory
@@ -20,6 +22,7 @@ from backend.app.services.tool_factory import AgentResourceLimits, AgentToolFact
 
 logger = logging.getLogger(__name__)
 CandidateSelector = Callable[[int, DiagnosisPlan], list[dict[str, Any]]]
+CandidateProgressSink = Callable[[int, int], None]
 
 
 class DiagnosisPlanningAgent:
@@ -65,6 +68,7 @@ class ContentDiagnosisAgent:
         candidate_selector: CandidateSelector | None = None,
         max_iter: int = 8,
         event_sink: Callable[[dict[str, Any]], None] | None = None,
+        progress_sink: CandidateProgressSink | None = None,
         resource_limits: AgentResourceLimits | None = None,
     ) -> None:
         self.settings = settings or get_settings()
@@ -75,6 +79,7 @@ class ContentDiagnosisAgent:
         self.max_iter = max_iter
         self.trace_log: list[str] = []
         self.event_sink = event_sink
+        self.progress_sink = progress_sink
 
     def run(self, version_id: int, plan: DiagnosisPlan) -> list[ContentIssue]:
         if self.llm is None:
@@ -82,10 +87,15 @@ class ContentDiagnosisAgent:
             return []
         llm_with_tools = self.llm.bind_tools(self.tools)
         issues: list[ContentIssue] = []
-        for candidate in self.candidate_selector(version_id, plan):
-            issue = self._diagnose_candidate(llm_with_tools, version_id, candidate)
+        candidates = list(self.candidate_selector(version_id, plan))
+        deadline = time.monotonic() + max(1, self.settings.diagnosis_ai_wall_seconds)
+        for index, candidate in enumerate(candidates, start=1):
+            self._ensure_within_deadline(deadline)
+            issue = self._diagnose_candidate(llm_with_tools, version_id, candidate, deadline)
             if issue:
                 issues.append(issue)
+            if self.progress_sink:
+                self.progress_sink(index, len(candidates))
         return issues
 
     def select_candidates(self, version_id: int, plan: DiagnosisPlan) -> list[dict[str, Any]]:
@@ -101,6 +111,7 @@ class ContentDiagnosisAgent:
         llm_with_tools: Any,
         version_id: int,
         candidate: dict[str, Any],
+        deadline: float,
     ) -> ContentIssue | None:
         messages = [
             SystemMessage(
@@ -109,6 +120,7 @@ class ContentDiagnosisAgent:
             HumanMessage(content=_candidate_prompt(version_id, candidate)),
         ]
         for _ in range(self.max_iter):
+            self._ensure_within_deadline(deadline)
             response = llm_with_tools.invoke(messages)
             self._trace(f"Thought: {response.content}")
             tool_calls = getattr(response, "tool_calls", []) or []
@@ -123,6 +135,11 @@ class ContentDiagnosisAgent:
                     return issue
         logger.warning("Content diagnosis max_iter exhausted for candidate %s", candidate)
         return None
+
+    @staticmethod
+    def _ensure_within_deadline(deadline: float) -> None:
+        if time.monotonic() >= deadline:
+            raise ModelBudgetExceededError("MODEL_BUDGET_EXCEEDED: wall_time")
 
     def _execute_tool_call(self, tool_call: dict[str, Any], messages: list[Any]) -> ContentIssue | None:
         name = tool_call["name"]

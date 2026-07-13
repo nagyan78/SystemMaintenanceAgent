@@ -72,7 +72,7 @@ def test_m1_services_build_real_sample_version_and_report(tmp_path):
     assert report_result.report_path.exists()
     report_text = report_result.report_path.read_text(encoding="utf-8")
     assert "节点总数：21090" in report_text
-    assert "父节点缺失：44" in report_text
+    assert "| 父节点缺失 | 44 |" in report_text
 
     issue_summary = DiagnosisRepository(settings).count_by_type(version_result.version_id)
     assert issue_summary["missing_parent"] == 44

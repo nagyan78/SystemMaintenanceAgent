@@ -124,8 +124,8 @@ def test_m4_report_contains_suggestions_execution_and_version_sections(tmp_path)
     result = ReportService(settings).generate_diagnosis_report(version_id)
     report_text = result.report_path.read_text(encoding="utf-8")
 
-    assert "## 6. 智能维护建议" in report_text
+    assert "## 六、问题处理建议" in report_text
     assert "删除污染词" in report_text
-    assert "## 7. 版本变更记录" in report_text
-    assert "## 8. 质量评分" in report_text
-    assert "95.0/100" in report_text
+    assert "## 七、处理计划" in report_text
+    assert "## 八、最终结论" in report_text
+    assert "综合评分：95.0/100" in report_text

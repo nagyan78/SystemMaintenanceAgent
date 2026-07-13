@@ -1,128 +1,57 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working in this repository.
+This repository contains a local product-taxonomy maintenance platform built with FastAPI, LangGraph, SQLite, Qdrant, and Vue.
 
-## What this repo is
+## Source of truth
 
-This is a local taxonomy-maintenance agent platform for product standards classification. The backend is a FastAPI service with SQLite persistence; the workflow is modeled with LangGraph and split into milestone phases:
+Read these files before changing code:
 
-- M1: Excel upload, taxonomy parsing/building, initial versioning, structure diagnosis, report generation
-- M2: Qdrant vector indexing, diagnosis planning, content diagnosis agent
-- M3: suggestion generation agent, human review interrupt/resume, approved-action validation
-- M4: action execution, new versioning, report/export
-- M5: frontend workbench and end-to-end visualization
+1. `开发文档/README.md`
+2. `开发文档/00_当前状态/当前实现情况.md`
+3. `开发文档/00_当前状态/当前开发路线图.md`
+4. The relevant PRD or R1–R3 execution plan
 
-The design intent is to keep LangGraph nodes thin and push business logic into service/repository layers.
+The code and automated tests take precedence over descriptive documents. Files under `开发文档/99_历史归档/` are historical references, not the current implementation contract.
 
-## Common commands
+## Current direction
 
-### Backend
+The current priority is `开发文档/03_开发执行计划/R1_可信诊断与完整结果_执行计划.md`: complete taxonomy and diagnosis queries, establish measurable diagnosis coverage, make plans and Token budgets constrain execution, preserve partial results when model budgets are exhausted, and connect nodes, issues, evidence, and reports.
 
-Install dependencies:
+Do not expand into a distributed multi-agent platform before the R1–R3 user loop is complete.
 
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
+## Commands on Windows PowerShell
+
+Backend:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest backend/tests
+.\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Run the backend:
+Frontend:
 
-```bash
-.venv/bin/python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+```powershell
+Set-Location frontend
+npm.cmd run test:contract
+npm.cmd run build
+npm.cmd run dev
 ```
 
-Run tests:
+Do not use a global Python environment to install project dependencies.
 
-```bash
-.venv/bin/python -m pytest -q
-```
+## Architecture and engineering rules
 
-Run a single backend test file:
-
-```bash
-.venv/bin/python -m pytest backend/tests/test_m2_vector_content_agent.py -q
-```
-
-Run a single test case:
-
-```bash
-.venv/bin/python -m pytest backend/tests/test_langgraph_workflow.py -k <test_name> -q
-```
-
-### Frontend
-
-The frontend is in `frontend/`.
-
-Install and run dev server:
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Build frontend:
-
-```bash
-cd frontend
-npm run build
-```
-
-Run frontend contract test:
-
-```bash
-cd frontend
-npm run test:contract
-```
-
-## High-level architecture
-
-### Backend layers
-
-- `backend/app/main.py` wires FastAPI routers and initializes app state / SQLite.
+- `backend/app/main.py` wires the FastAPI application and persistence initialization.
 - `backend/app/api/` contains HTTP entry points.
-- `backend/app/agents/` contains LangGraph state, node functions, graph construction, prompts, and streaming/event glue.
-- `backend/app/services/` holds business logic such as Excel parsing, taxonomy building, diagnosis, vector indexing, content diagnosis, suggestion generation, review, and reporting.
-- `backend/app/repositories/` handles SQLite persistence and query logic.
-- `backend/app/tools/` exposes LangChain tools used by agents to inspect taxonomy data and submit structured results.
+- `backend/app/agents/` contains LangGraph state, thin nodes, graph construction, prompts, and event glue.
+- `backend/app/services/` contains business logic.
+- `backend/app/repositories/` contains SQLite persistence and queries.
+- `backend/app/tools/` exposes scoped read and structured-submission tools.
 - `backend/app/vectorstores/` adapts Qdrant access.
-- `backend/app/schemas/` defines Pydantic models shared across API/service/agent layers.
+- `backend/app/schemas/` contains Pydantic contracts.
 
-### Workflow model
+Keep LangGraph nodes thin. Deterministic parsing, diagnosis rules, SQL, vector-store operations, prompt construction, and action execution belong in services or repositories. LLMs must not directly mutate Excel, SQLite, or Qdrant. High-risk actions require human review. Preserve run, version, review, idempotency, and audit evidence for every side effect.
 
-The primary execution path is a LangGraph workflow over a shared `TaxonomyGraphState`. Nodes are expected to stay thin: read state, call a service, update state, and decide the next step.
+Do not expose raw chain-of-thought. Show decision summaries, tools, evidence, confidence, and cost instead. A failed node must not later be overwritten as completed, and reports or quality scores must never be hard-coded.
 
-Important patterns:
-
-- Deterministic steps: Excel parsing, tree building, version creation, structure diagnosis, report generation
-- Agentic steps: diagnosis planning, content diagnosis, suggestion generation
-- Human-in-the-loop step: `wait_human_review_node` uses interrupt/resume
-- M3 stops before execution/version-save; M4 adds those actions later
-
-### Context management
-
-The project uses layered context rather than dumping the whole taxonomy into prompts:
-
-- Workflow state for cross-node progress and IDs
-- Qdrant similarity search for local candidate retrieval
-- Tree tools for node detail/path/children lookup
-- Structured tool outputs for diagnosis and suggestion submission
-
-### Persistence
-
-SQLite is the source of truth for uploaded files, taxonomy versions, nodes, diagnosis issues, suggestions, logs, and workflow records. `task_record` is used to track workflow progress, interrupt payloads, and results.
-
-## Working conventions that matter here
-
-- Keep LangGraph nodes thin; put logic in services.
-- M3 should not execute actions or create new versions; that belongs to M4.
-- Suggestions and diagnosis results should be structured, not free-form text.
-- LLMs should use tools for context retrieval and structured submission rather than mutating data directly.
-- If you need to update workflow behavior, check both `backend/app/agents/graph.py` and the milestone docs under `dev-doc/` so the code and documentation stay aligned.
-
-## Key docs
-
-- `README.md` for setup and current runnable scope
-- `dev-doc/00_开发里程碑索引.md` for milestone boundaries
-- `dev-doc/10_LangGraph智能体工作流开发设计.md` for workflow topology and state design
-- `dev-doc/M3_执行prompt.md` and `dev-doc/M3_最终执行计划.md` for the current M3 implementation contract
+When changing workflow behavior, inspect the relevant code and current R1–R3 plan. Consult `开发文档/99_历史归档/历史功能设计/10_智能体工作流开发设计.md` only for historical design context.

@@ -8,7 +8,7 @@
 - **状态**：待评审
 - **作者**：调度达（AgentsOrchestrator）
 - **日期**：2026-07-09
-- **历史关联方案**：`../archive/功能增强脑暴与优先级.md`（C1）；代码资产为 `backend/app/vectorstores/qdrant_store.py`、`backend/app/services/vector_index_service.py`
+- **历史关联方案**：[功能增强脑暴与优先级](../../99_历史归档/历史方案/功能增强脑暴与优先级.md)（C1）；代码资产为 `backend/app/vectorstores/qdrant_store.py`、`backend/app/services/vector_index_service.py`
 
 ---
 

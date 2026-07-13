@@ -35,7 +35,7 @@ class ModelService:
                 base_url=self.settings.ollama_base_url,
                 api_key="ollama",
                 temperature=temperature,
-                request_timeout=120,
+                request_timeout=self.settings.llm_request_timeout_seconds,
             )
         if provider == "deepseek":
             if not self.settings.deepseek_api_key:
@@ -45,7 +45,7 @@ class ModelService:
                 base_url=self.settings.deepseek_base_url,
                 api_key=self.settings.deepseek_api_key,
                 temperature=temperature,
-                request_timeout=120,
+                request_timeout=self.settings.llm_request_timeout_seconds,
             )
         return None
 

@@ -8,6 +8,14 @@ from backend.app.schemas.issue import DiagnosisIssueRecord, StructureDiagnosisRe
 
 
 class DiagnosisService:
+    STRUCTURE_ISSUE_TYPES = {
+        "missing_parent",
+        "deep_level",
+        "wide_node",
+        "duplicate_name",
+        "orphan",
+    }
+
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
@@ -29,6 +37,7 @@ class DiagnosisService:
         DiagnosisRepository(self.settings).replace_issues(
             version_id=version_id,
             issues=issues,
+            issue_types=self.STRUCTURE_ISSUE_TYPES,
         )
         summary = DiagnosisRepository(self.settings).count_by_type(version_id)
         for key in ("missing_parent", "deep_level", "wide_node", "duplicate_name"):

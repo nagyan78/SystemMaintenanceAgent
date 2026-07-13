@@ -16,6 +16,9 @@ node_modules/
 frontend/node_modules/
 frontend/dist/
 frontend/*.tsbuildinfo
+tools/windows-launcher/bin/
+tools/windows-launcher/obj/
+tools/windows-launcher/publish/
 
 # Local environment variables
 .env

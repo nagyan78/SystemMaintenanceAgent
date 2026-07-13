@@ -33,6 +33,8 @@ export type WorkflowStatus = {
   model_name?: string | null
   analysis_run_id?: string | null
   work_item_counts?: Record<string, number>
+  candidate_count?: number
+  ai_processed_count?: number
 }
 
 export type ResumeRequest = {
