@@ -145,6 +145,35 @@ def init_db(settings: Settings) -> None:
                 created_time DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS review_batch (
+                id TEXT PRIMARY KEY,
+                file_id INTEGER NOT NULL,
+                version_id INTEGER NOT NULL,
+                task_id TEXT,
+                workflow_id TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                execution_status TEXT NOT NULL DEFAULT 'not_ready',
+                new_version_id INTEGER,
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                completed_time DATETIME,
+                FOREIGN KEY (file_id) REFERENCES uploaded_file(id),
+                FOREIGN KEY (version_id) REFERENCES taxonomy_version(id),
+                FOREIGN KEY (new_version_id) REFERENCES taxonomy_version(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS report_artifact (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                version_id INTEGER NOT NULL,
+                review_batch_id TEXT,
+                report_type TEXT NOT NULL,
+                report_path TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'generated',
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(version_id, report_type),
+                FOREIGN KEY (version_id) REFERENCES taxonomy_version(id)
+            );
+
             CREATE TABLE IF NOT EXISTS agent_run (
                 id TEXT PRIMARY KEY,
                 workflow_id TEXT NOT NULL,
@@ -176,6 +205,15 @@ def init_db(settings: Settings) -> None:
                 created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_time DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (run_id) REFERENCES agent_run(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS run_issue (
+                run_id TEXT NOT NULL,
+                issue_id INTEGER NOT NULL,
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (run_id, issue_id),
+                FOREIGN KEY (run_id) REFERENCES agent_run(id),
+                FOREIGN KEY (issue_id) REFERENCES diagnosis_issue(id)
             );
 
             CREATE TABLE IF NOT EXISTS agent_event (
@@ -273,12 +311,26 @@ def init_db(settings: Settings) -> None:
                 "model_name": "TEXT",
                 "start_time": "DATETIME",
                 "end_time": "DATETIME",
+                "primary_run_id": "TEXT",
             },
         )
         _ensure_columns(
             connection,
             "taxonomy_version",
-            {"vector_index_generation": "INTEGER NOT NULL DEFAULT 0"},
+            {
+                "vector_index_generation": "INTEGER NOT NULL DEFAULT 0",
+                "parent_version_id": "INTEGER",
+                "source_workflow_id": "TEXT",
+                "action_batch_id": "TEXT",
+                "verification_status": "TEXT NOT NULL DEFAULT 'not_verified'",
+                "export_path": "TEXT",
+                "supersedes_version_id": "INTEGER",
+                "lifecycle_status": "TEXT NOT NULL DEFAULT 'draft'",
+                "diagnosis_mode": "TEXT",
+                "diagnosis_model": "TEXT",
+                "verification_mode": "TEXT",
+                "verification_model": "TEXT",
+            },
         )
         _ensure_columns(
             connection,
@@ -289,15 +341,107 @@ def init_db(settings: Settings) -> None:
             connection,
             "adjustment_suggestion",
             {"review_batch_id": "TEXT", "old_value": "TEXT", "new_value": "TEXT",
-             "work_item_id": "TEXT", "analysis_run_id": "TEXT", "workflow_id": "TEXT"},
+             "work_item_id": "TEXT", "analysis_run_id": "TEXT", "workflow_id": "TEXT",
+             "change_preview": "TEXT DEFAULT '{}'", "consistency_status": "TEXT DEFAULT 'unchecked'",
+             "consistency_reason": "TEXT", "is_manual": "INTEGER DEFAULT 0",
+             "regenerated_at": "DATETIME", "generator_version": "TEXT"},
+        )
+        _ensure_columns(
+            connection,
+            "review_batch",
+            {"workflow_state": "TEXT NOT NULL DEFAULT 'reviewing'", "preview_hash": "TEXT",
+             "preview_payload": "TEXT", "preview_base_version_id": "INTEGER",
+             "preview_base_generation": "INTEGER", "preview_created_time": "DATETIME"},
         )
         _ensure_columns(
             connection,
             "diagnosis_issue",
-            {"path": "TEXT", "evidence": "TEXT", "source": "TEXT"},
+            {"path": "TEXT", "evidence": "TEXT", "source": "TEXT",
+             "subject_node_id": "INTEGER", "subject_node_name": "TEXT", "subject_path": "TEXT",
+             "detector_version": "TEXT NOT NULL DEFAULT 'rules-v1'"},
         )
+        _ensure_columns(
+            connection,
+            "report_artifact",
+            {"workflow_id": "TEXT", "run_id": "TEXT", "fact_payload": "TEXT DEFAULT '{}'"},
+        )
+        _ensure_columns(
+            connection,
+            "review_batch",
+            {"source_review_batch_id": "TEXT", "batch_kind": "TEXT NOT NULL DEFAULT 'current'"},
+        )
+        connection.execute("""UPDATE diagnosis_issue SET subject_node_id=COALESCE(subject_node_id,node_id),
+                              subject_node_name=COALESCE(subject_node_name,node_name),
+                              subject_path=COALESCE(subject_path,path)""")
         connection.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_suggestion_work_item ON adjustment_suggestion(work_item_id) WHERE work_item_id IS NOT NULL"
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_version_action_batch ON taxonomy_version(action_batch_id) WHERE action_batch_id IS NOT NULL"
+        )
+        connection.execute("""CREATE TABLE IF NOT EXISTS version_execution_record (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, review_batch_id TEXT NOT NULL,
+            source_version_id INTEGER NOT NULL, target_version_id INTEGER,
+            review_hash TEXT, action_summary TEXT DEFAULT '{}', status TEXT NOT NULL,
+            created_time DATETIME DEFAULT CURRENT_TIMESTAMP
+        )""")
+        _ensure_columns(
+            connection,
+            "version_execution_record",
+            {"workflow_id": "TEXT", "run_id": "TEXT", "error_code": "TEXT", "error_message": "TEXT"},
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_run_issue_issue ON run_issue(issue_id, run_id)"
+        )
+        connection.execute("""CREATE TABLE IF NOT EXISTS maintenance_cleanup_preview (
+            id TEXT PRIMARY KEY, request_payload TEXT NOT NULL, resolved_scope TEXT NOT NULL,
+            result_payload TEXT NOT NULL, scope_hash TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+            created_time DATETIME DEFAULT CURRENT_TIMESTAMP, expires_time DATETIME NOT NULL
+        )""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS pending_file_cleanup (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT NOT NULL, reason TEXT,
+            status TEXT NOT NULL DEFAULT 'pending', created_time DATETIME DEFAULT CURRENT_TIMESTAMP
+        )""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS maintenance_cleanup_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, cleanup_preview_id TEXT NOT NULL,
+            request_payload TEXT NOT NULL, resolved_scope TEXT NOT NULL,
+            deleted_payload TEXT NOT NULL, backup_path TEXT NOT NULL,
+            pending_payload TEXT DEFAULT '[]', status TEXT NOT NULL,
+            created_time DATETIME DEFAULT CURRENT_TIMESTAMP
+        )""")
+        connection.execute(
+            """INSERT OR IGNORE INTO review_batch(id,file_id,version_id,task_id,workflow_id,status,execution_status)
+               SELECT suggestion.review_batch_id, version.file_id, suggestion.version_id,
+                      task.id, suggestion.workflow_id,
+                      CASE WHEN SUM(suggestion.status='executed')>0 THEN 'executed'
+                           WHEN SUM(suggestion.status IN ('pending','edited'))=0 THEN 'reviewed'
+                           ELSE 'in_review' END,
+                       CASE WHEN SUM(suggestion.status='executed')>0 THEN 'executed'
+                            WHEN SUM(suggestion.status IN ('pending','edited'))=0 THEN 'missing'
+                           ELSE 'blocked' END
+               FROM adjustment_suggestion suggestion
+               JOIN taxonomy_version version ON version.id=suggestion.version_id
+               LEFT JOIN task_record task ON task.workflow_id=suggestion.workflow_id
+               WHERE suggestion.review_batch_id IS NOT NULL
+               GROUP BY suggestion.review_batch_id"""
+        )
+        # Compatibility is additive: historical decisions/actions remain untouched, while
+        # completed batches must obtain a fresh preview before any future execution.
+        connection.execute(
+            """UPDATE review_batch SET
+                   status=CASE WHEN status='executed' THEN 'executed'
+                               WHEN status IN ('completed','reviewed','preview_ready') THEN 'reviewed' ELSE 'in_review' END,
+                   execution_status=CASE WHEN execution_status='executed' THEN 'executed'
+                                         WHEN status IN ('completed','reviewed','preview_ready') THEN 'missing' ELSE 'blocked' END,
+                   workflow_state=CASE WHEN execution_status='executed' THEN 'executed'
+                                       WHEN status IN ('completed','reviewed','preview_ready') THEN 'review_completed' ELSE 'reviewing' END
+               WHERE preview_hash IS NULL"""
+        )
+        connection.execute(
+            """UPDATE taxonomy_version SET lifecycle_status=
+                   CASE verification_status WHEN 'passed' THEN 'passed' WHEN 'partial' THEN 'partial'
+                                            WHEN 'failed' THEN 'failed' ELSE 'draft' END
+               WHERE lifecycle_status IS NULL OR lifecycle_status='draft'"""
         )
 
 

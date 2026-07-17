@@ -9,13 +9,15 @@ ActionType = Literal[
     "rename_node",
     "merge_node",
     "clean_synonym",
+    "update_synonyms",
+    "review_only",
     "split_subtree",
     "deprecate_node",
     "delete_leaf_node",
     "mark_as_valid",
 ]
 RiskLevel = Literal["low", "medium", "high"]
-SuggestionStatus = Literal["pending", "approved", "rejected", "edited", "executed", "failed"]
+SuggestionStatus = Literal["pending", "approved", "rejected", "deferred", "edited", "executed", "failed"]
 
 
 class AdjustmentSuggestion(BaseModel):
@@ -40,6 +42,14 @@ class AdjustmentSuggestion(BaseModel):
 class SuggestionRecord(AdjustmentSuggestion):
     id: int
     review_batch_id: str | None = None
+    work_item_id: str | None = None
+    analysis_run_id: str | None = None
+    change_preview: dict[str, Any] = Field(default_factory=dict)
+    consistency_status: str = "unchecked"
+    consistency_reason: str | None = None
+    is_manual: bool = False
+    regenerated_at: str | None = None
+    generator_version: str | None = None
 
 
 class SuggestionGenerationResult(BaseModel):

@@ -1,10 +1,11 @@
 import asyncio
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel
+from pydantic import Field
 
 from backend.app.agents.graph import (
     build_taxonomy_graph,
@@ -14,6 +15,8 @@ from backend.app.agents.graph import (
 )
 from backend.app.repositories.file_repo import FileRepository
 from backend.app.repositories.task_repo import TaskRepository
+from backend.app.repositories.agent_run_repo import AgentRunRepository
+from backend.app.db import connect
 from backend.app.services.workflow_runner import WorkflowRunner
 
 
@@ -23,6 +26,16 @@ _WORKFLOW_CHECKPOINTER = None
 
 class StartWorkflowRequest(BaseModel):
     file_id: int
+    enable_ai_analysis: bool = False
+    model_provider: str = "ollama"
+    model_name: str = "qwen3:8b"
+    priority_subtree_ids: list[int] = Field(default_factory=list)
+    sample_strategy: Literal["focused", "full_scan", "sampling"] = "focused"
+    focus_issues: list[str] = Field(default_factory=list)
+    ai_candidate_limit: int | None = Field(default=None, ge=1, le=1000)
+    ai_max_model_calls: int | None = Field(default=None, ge=1, le=10000)
+    ai_token_budget: int | None = Field(default=None, ge=1)
+    ai_wall_seconds: int | None = Field(default=None, ge=1, le=86400)
 
 
 class StartWorkflowResponse(BaseModel):
@@ -38,6 +51,8 @@ class ResumeWorkflowRequest(BaseModel):
     decision: str
     approved_suggestion_ids: list[int] = []
     rejected_suggestion_ids: list[int] = []
+    confirmed_without_action_suggestion_ids: list[int] = []
+    uncertain_suggestion_ids: list[int] = []
     edits: list[dict[str, Any]] = []
     operator: str = "local_user"
     reject_reason: str | None = None
@@ -50,6 +65,18 @@ def _get_workflow_checkpointer():
 
         _WORKFLOW_CHECKPOINTER = create_sqlite_checkpointer()
     return _WORKFLOW_CHECKPOINTER
+
+
+@router.get("")
+def list_workflows(
+    request: Request,
+    file_id: int | None = Query(default=None),
+    task_status: str | None = Query(default=None, alias="status"),
+) -> list[dict[str, Any]]:
+    rows = TaskRepository(request.app.state.settings).list_tasks(file_id=file_id, status=task_status)
+    for row in rows:
+        row.pop("result_payload", None)
+    return rows
 
 
 @router.post("/taxonomy/start", response_model=StartWorkflowResponse)
@@ -69,6 +96,9 @@ def start_taxonomy_workflow(
         file_id=payload.file_id,
         workflow_id=workflow_id,
         thread_id=thread_id,
+        enable_ai_analysis=payload.enable_ai_analysis,
+        model_provider=payload.model_provider if payload.enable_ai_analysis else None,
+        model_name=payload.model_name if payload.enable_ai_analysis else None,
     )
     task_repo.record_event(
         workflow_id=workflow_id,
@@ -88,6 +118,7 @@ def start_taxonomy_workflow(
         payload.file_id,
         task_id,
         workflow_id,
+        payload.model_dump(),
     )
     return StartWorkflowResponse(
         task_id=task_id,
@@ -118,13 +149,19 @@ def get_workflow_status(task_id: str, request: Request) -> dict[str, Any]:
         "suggestion_count": payload.get("suggestion_count", 0),
         "review_batch_id": payload.get("review_batch_id"),
         "report_path": payload.get("report_path"),
+        "export_path": payload.get("export_path"),
+        "verification_status": payload.get("verification_status"),
+        "quality_before": payload.get("quality_before"),
+        "quality_after": payload.get("quality_after"),
+        "quality_delta": payload.get("quality_delta"),
+        "remaining_issue_count": payload.get("remaining_issue_count", 0),
         "report_preview_url": (
-            f"/api/reports/{task['version_id']}/preview"
+            f"/api/reports/{task['version_id']}/preview?report_type={'draft' if task['status'] == 'waiting_review' else 'final'}"
             if task.get("version_id") and payload.get("report_path")
             else None
         ),
         "report_download_url": (
-            f"/api/reports/{task['version_id']}/download"
+            f"/api/reports/{task['version_id']}/download?report_type={'draft' if task['status'] == 'waiting_review' else 'final'}"
             if task.get("version_id") and payload.get("report_path")
             else None
         ),
@@ -145,6 +182,79 @@ def get_workflow_status(task_id: str, request: Request) -> dict[str, Any]:
         "triage_count": payload.get("triage_count", 0),
         "candidate_count": payload.get("candidate_count", 0),
         "ai_processed_count": payload.get("ai_processed_count", 0),
+        "coverage": payload.get("coverage", {}),
+        "diagnosis_completion_status": payload.get("diagnosis_completion_status", "completed"),
+        "report_type": payload.get("report_type"),
+    }
+
+
+@router.get("/{task_id}/evidence")
+def get_workflow_evidence(task_id: str, request: Request) -> dict[str, Any]:
+    """Return the complete persisted evidence graph for one business run."""
+    settings = request.app.state.settings
+    task = TaskRepository(settings).get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
+    workflow_id = str(task.get("workflow_id") or task_id)
+    runs = AgentRunRepository(settings).list_runs_for_workflow(workflow_id)
+    run_ids = [str(item["id"]) for item in runs]
+    with connect(settings) as connection:
+        if run_ids:
+            marks = ",".join("?" for _ in run_ids)
+            issue_rows = connection.execute(
+                f"""SELECT DISTINCT issue.* FROM diagnosis_issue issue
+                    JOIN run_issue link ON link.issue_id=issue.id
+                    WHERE link.run_id IN ({marks}) ORDER BY issue.id""",
+                run_ids,
+            ).fetchall()
+        else:
+            issue_rows = []
+        batch_rows = connection.execute(
+            "SELECT * FROM review_batch WHERE task_id=? OR workflow_id=? ORDER BY created_time,id",
+            (task_id, workflow_id),
+        ).fetchall()
+        batch_ids = [str(row["id"]) for row in batch_rows]
+        if batch_ids:
+            marks = ",".join("?" for _ in batch_ids)
+            suggestion_rows = connection.execute(
+                f"SELECT * FROM adjustment_suggestion WHERE review_batch_id IN ({marks}) ORDER BY id",
+                batch_ids,
+            ).fetchall()
+            execution_rows = connection.execute(
+                f"SELECT * FROM version_execution_record WHERE review_batch_id IN ({marks}) ORDER BY id",
+                batch_ids,
+            ).fetchall()
+        else:
+            suggestion_rows = []
+            execution_rows = []
+        version_rows = connection.execute(
+            """SELECT * FROM taxonomy_version
+               WHERE id=? OR source_workflow_id=? OR parent_version_id=? ORDER BY id""",
+            (task.get("version_id"), workflow_id, task.get("version_id")),
+        ).fetchall()
+        version_ids = [int(row["id"]) for row in version_rows]
+        if version_ids:
+            marks = ",".join("?" for _ in version_ids)
+            report_rows = connection.execute(
+                f"SELECT * FROM report_artifact WHERE version_id IN ({marks}) OR workflow_id=? ORDER BY id",
+                [*version_ids, workflow_id],
+            ).fetchall()
+        else:
+            report_rows = connection.execute(
+                "SELECT * FROM report_artifact WHERE workflow_id=? ORDER BY id", (workflow_id,)
+            ).fetchall()
+    return {
+        "task": task,
+        "workflow_id": workflow_id,
+        "input_version_id": min(version_ids) if version_ids else task.get("version_id"),
+        "output_version_id": max(version_ids) if len(version_ids) > 1 else None,
+        "runs": runs,
+        "issues": [dict(row) for row in issue_rows],
+        "suggestions": [dict(row) for row in suggestion_rows],
+        "review_batches": [dict(row) for row in batch_rows],
+        "executions": [dict(row) for row in execution_rows],
+        "versions": [dict(row) for row in version_rows],
+        "reports": [dict(row) for row in report_rows],
     }
 
 
@@ -196,9 +306,9 @@ def workflow_events(
                 return
             task_status = current["status"]
             if task_status == "waiting_review":
-                yield format_sse(interrupt_event(current.get("interrupt_payload")))
+                yield format_sse(interrupt_event(current.get("interrupt_payload") or current.get("result_payload")))
                 seen_terminal = True
-            elif task_status == "completed":
+            elif task_status in {"completed", "partial", "completed_degraded"}:
                 yield format_sse(completed_event(task_id, current.get("result_payload")))
                 seen_terminal = True
             elif task_status == "failed":
@@ -243,18 +353,47 @@ def cancel_workflow(task_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
-def _run_workflow(settings, file_id: int, task_id: str, workflow_id: str) -> None:
+def _run_workflow(
+    settings,
+    file_id: int,
+    task_id: str,
+    workflow_id: str,
+    options: dict[str, Any] | None = None,
+) -> None:
+    options = options or {}
+    runtime_settings = settings
+    if options.get("enable_ai_analysis"):
+        runtime_settings = settings.model_copy(
+            update={
+                "llm_provider": options.get("model_provider") or settings.llm_provider,
+                "llm_model": options.get("model_name") or settings.llm_model,
+                "llm_fallback_enabled": False,
+                "llm_max_calls": options.get("ai_max_model_calls") or settings.llm_max_calls,
+                "llm_max_tokens": options.get("ai_token_budget") or settings.llm_max_tokens,
+                "diagnosis_ai_wall_seconds": options.get("ai_wall_seconds") or settings.diagnosis_ai_wall_seconds,
+            }
+        )
     state = create_initial_state(
         file_id=file_id,
         task_id=task_id,
         workflow_id=workflow_id,
+        enable_ai_analysis=bool(options.get("enable_ai_analysis")),
+        model_provider=(options.get("model_provider") if options.get("enable_ai_analysis") else None),
+        model_name=(options.get("model_name") if options.get("enable_ai_analysis") else None),
+        priority_subtree_ids=options.get("priority_subtree_ids") or [],
+        sample_strategy=options.get("sample_strategy") or "focused",
+        focus_issues=options.get("focus_issues") or [],
+        ai_candidate_limit=options.get("ai_candidate_limit"),
+        ai_max_model_calls=options.get("ai_max_model_calls"),
+        ai_token_budget=options.get("ai_token_budget"),
+        ai_wall_seconds=options.get("ai_wall_seconds"),
     )
     task_repo = TaskRepository(settings)
     try:
         graph = build_taxonomy_graph(
             _get_workflow_checkpointer(),
-            settings=settings,
-            enable_suggestion_review=True,
+            settings=runtime_settings,
+            enable_suggestion_review=False,
         )
         result = graph.invoke(state, config={"configurable": {"thread_id": state.thread_id}})
         if result.get("status") == "failed":

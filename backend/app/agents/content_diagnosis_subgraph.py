@@ -18,6 +18,9 @@ def build_content_diagnosis_subgraph(*, settings: Settings, llm: Any | None = No
         prepared = service.prepare_content_candidates(
             workflow_id=state["workflow_id"], version_id=state["version_id"],
             plan=DiagnosisPlan.model_validate(state.get("plan") or {}),
+            rule_scanned_nodes=int(state.get("rule_scanned_nodes", 0)),
+            rule_issue_count=int(state.get("rule_issue_count", 0)),
+            budget=dict(state.get("budget") or {}),
         )
         return prepared
 
@@ -31,7 +34,8 @@ def build_content_diagnosis_subgraph(*, settings: Settings, llm: Any | None = No
         return service.execute_content_work_item(state["work_item_id"])
 
     def reduce(state: ContentDiagnosisSubgraphState) -> dict:
-        return {"work_item_counts": service.finalize_run(state["run_id"])}
+        counts = service.finalize_run(state["run_id"])
+        return {"work_item_counts": counts, "coverage": service.coverage_for_run(state["run_id"])}
 
     graph = StateGraph(ContentDiagnosisSubgraphState)
     graph.add_node("prepare", prepare)

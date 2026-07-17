@@ -14,7 +14,7 @@
             <th>选择</th>
             <th>状态</th>
             <th>风险</th>
-            <th>类型</th>
+            <th>问题与证据</th>
             <th>目标</th>
             <th>建议</th>
             <th>动作数据</th>
@@ -34,7 +34,11 @@
             </td>
             <td><span class="badge" :data-tone="statusTone(item.status)">{{ statusLabel(item.status) }}</span></td>
             <td><span class="risk" :data-tone="item.risk_level">{{ item.risk_level }}</span></td>
-            <td>{{ item.action_type }}</td>
+            <td>
+              <strong>{{ item.issue?.description || item.action_type }}</strong>
+              <small v-if="item.issue?.path" class="issue-meta">{{ item.issue.path }}</small>
+              <small v-if="item.issue?.evidence" class="issue-meta">依据：{{ item.issue.evidence }}</small>
+            </td>
             <td>{{ item.target_node_name || item.target_node_id || '-' }}</td>
             <td>{{ item.suggestion }}</td>
             <td><pre class="payload-preview">{{ formatPayload(item.action_payload) }}</pre></td>
@@ -63,6 +67,7 @@ function statusLabel(status: string) {
     edited: '已编辑',
     approved: '已批准',
     rejected: '已拒绝',
+    deferred: '待后续确认',
     executed: '已执行',
     failed: '失败',
   }
@@ -76,6 +81,7 @@ function statusTone(status: string) {
     approved: 'success',
     executed: 'success',
     rejected: 'danger',
+    deferred: 'warning',
     failed: 'danger',
   }
   return tones[status] || 'neutral'
@@ -86,3 +92,7 @@ function formatPayload(payload: Record<string, unknown>) {
   return text.length > 220 ? `${text.slice(0, 220)}...` : text
 }
 </script>
+
+<style scoped>
+.issue-meta { display:block; margin-top:5px; color:var(--muted); line-height:1.45; max-width:320px; }
+</style>

@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import type { RouteLocationNormalizedLoaded } from 'vue-router'
+import type { RouteRecordRaw } from 'vue-router'
 import UploadView from '../views/UploadView.vue'
 import WorkflowView from '../views/WorkflowView.vue'
 import ReviewView from '../views/ReviewView.vue'
@@ -8,21 +8,23 @@ import ReportView from '../views/ReportView.vue'
 import OverviewView from '../views/OverviewView.vue'
 import TreeView from '../views/TreeView.vue'
 import DiagnosisView from '../views/DiagnosisView.vue'
-import EvaluationView from '../views/EvaluationView.vue'
-import TriageView from '../views/TriageView.vue'
+import ReviewsView from '../views/ReviewsView.vue'
 
-const routes = [
+const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/upload' },
   { path: '/upload', component: UploadView },
   { path: '/workflow/:taskId', component: WorkflowView, props: true },
-  { path: '/review/:reviewBatchId', component: ReviewView, props: (route: RouteLocationNormalizedLoaded) => ({ reviewBatchId: route.params.reviewBatchId, taskId: route.query.task_id ?? '' }) },
+  { path: '/workflows', redirect: '/upload' },
+  { path: '/reviews', component: ReviewsView },
+  { path: '/review/:reviewBatchId', component: ReviewView },
   { path: '/versions', component: VersionsView },
-  { path: '/report/:versionId', component: ReportView, props: true },
+  { path: '/report', component: ReportView },
+  { path: '/report/:versionId', component: ReportView },
   { path: '/overview/:versionId', component: OverviewView, props: true },
   { path: '/tree/:versionId', component: TreeView, props: true },
+  { path: '/diagnosis', component: DiagnosisView },
   { path: '/diagnosis/:versionId', component: DiagnosisView, props: true },
-  { path: '/evaluation', component: EvaluationView },
-  { path: '/triage', component: TriageView },
+  { path: '/evaluation/:versionId?', redirect: route => route.params.versionId ? `/report/${route.params.versionId}` : (route.query.version_id ? `/report/${route.query.version_id}` : '/versions') },
 ]
 
 const router = createRouter({

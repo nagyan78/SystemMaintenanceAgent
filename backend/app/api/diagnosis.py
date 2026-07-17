@@ -1,5 +1,6 @@
 import json
-from typing import Any
+import time
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request, status
 from openai import APIConnectionError, APITimeoutError
@@ -18,11 +19,12 @@ from backend.app.services.report_service import ReportService
 from backend.app.services.suggestion_service import SuggestionAgent
 from backend.app.services.taxonomy_service import TaxonomyService
 from backend.app.services.version_service import VersionService
+from backend.app.repositories.review_batch_repo import ReviewBatchRepository
+from backend.app.repositories.agent_run_repo import AgentRunRepository
+from backend.app.schemas.agent_run import AgentRunRecord
+from backend.app.schemas.issue import DiagnosisCoverage
 
 router = APIRouter(prefix="/diagnosis", tags=["diagnosis"])
-
-STRUCTURE_TYPES = {"missing_parent", "deep_level", "wide_node", "duplicate_name", "orphan"}
-
 
 class RunDiagnosisRequest(BaseModel):
     file_id: int | None = None
@@ -32,6 +34,11 @@ class RunDiagnosisRequest(BaseModel):
     model_name: str = "qwen3:8b"
     ai_candidate_limit: int | None = Field(default=None, ge=1, le=1000)
     ai_wall_seconds: int | None = Field(default=None, ge=60, le=86400)
+    ai_max_model_calls: int | None = Field(default=None, ge=1, le=10000)
+    ai_token_budget: int | None = Field(default=None, ge=1)
+    priority_subtree_ids: list[int] = Field(default_factory=list)
+    sample_strategy: Literal["focused", "full_scan", "sampling"] = "focused"
+    focus_issues: list[str] = Field(default_factory=list)
 
 
 def _resolve_version(payload: RunDiagnosisRequest, request: Request) -> int:
@@ -57,6 +64,11 @@ def run_diagnosis(payload: RunDiagnosisRequest, request: Request) -> dict[str, A
     version = VersionRepository(settings).get_version(version_id)
     if version is None:
         raise HTTPException(status_code=404, detail="Version not found.")
+    VersionRepository(settings).update_model_metadata(
+        version_id,
+        diagnosis_mode="ai_enhanced" if payload.enable_ai_analysis else "deterministic_rules",
+        diagnosis_model=payload.model_name if payload.enable_ai_analysis else None,
+    )
     task_repo = TaskRepository(settings)
     task_id = task_repo.create_diagnosis_task(
         file_id=int(version["file_id"]), version_id=version_id,
@@ -64,7 +76,25 @@ def run_diagnosis(payload: RunDiagnosisRequest, request: Request) -> dict[str, A
         model_provider=payload.model_provider if payload.enable_ai_analysis else None,
         model_name=payload.model_name if payload.enable_ai_analysis else None,
     )
+    workflow_id = task_id
+    run_repo = AgentRunRepository(settings)
+    run_id = run_repo.create_run(AgentRunRecord(
+        id=f"run_{task_id}", workflow_id=workflow_id, agent_type="diagnosis",
+        version_id=version_id, model_profile=payload.model_name if payload.enable_ai_analysis else "rules",
+        budget={
+            "candidate_limit": payload.ai_candidate_limit or settings.diagnosis_ai_candidate_limit,
+            "max_model_calls": payload.ai_max_model_calls or settings.llm_max_calls,
+            "max_tokens": payload.ai_token_budget or settings.llm_max_tokens,
+            "max_wall_seconds": payload.ai_wall_seconds or settings.diagnosis_ai_wall_seconds,
+            "sample_strategy": payload.sample_strategy,
+            "focus_issues": payload.focus_issues,
+            "priority_subtree_ids": payload.priority_subtree_ids,
+        },
+    ))
+    task_repo.attach_primary_run(task_id, run_id)
+    started = time.perf_counter()
     try:
+        total_nodes = TaxonomyRepository(settings).count_nodes(version_id)
         structure = DiagnosisService(settings).run_structure_diagnosis(version_id)
         task_repo.update_task(task_id=task_id, current_step="content_rule_detection", progress=45)
         content_count = DiagnosisService(settings).run_content_rule_diagnosis(version_id)
@@ -73,21 +103,38 @@ def run_diagnosis(payload: RunDiagnosisRequest, request: Request) -> dict[str, A
         ai_issue_count = None if payload.enable_ai_analysis else 0
         ai_analysis_status = "not_requested"
         ai_warning = None
+        model_calls_used = 0
+        tokens_used = 0
+        degraded_reason_code = None
+        plan = DiagnosisPlan(
+            priority_subtree_ids=payload.priority_subtree_ids,
+            sample_strategy=payload.sample_strategy,
+            focus_issues=payload.focus_issues,
+            estimated_candidates=payload.ai_candidate_limit or settings.diagnosis_ai_candidate_limit,
+        )
         if payload.enable_ai_analysis:
             run_settings = settings.model_copy(update={
                 "llm_provider": payload.model_provider,
                 "llm_model": payload.model_name,
                 "llm_fallback_enabled": False,
                 "diagnosis_ai_wall_seconds": payload.ai_wall_seconds or settings.diagnosis_ai_wall_seconds,
+                "llm_max_calls": payload.ai_max_model_calls or settings.llm_max_calls,
+                "llm_max_tokens": payload.ai_token_budget or settings.llm_max_tokens,
             })
             task_repo.update_task(task_id=task_id, current_step="ai_analysis", progress=60)
             try:
                 overview = TaxonomyService(run_settings).get_planning_overview(version_id)
-                plan = DiagnosisPlanningAgent(run_settings).run(structure.summary, overview)
-                plan = DiagnosisPlan.model_validate(plan)
+                planned = DiagnosisPlanningAgent(run_settings).run(structure.summary, overview)
+                plan = DiagnosisPlan.model_validate(planned).model_copy(update={
+                    "priority_subtree_ids": payload.priority_subtree_ids or planned.priority_subtree_ids,
+                    "sample_strategy": payload.sample_strategy,
+                    "focus_issues": payload.focus_issues or planned.focus_issues,
+                })
                 if payload.ai_candidate_limit is not None:
                     # 用户明确请求高覆盖分析时，以请求值覆盖规划器的抽样数量。
                     plan.estimated_candidates = payload.ai_candidate_limit
+                elif payload.sample_strategy == "full_scan":
+                    plan.estimated_candidates = min(total_nodes, 1000)
                 else:
                     plan.estimated_candidates = min(
                         plan.estimated_candidates,
@@ -124,6 +171,8 @@ def run_diagnosis(payload: RunDiagnosisRequest, request: Request) -> dict[str, A
                 )
                 agent.candidate_selector = lambda _version_id, _plan: candidates
                 ai_issues = agent.run(version_id, plan)
+                model_calls_used = int(getattr(agent, "model_calls_used", 0))
+                tokens_used = int(getattr(agent, "tokens_used", 0))
                 ai_issue_count = len(ai_issues)
                 content_count += ai_issue_count
                 ai_processed_count = progress_state["processed"]
@@ -137,11 +186,15 @@ def run_diagnosis(payload: RunDiagnosisRequest, request: Request) -> dict[str, A
                 ConnectionError,
                 TimeoutError,
             ) as exc:
+                if "agent" in locals():
+                    model_calls_used = int(getattr(agent, "model_calls_used", 0))
+                    tokens_used = int(getattr(agent, "tokens_used", 0))
                 if "progress_state" in locals():
                     candidate_count = int(progress_state["total"])
                     ai_processed_count = int(progress_state["processed"])
                 ai_analysis_status = "partial"
                 ai_warning = _ai_degraded_warning(exc)
+                degraded_reason_code = type(exc).__name__
                 task_repo.update_task(
                     task_id=task_id,
                     current_step="ai_degraded",
@@ -151,8 +204,49 @@ def run_diagnosis(payload: RunDiagnosisRequest, request: Request) -> dict[str, A
                 suggestions = SuggestionAgent(settings, enable_ai=False).run(version_id)
         else:
             suggestions = SuggestionAgent(settings, enable_ai=False).run(version_id)
+        skipped_count = max(candidate_count - ai_processed_count, 0)
+        unexamined_reasons: dict[str, int] = {}
+        if ai_analysis_status == "partial":
+            unexamined = skipped_count or max(total_nodes - ai_processed_count, 0)
+            unexamined_reasons[degraded_reason_code or "AI_INCOMPLETE"] = unexamined
+            skipped_count = unexamined
+        rule_issue_count = sum(
+            item.get("source") in {"structure_rule", "content_rule"}
+            for item in DiagnosisRepository(settings).list_issues(version_id)
+        )
+        coverage = DiagnosisCoverage(
+            total_nodes=total_nodes,
+            rule_scanned_nodes=total_nodes,
+            rule_issue_count=rule_issue_count,
+            candidate_count=candidate_count,
+            deep_diagnosed_count=ai_processed_count,
+            ai_issue_count=int(ai_issue_count or 0),
+            skipped_count=skipped_count,
+            failed_count=0,
+            unexamined_reasons=unexamined_reasons,
+            model_calls=model_calls_used,
+            tokens_used=tokens_used,
+            wall_seconds=round(time.perf_counter() - started, 3),
+            plan_revision=1,
+            stop_reason=ai_warning,
+            rules_complete=True,
+            ai_complete=not payload.enable_ai_analysis or ai_analysis_status == "completed",
+            coverage_complete=not payload.enable_ai_analysis or ai_analysis_status == "completed",
+            completion_status="partial" if ai_analysis_status == "partial" else "completed",
+            run_id=run_id,
+            workflow_id=workflow_id,
+            plan=plan.model_dump(),
+        ).model_dump()
+        run_repo.update_run(
+            run_id,
+            status="completed_degraded" if ai_analysis_status == "partial" else "completed",
+            coverage=coverage,
+        )
+        DiagnosisRepository(settings).link_run_issues(run_id=run_id, version_id=version_id)
         result = {
-            "task_id": task_id, "version_id": version_id, "status": "completed",
+            "task_id": task_id, "version_id": version_id,
+            "status": "waiting_review" if suggestions.review_batch_id else ("partial" if ai_analysis_status == "partial" else "completed"),
+            "workflow_id": workflow_id, "run_id": run_id,
             "structure_issue_count": structure.issue_count,
             "content_issue_count": content_count, "candidate_count": candidate_count,
             "ai_processed_count": ai_processed_count,
@@ -166,48 +260,80 @@ def run_diagnosis(payload: RunDiagnosisRequest, request: Request) -> dict[str, A
             "model_name": payload.model_name if payload.enable_ai_analysis else None,
             "ai_analysis_status": ai_analysis_status,
             "ai_warning": ai_warning,
+            "coverage": coverage,
+            "report_type": "partial" if ai_analysis_status == "partial" else ("draft" if suggestions.review_batch_id else "final"),
         }
         all_issues = DiagnosisRepository(settings).list_issues(version_id)
-        structure_count = sum(1 for item in all_issues if item["issue_type"] in STRUCTURE_TYPES)
+        structure_count = sum(1 for item in all_issues if item["issue_category"] == "structure")
         final_content_count = len(all_issues) - structure_count
         high_risk_count = sum(1 for item in all_issues if item["risk_level"] == "high")
         quality_score = max(0.0, round(100 - structure_count * 0.2 - final_content_count * 0.5 - high_risk_count * 0.8, 1))
         VersionRepository(settings).update_quality_score(version_id, quality_score)
         result["quality_score"] = quality_score
+        if suggestions.review_batch_id:
+            batch_repo = ReviewBatchRepository(settings)
+            batch_repo.create(
+                batch_id=suggestions.review_batch_id,
+                file_id=int(version["file_id"]), version_id=version_id, task_id=task_id,
+            )
+            batch_repo.refresh_status(suggestions.review_batch_id)
         task_repo.update_task(
             task_id=task_id,
-            status="completed",
-            current_step="completed",
-            progress=100,
+            status="waiting_review" if suggestions.review_batch_id else ("partial" if ai_analysis_status == "partial" else "completed"),
+            current_step="review_pending" if suggestions.review_batch_id else "completed",
+            progress=80 if suggestions.review_batch_id else 100,
             result_payload=result,
         )
-        report = ReportService(settings).generate_diagnosis_report(version_id)
+        report = ReportService(settings).generate_diagnosis_report(
+            version_id,
+            report_type=result["report_type"],
+            review_batch_id=suggestions.review_batch_id,
+            workflow_id=workflow_id,
+            run_id=run_id,
+        )
         result["report_path"] = str(report.report_path)
         task_repo.update_task(task_id=task_id, result_payload={"report_path": str(report.report_path)})
         return result
     except Exception as exc:
+        run_repo.update_run(run_id, status="failed", coverage={
+            "run_id": run_id, "workflow_id": workflow_id,
+            "completion_status": "failed", "coverage_complete": False,
+            "stop_reason": str(exc), "wall_seconds": round(time.perf_counter() - started, 3),
+        })
         task_repo.update_task(task_id=task_id, status="failed", current_step="failed", error_message=str(exc))
         raise HTTPException(status_code=502, detail=f"Diagnosis failed: {exc}") from exc
 
 
 @router.get("/summary")
 def get_diagnosis_summary(version_id: int, request: Request) -> dict[str, Any]:
+    if VersionRepository(request.app.state.settings).get_version(version_id) is None:
+        raise HTTPException(status_code=404, detail="Version not found.")
     repo = DiagnosisRepository(request.app.state.settings)
     issues = repo.list_issues(version_id)
     overview = TaxonomyRepository(request.app.state.settings).get_overview_counts(version_id)
-    structure_count = sum(1 for item in issues if item["issue_type"] in STRUCTURE_TYPES)
+    structure_count = sum(1 for item in issues if item["issue_category"] == "structure")
     content_count = len(issues) - structure_count
     high_risk = sum(1 for item in issues if item["risk_level"] == "high")
     score = max(0.0, round(100 - structure_count * 0.2 - content_count * 0.5 - high_risk * 0.8, 1))
-    task = TaskRepository(request.app.state.settings).get_latest_diagnosis_for_version(version_id)
+    task_repo = TaskRepository(request.app.state.settings)
+    task = task_repo.get_latest_for_version(version_id)
+    if task and task.get("status") in {"pending", "running"}:
+        raise HTTPException(status_code=409, detail="Diagnosis is not completed yet.")
+    batch = ReviewBatchRepository(request.app.state.settings).get_for_task(str(task["id"])) if task else None
     task_result = json.loads(task.get("result_payload") or "{}") if task else {}
     return {"version_id": version_id, "total_nodes": overview["node_count"], "structure_issue_count": structure_count, "content_issue_count": content_count, "high_risk_count": high_risk, "quality_score": score,
             "task_id": task["id"] if task else None,
+            "task_status": task.get("status") if task else None,
+            "review_batch_id": batch.get("id") if batch else None,
             "enable_ai_analysis": bool(task["enable_ai_analysis"]) if task else False,
             "model_provider": task.get("model_provider") if task else None,
             "model_name": task.get("model_name") if task else None,
             "ai_analysis_status": task_result.get("ai_analysis_status"),
             "ai_warning": task_result.get("ai_warning"),
+            "coverage": task_result.get("coverage") or {},
+            "run_id": task_result.get("run_id") or (task.get("primary_run_id") if task else None),
+            "workflow_id": task_result.get("workflow_id"),
+            "report_type": task_result.get("report_type"),
             "report_path": task_result.get("report_path")}
 
 

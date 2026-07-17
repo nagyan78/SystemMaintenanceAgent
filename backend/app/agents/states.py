@@ -7,12 +7,13 @@ WorkflowStatus = Literal[
     "pending",
     "running",
     "waiting_review",
+    "partial",
     "completed",
     "failed",
     "cancelled",
 ]
 
-ReviewDecision = Literal["approve", "reject", "edit"]
+ReviewDecision = Literal["approve", "reject", "edit", "confirm_no_action", "uncertain"]
 
 
 class TaxonomyGraphState(BaseModel):
@@ -47,6 +48,13 @@ class TaxonomyGraphState(BaseModel):
     enable_ai_analysis: bool = False
     model_provider: str | None = None
     model_name: str | None = None
+    priority_subtree_ids: list[int] = Field(default_factory=list)
+    sample_strategy: Literal["focused", "full_scan", "sampling"] = "focused"
+    focus_issues: list[str] = Field(default_factory=list)
+    ai_candidate_limit: int | None = None
+    ai_max_model_calls: int | None = None
+    ai_token_budget: int | None = None
+    ai_wall_seconds: int | None = None
     diagnosis_plan: dict[str, Any] | None = None
     maintenance_plan: dict[str, Any] | None = None
     plan_revision: int = 1
@@ -57,6 +65,8 @@ class TaxonomyGraphState(BaseModel):
     wall_seconds_used: float = 0
     analysis_run_id: str | None = None
     work_item_counts: dict[str, int] = Field(default_factory=dict)
+    coverage: dict[str, Any] = Field(default_factory=dict)
+    diagnosis_completion_status: Literal["completed", "partial", "failed"] = "completed"
     triage_count: int = 0
     suggestion_count: int = 0
     approved_action_count: int = 0
@@ -71,7 +81,13 @@ class TaxonomyGraphState(BaseModel):
 
     report_id: int | None = None
     report_path: str | None = None
+    report_type: Literal["draft", "partial", "failed", "final"] | None = None
     export_path: str | None = None
+    verification_status: str | None = None
+    quality_before: float | None = None
+    quality_after: float | None = None
+    quality_delta: float | None = None
+    remaining_issue_count: int = 0
 
     error_code: str | None = None
     error_message: str | None = None

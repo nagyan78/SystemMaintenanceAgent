@@ -172,6 +172,9 @@ class TaxonomyRepository:
         version_id: int,
         *,
         priority_subtrees: list[str] | None = None,
+        priority_subtree_ids: list[int] | None = None,
+        focus_issues: list[str] | None = None,
+        sample_strategy: str = "focused",
         limit: int = 200,
     ) -> list[dict]:
         subtree_filter = ""
@@ -182,6 +185,27 @@ class TaxonomyRepository:
                 clauses.append("path_names LIKE ?")
                 params.append(f"%{subtree}%")
             subtree_filter = f" AND ({' OR '.join(clauses)})"
+        if priority_subtree_ids:
+            clauses = []
+            for subtree_id in priority_subtree_ids:
+                clauses.extend(("category_id = ?", "(',' || IFNULL(path_ids,'') || ',') LIKE ?"))
+                params.extend((int(subtree_id), f"%,{int(subtree_id)},%"))
+            id_filter = f"({' OR '.join(clauses)})"
+            subtree_filter += f" AND {id_filter}"
+        synonym_focus = bool(focus_issues) and all(
+            value in {"synonym_format", "synonym_conflict", "synonym_overlap", "synonym_pollution"}
+            for value in focus_issues
+        )
+        content_filter = (
+            "AND syn_list IS NOT NULL AND TRIM(syn_list) NOT IN ('', '[]')"
+            if synonym_focus or not focus_issues else ""
+        )
+        order_by = (
+            "((category_id * 1103515245 + version_id) & 2147483647), category_id"
+            if sample_strategy == "sampling"
+            else "category_id" if sample_strategy == "full_scan"
+            else "LENGTH(IFNULL(syn_list,'')) DESC, level DESC, category_id"
+        )
         params.append(limit)
         with connect(self.settings) as connection:
             rows = connection.execute(
@@ -191,13 +215,9 @@ class TaxonomyRepository:
                 FROM category_node
                 WHERE version_id = ?
                   AND node_status = 'active'
-                  AND syn_list IS NOT NULL
-                  AND TRIM(syn_list) NOT IN ('', '[]')
+                  {content_filter}
                   {subtree_filter}
-                ORDER BY
-                  LENGTH(syn_list) DESC,
-                  level DESC,
-                  category_id
+                ORDER BY {order_by}
                 LIMIT ?
                 """,
                 params,

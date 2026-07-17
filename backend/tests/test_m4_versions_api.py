@@ -103,7 +103,7 @@ def test_versions_api_lists_details_diffs_and_exports(tmp_path):
     export_response = client.get(f"/api/versions/{v2}/export")
     assert export_response.status_code == 200
     export_body = export_response.json()
-    assert export_body["file_name"] == "v1.1_taxonomy.xlsx"
+    assert export_body["file_name"] == f"file-1_v1.1_version-{v2}_taxonomy.xlsx"
     assert (settings.export_dir / export_body["file_name"]).exists()
 
 

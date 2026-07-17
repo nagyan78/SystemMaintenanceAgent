@@ -10,6 +10,7 @@ from backend.app.repositories.suggestion_repo import SuggestionRepository
 from backend.app.repositories.taxonomy_repo import TaxonomyRepository
 from backend.app.repositories.version_repo import VersionRepository
 from backend.app.schemas.issue import DiagnosisIssueRecord
+from backend.app.schemas.suggestion import AdjustmentSuggestion
 from backend.app.schemas.taxonomy import TaxonomyNodeRecord
 
 
@@ -33,9 +34,7 @@ def _insert_version_with_issue(settings: Settings, issue_type: str = "wide_node"
         version_no="v1.0",
         description="test",
     )
-    TaxonomyRepository(settings).bulk_insert_nodes(
-        version_id=version_id,
-        nodes=[
+    nodes = [
             TaxonomyNodeRecord(
                 category_id=10,
                 category_name="水果",
@@ -54,10 +53,23 @@ def _insert_version_with_issue(settings: Settings, issue_type: str = "wide_node"
                 path_ids="10,11",
                 path_names="水果 > 苹果",
                 syn_list="AirPods, iPhone, Apple Pencil, Apple Music",
-                is_leaf=1,
+                is_leaf=0 if issue_type == "wide_node" else 1,
             ),
-        ],
-    )
+        ]
+    if issue_type == "wide_node":
+        nodes.extend(
+            TaxonomyNodeRecord(
+                category_id=category_id,
+                category_name=f"子分类{category_id}",
+                parent_id=11,
+                level=3,
+                path_ids=f"10,11,{category_id}",
+                path_names=f"水果 > 苹果 > 子分类{category_id}",
+                is_leaf=1,
+            )
+            for category_id in range(12, 16)
+        )
+    TaxonomyRepository(settings).bulk_insert_nodes(version_id=version_id, nodes=nodes)
     DiagnosisRepository(settings).create_issue(
         version_id=version_id,
         issue=DiagnosisIssueRecord(
@@ -71,6 +83,22 @@ def _insert_version_with_issue(settings: Settings, issue_type: str = "wide_node"
         ),
     )
     return version_id
+
+
+def _create_executable_rename(settings: Settings, version_id: int):
+    issue_id = DiagnosisRepository(settings).create_issue(
+        version_id=version_id,
+        issue=DiagnosisIssueRecord(issue_type="naming_nonstandard", node_id=11, node_name="Apple",
+                                  description="rename test", reason="naming", risk_level="low", confidence=1),
+    )
+    suggestion_id = SuggestionRepository(settings).create_suggestion(
+        review_batch_id="rename-review",
+        suggestion=AdjustmentSuggestion(issue_id=issue_id, version_id=version_id, action_type="rename_node",
+                                        target_node_id=11, old_name="Apple", new_name="Apple products",
+                                        action_payload={"new_name": "Apple products"}, reason="naming",
+                                        suggestion="rename", risk_level="low", confidence=1, need_confirm=True),
+    )
+    return SuggestionRepository(settings).get_suggestion(suggestion_id)
 
 
 class FakeSuggestionLLM:
@@ -169,7 +197,7 @@ def test_suggestion_agent_generates_rule_based_review_batch(tmp_path):
 
     assert result.generated_count == 1
     assert result.review_batch_id is not None
-    assert result.suggestions[0].action_type == "split_subtree"
+    assert result.suggestions[0].action_type == "review_only"
     assert result.suggestions[0].status == "pending"
 
 
@@ -221,7 +249,7 @@ def test_review_service_approves_and_logs_without_modifying_nodes(tmp_path):
     settings = _settings(tmp_path)
     version_id = _insert_version_with_issue(settings, "duplicate_name")
     before_nodes = TaxonomyRepository(settings).list_nodes(version_id)
-    suggestion = SuggestionAgent(settings).run(version_id).suggestions[0]
+    suggestion = _create_executable_rename(settings, version_id)
 
     approved = ReviewService(settings).approve_suggestion(suggestion.id, "tester")
 
@@ -243,7 +271,7 @@ def test_review_service_rejects_batch_approve_for_medium_risk(tmp_path):
     try:
         ReviewService(settings).batch_approve([suggestion.id], "tester")
     except ValueError as exc:
-        assert "low 风险" in str(exc)
+        assert "可执行修改" in str(exc)
     else:
         raise AssertionError("Expected batch approve to reject medium risk suggestion.")
 
@@ -255,11 +283,10 @@ def test_validate_approved_actions_returns_passed_result(tmp_path):
 
     settings = _settings(tmp_path)
     version_id = _insert_version_with_issue(settings, "duplicate_name")
-    result = SuggestionAgent(settings).run(version_id)
-    suggestion = result.suggestions[0]
+    suggestion = _create_executable_rename(settings, version_id)
     ReviewService(settings).approve_suggestion(suggestion.id, "tester")
 
-    validations = ActionService(settings).validate_approved_actions(result.review_batch_id)
+    validations = ActionService(settings).validate_approved_actions("rename-review")
 
     assert validations[0].valid is True
     assert validations[0].suggestion_id == suggestion.id
@@ -268,11 +295,22 @@ def test_validate_approved_actions_returns_passed_result(tmp_path):
 def test_graph_topology_routes_content_to_suggestion_and_m4_execution_after_validate(tmp_path):
     from backend.app.agents.graph import build_taxonomy_graph
 
-    graph = build_taxonomy_graph(settings=_settings(tmp_path))
+    graph = build_taxonomy_graph(settings=_settings(tmp_path), enable_suggestion_review=True)
     edges = {(edge.source, edge.target) for edge in graph.get_graph().edges}
 
     assert ("content_diagnosis_node", "generate_suggestion_node") in edges
     assert ("generate_suggestion_node", "wait_human_review_node") in edges
     assert ("validate_action_node", "execute_action_node") in edges
     assert ("execute_action_node", "save_new_version_node") in edges
-    assert ("save_new_version_node", "generate_report_node") in edges
+    assert ("save_new_version_node", "verify_new_version_node") in edges
+    assert ("verify_new_version_node", "generate_report_node") in edges
+
+
+def test_default_diagnosis_graph_does_not_contain_human_review_nodes(tmp_path):
+    from backend.app.agents.graph import build_taxonomy_graph
+
+    nodes = set(build_taxonomy_graph(settings=_settings(tmp_path)).get_graph().nodes)
+
+    assert "wait_human_review_node" not in nodes
+    assert "execute_action_node" not in nodes
+    assert "generate_report_node" in nodes

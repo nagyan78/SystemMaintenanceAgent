@@ -32,6 +32,9 @@ class TaskRepository:
         file_id: int,
         workflow_id: str,
         thread_id: str,
+        enable_ai_analysis: bool = False,
+        model_provider: str | None = None,
+        model_name: str | None = None,
     ) -> str:
         task_id = f"workflow_{uuid4().hex[:12]}"
         with connect(self.settings) as connection:
@@ -39,9 +42,9 @@ class TaskRepository:
                 """
                 INSERT INTO task_record (
                     id, file_id, task_type, status, current_step, progress,
-                    workflow_id, thread_id
+                    workflow_id, thread_id, enable_ai_analysis, model_provider, model_name
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -52,6 +55,9 @@ class TaskRepository:
                     0,
                     workflow_id,
                     thread_id,
+                    int(enable_ai_analysis),
+                    model_provider,
+                    model_name,
                 ),
             )
         return task_id
@@ -66,18 +72,28 @@ class TaskRepository:
         model_name: str | None,
     ) -> str:
         task_id = f"diagnosis_{uuid4().hex[:12]}"
+        workflow_id = task_id
+        thread_id = f"taxonomy_workflow:{workflow_id}"
         with connect(self.settings) as connection:
             connection.execute(
                 """
                 INSERT INTO task_record (
                     id, file_id, task_type, status, current_step, progress,
                     version_id, enable_ai_analysis, model_provider, model_name
-                    , start_time
-                ) VALUES (?, ?, 'diagnosis', 'running', 'rule_detection', 10, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    , start_time, workflow_id, thread_id
+                ) VALUES (?, ?, 'diagnosis', 'running', 'rule_detection', 10, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
                 """,
-                (task_id, file_id, version_id, int(enable_ai_analysis), model_provider, model_name),
+                (task_id, file_id, version_id, int(enable_ai_analysis), model_provider, model_name,
+                 workflow_id, thread_id),
             )
         return task_id
+
+    def attach_primary_run(self, task_id: str, run_id: str) -> None:
+        with connect(self.settings) as connection:
+            connection.execute(
+                "UPDATE task_record SET primary_run_id=?,updated_time=CURRENT_TIMESTAMP WHERE id=?",
+                (run_id, task_id),
+            )
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         with connect(self.settings) as connection:
@@ -87,13 +103,41 @@ class TaskRepository:
                        error_message, workflow_id, thread_id, version_id,
                        interrupt_payload, result_payload, enable_ai_analysis,
                        model_provider, model_name, created_time, updated_time
-                       , start_time, end_time
+                       , start_time, end_time, primary_run_id
                 FROM task_record
                 WHERE id = ?
                 """,
                 (task_id,),
             ).fetchone()
         return dict(row) if row else None
+
+    def list_tasks(self, *, file_id: int | None = None, status: str | None = None) -> list[dict[str, Any]]:
+        clauses, params = [], []
+        if file_id is not None:
+            clauses.append("task.file_id = ?")
+            params.append(file_id)
+        if status:
+            clauses.append("task.status = ?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with connect(self.settings) as connection:
+            rows = connection.execute(
+                f"""SELECT task.id,task.file_id,file.file_name,task.task_type,task.status,
+                           task.current_step,task.progress,task.version_id,task.workflow_id,
+                           task.result_payload,task.error_message,task.created_time,task.updated_time,
+                            task.start_time,task.end_time,batch.id review_batch_id,
+                            batch.status review_status,batch.execution_status,batch.new_version_id,
+                            (SELECT COUNT(*) FROM diagnosis_issue issue WHERE issue.version_id=task.version_id) issue_count,
+                            (SELECT COUNT(*) FROM adjustment_suggestion suggestion WHERE suggestion.review_batch_id=batch.id) suggestion_count,
+                            (SELECT verification_status FROM taxonomy_version output_version WHERE output_version.id=batch.new_version_id) verification_status,
+                            EXISTS(SELECT 1 FROM report_artifact report WHERE report.version_id=task.version_id AND report.report_type='draft') draft_report_available,
+                            EXISTS(SELECT 1 FROM report_artifact report WHERE report.version_id=COALESCE(batch.new_version_id,task.version_id) AND report.report_type='final') final_report_available
+                    FROM task_record task
+                    LEFT JOIN uploaded_file file ON file.id=task.file_id
+                    LEFT JOIN review_batch batch ON batch.task_id=task.id
+                    {where} ORDER BY task.created_time DESC""", params
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def get_latest_diagnosis_for_version(self, version_id: int) -> dict[str, Any] | None:
         with connect(self.settings) as connection:
@@ -102,11 +146,23 @@ class TaskRepository:
                 SELECT id, file_id, status, current_step, progress, version_id,
                        error_message, result_payload, enable_ai_analysis, model_provider, model_name,
                        created_time, updated_time
-                       , start_time, end_time
+                       , start_time, end_time, workflow_id, thread_id, primary_run_id
                 FROM task_record
                 WHERE task_type = 'diagnosis' AND version_id = ?
                 ORDER BY created_time DESC, id DESC LIMIT 1
                 """,
+                (version_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_latest_for_version(self, version_id: int) -> dict[str, Any] | None:
+        with connect(self.settings) as connection:
+            row = connection.execute(
+                """SELECT id,file_id,task_type,status,current_step,progress,version_id,
+                          error_message,result_payload,enable_ai_analysis,model_provider,model_name,
+                          created_time,updated_time,start_time,end_time,workflow_id,thread_id,primary_run_id
+                   FROM task_record WHERE version_id=?
+                   ORDER BY created_time DESC,id DESC LIMIT 1""",
                 (version_id,),
             ).fetchone()
         return dict(row) if row else None
@@ -126,11 +182,18 @@ class TaskRepository:
         current = self.get_task(task_id)
         if current is None:
             return
+        terminal_statuses = {"completed", "partial", "completed_degraded", "failed", "cancelled"}
+        requested_status = status if status is not None else current["status"]
+        if current["status"] in terminal_statuses and requested_status != current["status"]:
+            # Terminal states may only be changed by creating/recovering a new run.
+            requested_status = current["status"]
+            current_step = current["current_step"]
+            progress = current["progress"]
         payload = _loads(current.get("result_payload"))
         if result_payload:
             payload.update(_json_ready(result_payload))
         updates = {
-            "status": status if status is not None else current["status"],
+            "status": requested_status,
             "current_step": current_step
             if current_step is not None
             else current["current_step"],
@@ -138,7 +201,7 @@ class TaskRepository:
             "version_id": version_id
             if version_id is not None
             else current.get("version_id"),
-            "error_message": error_message,
+            "error_message": error_message if error_message is not None else current.get("error_message"),
             "result_payload": json.dumps(payload, ensure_ascii=False),
             "interrupt_payload": json.dumps(
                 _json_ready(interrupt_payload), ensure_ascii=False
@@ -161,7 +224,7 @@ class TaskRepository:
                     result_payload = ?,
                     interrupt_payload = ?,
                     updated_time = ?,
-                    end_time = CASE WHEN ? IN ('completed', 'failed', 'cancelled') THEN ? ELSE end_time END
+                    end_time = CASE WHEN ? IN ('completed', 'partial', 'completed_degraded', 'failed', 'cancelled') THEN COALESCE(end_time, ?) ELSE end_time END
                 WHERE id = ?
                 """,
                 (

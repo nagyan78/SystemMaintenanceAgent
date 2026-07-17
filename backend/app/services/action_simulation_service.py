@@ -23,6 +23,12 @@ class SnapshotActionApplier:
     def _mark_as_valid(self, nodes, suggestion):
         return
 
+    def _review_only(self, nodes, suggestion):
+        return
+
+    def _update_synonyms(self, nodes, suggestion):
+        return self._clean_synonym(nodes, suggestion)
+
     def _clean_synonym(self, nodes, suggestion):
         node = self._node(nodes, suggestion.target_node_id)
         terms, _ = resolve_clean_synonym_update(node.syn_list or "", suggestion.action_payload)
@@ -129,17 +135,24 @@ class ActionSimulationService:
             try:
                 self.applier.apply(nodes, suggestion)
             except (ValueError, TypeError) as exc:
-                errors.append({"suggestion_id": suggestion.id, "reason": str(exc)})
-        result = recalculate_tree(list(nodes.values())) if not errors else list(nodes.values())
+                errors.append({"code": "action_apply_error", "suggestion_id": suggestion.id, "reason": str(exc)})
         if not errors:
-            errors.extend(_validate(result))
+            try:
+                result = recalculate_tree(list(nodes.values()))
+            except (ValueError, RecursionError) as exc:
+                errors.append({"code": "cycle", "reason": f"树结构存在环或无法重算：{exc}"})
+                result = list(nodes.values())
+        else:
+            result = list(nodes.values())
+        if not errors:
+            errors.extend(_introduced_validation_errors(_validate(source), _validate(result)))
         diff = _compare(source, result, suggestions)
         raw = {"version_id": version_id, "suggestions": [item.model_dump(mode="json") for item in suggestions], "diff": diff.model_dump(mode="json")}
         return ActionPreview(valid=not errors, errors=errors, diff=diff, nodes=result, review_hash=hashlib.sha256(json.dumps(raw, ensure_ascii=False, sort_keys=True).encode()).hexdigest())
 
 
 def _ordered(items):
-    rank = {"add_node": 0, "split_subtree": 1, "merge_node": 2, "move_node": 3, "rename_node": 4, "clean_synonym": 5, "deprecate_node": 6, "delete_leaf_node": 7}
+    rank = {"add_node": 0, "split_subtree": 1, "merge_node": 2, "move_node": 3, "rename_node": 4, "clean_synonym": 5, "update_synonyms": 5, "review_only": 9, "deprecate_node": 6, "delete_leaf_node": 7}
     return sorted(items, key=lambda item: (rank.get(item.action_type, 5), item.id))
 
 
@@ -147,10 +160,10 @@ def _conflicts(items):
     split, terminal, errors = set(), set(), []
     for item in items:
         if item.action_type == "split_subtree" and item.target_node_id in split:
-            errors.append({"suggestion_id": item.id, "reason": "同一节点不能重复 split"})
+            errors.append({"code": "multi_action_conflict", "suggestion_id": item.id, "reason": "同一节点不能重复 split"})
         if item.action_type == "split_subtree": split.add(item.target_node_id)
         if item.target_node_id in terminal:
-            errors.append({"suggestion_id": item.id, "reason": "节点已被删除或弃用"})
+            errors.append({"code": "multi_action_conflict", "suggestion_id": item.id, "reason": "节点已被删除或弃用"})
         if item.action_type in {"delete_leaf_node", "deprecate_node"}: terminal.add(item.target_node_id)
     return errors
 
@@ -159,12 +172,38 @@ def _validate(nodes):
     by_id, names, errors = {item.category_id: item for item in nodes}, set(), []
     for node in nodes:
         key = (node.parent_id, node.category_name)
-        if key in names: errors.append({"reason": f"同级重名：{node.category_name}"})
+        if key in names: errors.append({"code": "duplicate_sibling", "node_id": node.category_id, "parent_id": node.parent_id, "name": node.category_name, "reason": f"同级重名：{node.category_name}"})
         names.add(key)
         parent = by_id.get(node.parent_id) if node.parent_id is not None else None
-        if node.parent_id is not None and parent is None: errors.append({"reason": f"悬空父节点：{node.category_id}"})
-        if node.node_status == "active" and parent and parent.node_status != "active": errors.append({"reason": f"active 节点存在 deprecated 祖先：{node.category_id}"})
+        if node.parent_id is not None and parent is None: errors.append({"code": "orphan", "node_id": node.category_id, "parent_id": node.parent_id, "reason": f"悬空父节点：{node.category_id}"})
+        if node.node_status == "active" and parent and parent.node_status != "active": errors.append({"code": "inactive_ancestor", "node_id": node.category_id, "parent_id": node.parent_id, "reason": f"active 节点存在 deprecated 祖先：{node.category_id}"})
+        if int(node.level or 0) > 7: errors.append({"code": "depth_limit", "node_id": node.category_id, "level": int(node.level or 0), "reason": f"层级过深：{node.category_id}（层级 {node.level}）"})
+        synonyms = [item.strip() for item in (node.syn_list or "").replace("，", ",").split(",")]
+        if node.syn_list and (any(not item for item in synonyms) or len(synonyms) != len(set(synonyms))):
+            errors.append({"code": "synonyms_invalid", "node_id": node.category_id, "reason": f"同义词存在重复或空值：{node.category_id}"})
+        seen, current = set(), node
+        while current.parent_id is not None:
+            if current.category_id in seen:
+                errors.append({"code": "cycle", "node_id": node.category_id, "reason": f"检测到环：{node.category_id}"})
+                break
+            seen.add(current.category_id)
+            current = by_id.get(current.parent_id)
+            if current is None: break
     return errors
+
+
+def _introduced_validation_errors(before_errors, after_errors):
+    """Only block defects introduced or worsened by the proposed action set."""
+    baseline = {_validation_identity(item) for item in before_errors}
+    introduced = []
+    for item in after_errors:
+        if _validation_identity(item) not in baseline:
+            introduced.append({**item, "reason": f"新增{item['reason']}"})
+    return introduced
+
+
+def _validation_identity(item):
+    return tuple((key, json.dumps(value, ensure_ascii=False, sort_keys=True)) for key, value in sorted(item.items()) if key != "reason")
 
 
 def _compare(before, after, suggestions):

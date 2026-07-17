@@ -1,4 +1,5 @@
 import { apiGet, apiPost } from './client'
+import type { DiagnosisCoverage } from './workflows'
 
 export type DiagnosisSummary = {
   version_id: number
@@ -8,18 +9,27 @@ export type DiagnosisSummary = {
   high_risk_count: number
   quality_score: number
   task_id?: string | null
+  task_status?: string | null
+  review_batch_id?: string | null
   enable_ai_analysis: boolean
   model_provider?: string | null
   model_name?: string | null
   ai_analysis_status?: 'completed' | 'partial' | 'not_requested' | null
   ai_warning?: string | null
   report_path?: string | null
+  report_type?: 'draft' | 'partial' | 'failed' | 'final' | null
+  run_id?: string | null
+  workflow_id?: string | null
+  coverage?: DiagnosisCoverage
 }
 
 export type DiagnosisIssue = {
   id: number
   version_id: number
   issue_type: string
+  issue_type_code: string
+  issue_type_label: string
+  issue_category: 'structure' | 'content'
   node_id?: number | null
   node_name?: string | null
   path?: string | null
@@ -29,6 +39,7 @@ export type DiagnosisIssue = {
   confidence: number
   risk_level: string
   source: string
+  run_ids?: string[]
   parent?: Record<string, unknown> | null
   children?: Array<Record<string, unknown>>
   siblings?: Array<Record<string, unknown>>
@@ -45,6 +56,11 @@ export type DiagnosisRunConfig = {
   model_name: string
   ai_candidate_limit?: number
   ai_wall_seconds?: number
+  ai_max_model_calls?: number
+  ai_token_budget?: number
+  priority_subtree_ids?: number[]
+  sample_strategy?: 'focused' | 'full_scan' | 'sampling'
+  focus_issues?: string[]
 }
 
 export function runDiagnosis(fileId: number, config: DiagnosisRunConfig) {

@@ -53,16 +53,16 @@ def test_quick_diagnosis_skips_model_and_records_configuration(tmp_path, monkeyp
 
     assert response.status_code == 200
     result = response.json()
-    assert result["status"] == "completed"
+    assert result["status"] == "waiting_review"
     assert result["enable_ai_analysis"] is False
     summary = client.get(f"/api/diagnosis/summary?version_id={result['version_id']}").json()
     assert summary["enable_ai_analysis"] is False
     assert summary["model_name"] is None
     task = client.get(f"/api/workflows/{result['task_id']}").json()
-    assert task["status"] == "completed"
+    assert task["status"] == "waiting_review"
     assert task["enable_ai_analysis"] is False
     assert task["start_time"]
-    assert task["end_time"]
+    assert task["end_time"] is None
     assert client.get(f"/workflow/{result['task_id']}").status_code == 200
     assert client.get(f"/diagnosis/summary?version_id={result['version_id']}").status_code == 200
     assert client.get(f"/versions?file_id={upload['file_id']}").json()[0]["quality_score"] is not None
@@ -73,7 +73,7 @@ def test_quick_diagnosis_skips_model_and_records_configuration(tmp_path, monkeyp
         json={"version_id": result["version_id"], "enable_ai_analysis": False},
     )
     assert rerun.status_code == 200
-    assert rerun.json()["status"] == "completed"
+    assert rerun.json()["status"] == "waiting_review"
 
 
 def test_diagnosis_rejects_mismatched_provider_model(tmp_path):
@@ -150,17 +150,18 @@ def test_ai_budget_exhaustion_keeps_results_and_generates_report(tmp_path, monke
 
     assert response.status_code == 200
     result = response.json()
-    assert result["status"] == "completed"
+    assert result["status"] == "waiting_review"
     assert result["ai_analysis_status"] == "partial"
     assert result["report_path"]
-    preview = client.get(f"/api/reports/{result['version_id']}/preview")
+    preview = client.get(f"/api/reports/{result['version_id']}/preview?report_type=draft")
     assert preview.status_code == 200
     markdown = preview.json()["markdown"]
     assert "诊断模式：AI 增强模式" in markdown
     assert "## 五、AI分析情况" in markdown
     assert "综合评分：暂不评级" in markdown
     task = client.get(f"/api/workflows/{result['task_id']}").json()
-    assert task["status"] == "completed"
+    assert task["status"] == "waiting_review"
+    assert task["current_step"] == "review_pending"
 
 
 def test_ai_connection_error_keeps_results_and_generates_report(tmp_path, monkeypatch):
@@ -188,14 +189,14 @@ def test_ai_connection_error_keeps_results_and_generates_report(tmp_path, monkey
 
     assert response.status_code == 200
     result = response.json()
-    assert result["status"] == "completed"
+    assert result["status"] == "waiting_review"
     assert result["ai_analysis_status"] == "partial"
     assert "无法连接所选模型" in result["ai_warning"]
     assert result["report_path"]
     task = client.get(f"/api/workflows/{result['task_id']}").json()
-    assert task["status"] == "completed"
-    assert task["current_step"] == "completed"
-    preview = client.get(f"/api/reports/{result['version_id']}/preview").json()["markdown"]
+    assert task["status"] == "waiting_review"
+    assert task["current_step"] == "review_pending"
+    preview = client.get(f"/api/reports/{result['version_id']}/preview?report_type=draft").json()["markdown"]
     assert "诊断模式：AI 增强模式" in preview
     assert "AI 分析因模型连接失败未完整完成" in preview
     assert "模型未发现问题" not in preview

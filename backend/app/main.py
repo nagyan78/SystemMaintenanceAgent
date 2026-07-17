@@ -8,6 +8,7 @@ from backend.app.api import (
     evaluations,
     files,
     health,
+    maintenance,
     reports,
     reviews,
     suggestions,
@@ -49,6 +50,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(reports.router, prefix="/api")
     app.include_router(versions.router, prefix="/api")
     app.include_router(workflows.router, prefix="/api")
+    app.include_router(maintenance.router, prefix="/api")
     app.include_router(chat.router, prefix="/api")
     app.include_router(agent_runs.router, prefix="/api")
     app.include_router(evaluations.router, prefix="/api")

@@ -13,6 +13,7 @@ from backend.app.services.evaluation_service import EvaluationService
 from backend.app.services.model_router import ModelRouter
 from backend.app.services.tool_registry import ToolRegistry, ToolSpec
 from backend.tests.test_m4_action_execution import _create_issue, _seed_version, _settings, _create_approved_suggestion
+from backend.tests.fixtures.golden_taxonomy import DATASET_VERSION
 
 
 def test_adaptive_planner_expands_then_stops_on_repeated_low_hit():
@@ -82,8 +83,9 @@ def test_golden_metrics_release_gate_and_api(tmp_path):
     with connect(settings) as c:
         c.execute("INSERT INTO task_record(id,file_id,task_type,status,current_step,progress,workflow_id,thread_id,version_id) VALUES('task-eval',1,'taxonomy_workflow','completed','completed',100,'wf','thread',?)",(version_id,))
         c.execute("INSERT INTO adjustment_suggestion(issue_id,review_batch_id,version_id,action_type,target_node_id,reason,suggestion,risk_level,confidence,need_confirm,status) VALUES(1,'eval',?,'mark_as_valid',20,'ok','ok','low',1,0,'approved')",(version_id,))
-    client=TestClient(create_app(settings)); created=client.post("/api/evaluations",json={"workflow_id":"wf","dataset_version":"demo-v1","agent_bundle_version":"bundle-1"})
+    client=TestClient(create_app(settings)); created=client.post("/api/evaluations",json={"workflow_id":"wf","dataset_version":DATASET_VERSION,"agent_bundle_version":"bundle-1"})
+    assert created.status_code == 200, created.text
     evaluation_id=created.json()["evaluation_id"]
-    assert client.get(f"/api/evaluations/release-gate?dataset_version=demo-v1&evaluation_id={evaluation_id}").json()["status"]=="baseline_missing"
+    assert client.get(f"/api/evaluations/release-gate?dataset_version={DATASET_VERSION}&evaluation_id={evaluation_id}").json()["status"]=="baseline_missing"
     assert client.post(f"/api/evaluations/{evaluation_id}/promote-baseline",json={"operator":"tester","agent_bundle_version":"bundle-1"}).status_code==200
-    assert client.get(f"/api/evaluations/release-gate?dataset_version=demo-v1&evaluation_id={evaluation_id}").json()["passed"] is True
+    assert client.get(f"/api/evaluations/release-gate?dataset_version={DATASET_VERSION}&evaluation_id={evaluation_id}").json()["passed"] is True

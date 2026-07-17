@@ -60,9 +60,19 @@ class VersionService:
         base_version_id: int,
         review_batch_id: str,
         nodes: list[TaxonomyNodeRecord] | None = None,
+        action_batch_id: str | None = None,
+        source_workflow_id: str | None = None,
     ) -> SaveVersionResult:
         version_repo = VersionRepository(self.settings)
         taxonomy_repo = TaxonomyRepository(self.settings)
+        if action_batch_id:
+            existing = version_repo.get_by_action_batch(action_batch_id)
+            if existing is not None:
+                return self._existing_save_result(
+                    existing,
+                    base_version_id=base_version_id,
+                    review_batch_id=review_batch_id,
+                )
         base_version = version_repo.get_version(base_version_id)
         if base_version is None:
             raise ValueError(f"Taxonomy version {base_version_id} was not found.")
@@ -75,6 +85,9 @@ class VersionService:
             version_no=new_version_no,
             description=f"基于 {base_version['version_no']} 执行审核批次 {review_batch_id}",
             quality_score=quality_score,
+            parent_version_id=base_version_id,
+            source_workflow_id=source_workflow_id,
+            action_batch_id=action_batch_id,
         )
         taxonomy_repo.bulk_insert_nodes(version_id=new_version_id, nodes=recalculated)
         suggestions = SuggestionRepository(self.settings).list_suggestions(
@@ -90,6 +103,8 @@ class VersionService:
                 "base_version_id": base_version_id,
                 "review_batch_id": review_batch_id,
                 "node_count": len(recalculated),
+                "action_batch_id": action_batch_id,
+                "source_workflow_id": source_workflow_id,
             },
         )
         return SaveVersionResult(
@@ -100,13 +115,45 @@ class VersionService:
             executed_count=executed_count,
             failed_count=failed_count,
             quality_score=quality_score,
+            action_batch_id=action_batch_id,
+        )
+
+    def _existing_save_result(
+        self,
+        existing: dict,
+        *,
+        base_version_id: int,
+        review_batch_id: str,
+    ) -> SaveVersionResult:
+        suggestions = SuggestionRepository(self.settings).list_suggestions(
+            review_batch_id=review_batch_id
+        )
+        return SaveVersionResult(
+            source_version_id=base_version_id,
+            new_version_id=int(existing["id"]),
+            new_version_no=str(existing["version_no"]),
+            node_count=TaxonomyRepository(self.settings).count_nodes(int(existing["id"])),
+            executed_count=sum(item.status == "executed" for item in suggestions),
+            failed_count=sum(item.status == "failed" for item in suggestions),
+            quality_score=existing.get("quality_score"),
+            action_batch_id=existing.get("action_batch_id"),
+            reused=True,
         )
 
     def save_executed_action_batch(
         self, *, base_version_id: int, review_batch_id: str,
         nodes: list[TaxonomyNodeRecord], suggestion_ids: list[int], operator: str,
+        action_batch_id: str, source_workflow_id: str | None = None,
     ) -> SaveVersionResult:
-        base = VersionRepository(self.settings).get_version(base_version_id)
+        version_repo = VersionRepository(self.settings)
+        existing = version_repo.get_by_action_batch(action_batch_id)
+        if existing is not None:
+            return self._existing_save_result(
+                existing,
+                base_version_id=base_version_id,
+                review_batch_id=review_batch_id,
+            )
+        base = version_repo.get_version(base_version_id)
         if base is None:
             raise ValueError(f"Taxonomy version {base_version_id} was not found.")
         recalculated = recalculate_tree(nodes)
@@ -114,8 +161,15 @@ class VersionService:
         quality_score = _calc_quality_score(recalculated)
         with connect(self.settings) as connection:
             cursor = connection.execute(
-                "INSERT INTO taxonomy_version(file_id,version_no,description,quality_score) VALUES(?,?,?,?)",
-                (int(base["file_id"]), new_version_no, f"基于 {base['version_no']} 执行审核批次 {review_batch_id}", quality_score),
+                """INSERT INTO taxonomy_version(
+                       file_id,version_no,description,quality_score,parent_version_id,
+                       source_workflow_id,action_batch_id,verification_status,lifecycle_status,
+                       diagnosis_mode,diagnosis_model
+                   ) VALUES(?,?,?,?,?,?,?,'not_verified','draft',?,?)""",
+                (int(base["file_id"]), new_version_no,
+                 f"基于 {base['version_no']} 执行审核批次 {review_batch_id}", quality_score,
+                 base_version_id, source_workflow_id, action_batch_id,
+                 base.get("diagnosis_mode"), base.get("diagnosis_model")),
             )
             new_version_id = int(cursor.lastrowid)
             connection.executemany(
@@ -129,11 +183,11 @@ class VersionService:
                 connection.execute(f"UPDATE adjustment_suggestion SET status='executed' WHERE id IN ({placeholders})", suggestion_ids)
             connection.execute(
                 "INSERT INTO operation_log(version_id,operator,operation_type,operation_detail) VALUES(?,?,?,?)",
-                (new_version_id, operator, "execute_and_save_actions", json.dumps({"base_version_id": base_version_id, "review_batch_id": review_batch_id, "suggestion_ids": suggestion_ids}, ensure_ascii=False)),
+                (new_version_id, operator, "execute_and_save_actions", json.dumps({"base_version_id": base_version_id, "review_batch_id": review_batch_id, "suggestion_ids": suggestion_ids, "action_batch_id": action_batch_id}, ensure_ascii=False)),
             )
         return SaveVersionResult(source_version_id=base_version_id, new_version_id=new_version_id,
             new_version_no=new_version_no, node_count=len(recalculated), executed_count=len(suggestion_ids),
-            failed_count=0, quality_score=quality_score)
+            failed_count=0, quality_score=quality_score, action_batch_id=action_batch_id)
 
     def get_version_diff(self, from_id: int, to_id: int) -> VersionDiff:
         taxonomy_repo = TaxonomyRepository(self.settings)
@@ -211,6 +265,7 @@ class VersionService:
         self,
         version_id: int,
         operator: str = "local_user",
+        supersedes_version_id: int | None = None,
     ) -> SaveVersionResult:
         version_repo = VersionRepository(self.settings)
         target = version_repo.get_version(version_id)
@@ -224,6 +279,9 @@ class VersionService:
             version_no=new_version_no,
             description=f"回滚到 {target['version_no']} 的快照",
             quality_score=quality_score,
+            parent_version_id=version_id,
+            supersedes_version_id=supersedes_version_id,
+            lifecycle_status="draft",
         )
         TaxonomyRepository(self.settings).bulk_insert_nodes(
             version_id=new_version_id,
@@ -264,26 +322,32 @@ def recalculate_tree(nodes: list[TaxonomyNodeRecord]) -> list[TaxonomyNodeRecord
     node_map = {node.category_id: node for node in nodes}
     children: dict[int | None, list[TaxonomyNodeRecord]] = {}
     for node in nodes:
-        parent_key = node.parent_id if node.parent_id in node_map else None
-        children.setdefault(parent_key, []).append(node)
+        children.setdefault(node.parent_id, []).append(node)
     for sibling_nodes in children.values():
         sibling_nodes.sort(key=lambda item: item.category_id)
 
     recalculated: dict[int, TaxonomyNodeRecord] = {}
 
-    def visit(node: TaxonomyNodeRecord, ancestor_ids: list[int], ancestor_names: list[str]) -> None:
-        path_ids = [*ancestor_ids, node.category_id]
-        path_names = [*ancestor_names, node.category_name]
+    def visit(node: TaxonomyNodeRecord, ancestor_ids: list[int], ancestor_names: list[str],
+              *, preserve_missing_parent: bool = False) -> None:
+        if preserve_missing_parent:
+            original_ids = [int(item.strip()) for item in str(node.path_ids or "").split(",") if item.strip().isdigit()]
+            original_names = [item.strip() for item in str(node.path_names or "").split(">") if item.strip()]
+            path_ids = original_ids if original_ids and original_ids[-1] == node.category_id else [node.category_id]
+            path_names = original_names if original_names and original_names[-1] == node.category_name else [node.category_name]
+        else:
+            path_ids = [*ancestor_ids, node.category_id]
+            path_names = [*ancestor_names, node.category_name]
         direct_children = children.get(node.category_id, [])
         recalculated[node.category_id] = node.model_copy(
             update={
-                "parent_id": ancestor_ids[-1] if ancestor_ids else None,
+                "parent_id": node.parent_id if preserve_missing_parent else (ancestor_ids[-1] if ancestor_ids else None),
                 "level": len(path_ids),
                 "path_ids": ",".join(str(item) for item in path_ids),
                 "path_names": " > ".join(path_names),
-                "category_group_id": ",".join(str(item) for item in ancestor_ids) or None,
-                "category_pids": ",".join(str(item) for item in ancestor_ids) or None,
-                "category_group_name": ",".join(ancestor_names) or None,
+                "category_group_id": node.category_group_id if preserve_missing_parent else (",".join(str(item) for item in ancestor_ids) or None),
+                "category_pids": node.category_pids if preserve_missing_parent else (",".join(str(item) for item in ancestor_ids) or None),
+                "category_group_name": node.category_group_name if preserve_missing_parent else (",".join(ancestor_names) or None),
                 "is_leaf": 0 if direct_children else 1,
             }
         )
@@ -294,7 +358,7 @@ def recalculate_tree(nodes: list[TaxonomyNodeRecord]) -> list[TaxonomyNodeRecord
         visit(root, [], [])
     for node in nodes:
         if node.category_id not in recalculated:
-            visit(node, [], [])
+            visit(node, [], [], preserve_missing_parent=node.parent_id is not None and node.parent_id not in node_map)
     return [recalculated[node.category_id] for node in sorted(nodes, key=lambda item: item.category_id)]
 
 

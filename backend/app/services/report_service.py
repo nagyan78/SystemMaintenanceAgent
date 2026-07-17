@@ -1,7 +1,7 @@
 import json
 import logging
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -14,8 +14,10 @@ from backend.app.repositories.suggestion_repo import SuggestionRepository
 from backend.app.repositories.task_repo import TaskRepository
 from backend.app.repositories.taxonomy_repo import TaxonomyRepository
 from backend.app.repositories.version_repo import VersionRepository
+from backend.app.repositories.report_repo import ReportRepository
 from backend.app.schemas.issue import ReportResult
 from backend.app.services.taxonomy_service import TaxonomyService
+from backend.app.domain.issue_types import get_issue_type
 
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,10 @@ STRUCTURE_TYPES = {
     "duplicate_mount",
     "cycle_reference",
     "circular_reference",
+    "excessive_depth",
+    "excessive_width",
+    "duplicate_sibling",
+    "parent_child_redundancy",
 }
 ISSUE_LABELS = {
     "missing_parent": "父节点缺失",
@@ -115,13 +121,34 @@ class ReportService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    def generate_diagnosis_report(self, version_id: int) -> ReportResult:
+    def generate_diagnosis_report(
+        self, version_id: int, *, report_type: str = "final",
+        review_batch_id: str | None = None,
+        workflow_id: str | None = None, run_id: str | None = None,
+    ) -> ReportResult:
+        if report_type not in {"draft", "partial", "failed", "final"}:
+            raise ValueError("report_type must be draft, partial, failed or final")
         data = self.collect_report_data(version_id)
         markdown = self.render_markdown_report(data)
+        markdown += self._governance_appendix(version_id, review_batch_id)
+        if report_type == "draft":
+            markdown = "> 诊断草稿：本报告尚未经人工审核和修改执行，不是最终交付结论。\n\n" + markdown
+        elif report_type == "partial":
+            markdown = "> 部分完成报告：规则诊断和已完成的 AI 结果已保留；未完成范围及原因见覆盖说明。\n\n" + markdown
+        elif report_type == "failed":
+            markdown = "> 失败报告：本次运行未能完成，本文仅记录失败前已持久化的可信事实。\n\n" + markdown
         self.settings.report_dir.mkdir(parents=True, exist_ok=True)
-        report_name = report_file_name({"version_no": data.basic_info["version_no"], "id": version_id})
+        report_name = report_file_name(
+            {"version_no": data.basic_info["version_no"], "id": version_id}, report_type
+        )
         report_path = self.settings.report_dir / report_name
         report_path.write_text(markdown, encoding="utf-8")
+        ReportRepository(self.settings).save(
+            version_id=version_id, report_type=report_type,
+            report_path=str(report_path), review_batch_id=review_batch_id,
+            workflow_id=workflow_id, run_id=run_id,
+            fact_payload=json.dumps(_json_ready(asdict(data)), ensure_ascii=False, default=str),
+        )
         return ReportResult(
             version_id=version_id,
             report_name=report_name,
@@ -183,9 +210,53 @@ class ReportService:
     def render_markdown_report(self, data: DiagnosisReportData) -> str:
         return render_markdown_report(data, self.settings)
 
+    def _governance_appendix(self, version_id: int, review_batch_id: str | None) -> str:
+        version = VersionRepository(self.settings).get_version(version_id) or {}
+        parent_id = version.get("parent_version_id")
+        issues = DiagnosisRepository(self.settings)
+        current = issues.list_issues(version_id)
+        before = issues.list_issues(int(parent_id)) if parent_id else []
+        key = lambda item: (item.get("issue_type_code"), item.get("node_id"))
+        before_keys, current_keys = {key(item) for item in before}, {key(item) for item in current}
+        resolved = [item for item in before if key(item) not in current_keys or item.get("status") == "resolved"]
+        unresolved = [item for item in current if key(item) in before_keys and item.get("status") not in {"resolved", "false_positive"}]
+        added = [item for item in current if key(item) not in before_keys]
+        deferred = [item for item in current if item.get("status") == "deferred"]
+        suggestions = SuggestionRepository(self.settings).list_suggestions(review_batch_id=review_batch_id) if review_batch_id else []
+        counts: dict[str, int] = {}
+        for item in suggestions: counts[item.status] = counts.get(item.status, 0) + 1
+        actions = [item.action_type for item in suggestions if item.status in {"approved", "executed"}]
+        added_lines = "\n".join(
+            f"  - {item.get('issue_type_label')}：{item.get('node_name') or '-'}；关联执行动作："
+            f"{', '.join(s.action_type for s in suggestions if s.status in {'approved', 'executed'} and s.target_node_id == item.get('node_id')) or '未能自动关联'}"
+            for item in added
+        ) or "  - 无"
+        release_allowed = version.get("lifecycle_status") in {"passed", "released"}
+        return f"""
 
-def report_file_name(version: dict) -> str:
-    return f"{version['version_no']}_version-{version['id']}_diagnosis_report.md"
+## 版本治理与复诊结论
+
+- 基线版本：{parent_id or '无'}
+- 当前版本：{version.get('version_no')}（ID {version_id}）
+- 审核决策统计：{counts}
+- 实际执行动作：{actions or ['无']}
+- 修改前/后问题数量：{len(before)} / {len(current)}
+- 已解决：{len(resolved)}；未解决：{len(unresolved)}；新增：{len(added)}；待确认：{len(deferred)}
+- 复诊状态：{version.get('verification_status')}
+- 生命周期状态：{version.get('lifecycle_status')}
+- 是否允许发布：{'是' if release_allowed else '否'}
+- 相邻版本质量：{(VersionRepository(self.settings).get_version(int(parent_id)) or {}).get('quality_score') if parent_id else '-'} → {version.get('quality_score')}
+- 初始诊断模式/模型：{version.get('diagnosis_mode') or '历史数据未记录'} / {version.get('diagnosis_model') or '历史数据未记录'}
+- AI 建议模式/模型：{'AI/规则混合' if any(item.analysis_run_id for item in suggestions) else '规则或人工'} / {version.get('diagnosis_model') or '历史数据未记录'}
+- 复诊模式/模型：{version.get('verification_mode') or '确定性规则'} / {version.get('verification_model') or '未使用模型'}
+
+### 新增问题与关联动作
+{added_lines}
+"""
+
+
+def report_file_name(version: dict, report_type: str = "final") -> str:
+    return f"{version['version_no']}_version-{version['id']}_{report_type}_report.md"
 
 
 def build_issue_summary(structure_issues: list[dict], content_issues: list[dict]) -> dict[str, Any]:
@@ -749,6 +820,7 @@ def _build_runtime_info(
     ai_enabled = bool(task.get("enable_ai_analysis"))
     warning = str(task_result.get("ai_warning") or task.get("error_message") or "").strip()
     ai_status = str(task_result.get("ai_analysis_status") or "")
+    coverage = task_result.get("coverage") if isinstance(task_result.get("coverage"), dict) else {}
     degraded = status == "completed_degraded" or ai_status == "partial" or bool(warning)
     report_nature = "降级报告" if degraded else ("正式报告" if status == "completed" else "阶段性报告")
     terminal_labels = {
@@ -760,9 +832,9 @@ def _build_runtime_info(
         "cancelled": "已取消",
     }
     reason = _business_stop_reason(warning, status, ai_status)
-    candidate_count = _optional_int_value(task_result.get("candidate_count"))
-    completed_count = _optional_int_value(task_result.get("ai_processed_count"))
-    ai_issue_count = _optional_int_value(task_result.get("ai_issue_count"))
+    candidate_count = _optional_int_value(coverage.get("candidate_count", task_result.get("candidate_count")))
+    completed_count = _optional_int_value(coverage.get("deep_diagnosed_count", task_result.get("ai_processed_count")))
+    ai_issue_count = _optional_int_value(coverage.get("ai_issue_count", task_result.get("ai_issue_count")))
     ai_inconclusive_count = _optional_int_value(task_result.get("ai_inconclusive_count"))
     if not ai_enabled:
         ai_state = "本次未启用"
@@ -775,9 +847,8 @@ def _build_runtime_info(
     else:
         ai_state = "完成数未知"
     rules_completed = int(task.get("progress") or 0) >= 45 or status in {"completed", "completed_degraded"}
-    coverage_complete = rules_completed and (
-        not ai_enabled
-        or (not degraded and candidate_count is not None and completed_count is not None and completed_count >= candidate_count)
+    coverage_complete = bool(coverage.get("coverage_complete")) if coverage else rules_completed and (
+        not ai_enabled or (not degraded and candidate_count is not None and completed_count is not None and completed_count >= candidate_count)
     )
     return {
         "report_nature": report_nature,
@@ -793,6 +864,7 @@ def _build_runtime_info(
         "ai_inconclusive_count": ai_inconclusive_count,
         "ai_state": ai_state,
         "coverage_complete": coverage_complete,
+        "coverage": coverage,
         "stop_reason": reason,
         "rule_content_count": sum(item.get("source") == "content_rule" for item in issues),
         "model_content_count": sum(item.get("source") == "model_analysis" for item in issues),
@@ -873,13 +945,27 @@ def _group_issues(issues: list[dict]) -> list[dict[str, Any]]:
 
 def _issue_label(issue_type: str) -> str:
     if issue_type not in ISSUE_LABELS:
+        definition = get_issue_type(issue_type)
+        if definition.code != "unknown" or issue_type == "unknown":
+            return definition.label
         logger.warning("Report encountered unknown issue type: %s", issue_type)
         return f"{issue_type}（尚未配置中文说明）"
     return ISSUE_LABELS[issue_type]
 
 
 def _issue_description(issue_type: str) -> str:
-    return ISSUE_DESCRIPTIONS.get(issue_type, "当前问题类型尚未配置中文说明，需结合保存的判断依据人工确认。")
+    if issue_type in ISSUE_DESCRIPTIONS:
+        return ISSUE_DESCRIPTIONS[issue_type]
+    definition = get_issue_type(issue_type)
+    return definition.description if definition.code != "unknown" else "当前问题类型尚未配置中文说明，需结合保存的判断依据人工确认。"
+
+
+def _json_ready(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _json_ready(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_ready(item) for item in value]
+    return value
 
 
 def _type_sort_key(issue_type: str) -> tuple[int, str]:

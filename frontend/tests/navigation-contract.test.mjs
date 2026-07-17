@@ -1,104 +1,98 @@
 import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
 
-const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-assert.equal(packageJson.scripts['test:contract'], 'node tests/navigation-contract.test.mjs')
+const read = path => readFileSync(new URL(path, import.meta.url), 'utf8')
+const router = read('../src/router/index.ts')
+const shell = read('../src/components/AppShell.vue')
+const client = read('../src/api/client.ts')
+const upload = read('../src/views/UploadView.vue')
+const diagnosis = read('../src/views/DiagnosisView.vue')
+const reports = read('../src/views/ReportView.vue')
+const reviews = read('../src/views/ReviewsView.vue')
+const evaluation = read('../src/views/EvaluationView.vue')
+const versions = read('../src/views/VersionsView.vue')
+const review = read('../src/views/ReviewView.vue')
+const reviewCard = read('../src/components/SuggestionReviewCard.vue')
+const comparison = read('../src/components/ActionComparison.vue')
+const details = read('../src/components/SuggestionDetails.vue')
+const editDialog = read('../src/components/SuggestionEditDialog.vue')
+const cleanupDialog = read('../src/components/DataManagementDialog.vue')
 
-const routerSource = readFileSync(new URL('../src/router/index.ts', import.meta.url), 'utf8')
-for (const route of ['/upload', '/workflow/:taskId', '/review/:reviewBatchId', '/versions', '/report/:versionId', '/evaluation', '/triage']) {
-  assert.ok(routerSource.includes(route), `missing route ${route}`)
+for (const route of [
+  '/upload', '/workflow/:taskId', '/workflows', '/reviews', '/review/:reviewBatchId',
+  '/versions', '/diagnosis', '/diagnosis/:versionId', '/report', '/report/:versionId', '/evaluation',
+]) assert.ok(router.includes(route), `missing route ${route}`)
+assert.ok(router.includes("{ path: '/workflows', redirect: '/upload' }"), 'legacy workflows route must redirect to upload')
+assert.ok(!router.includes("path: '/triage'"), 'triage route must not be user-visible')
+
+for (const label of ['上传分析', '诊断结果', '建议审核', '版本管理', '报告']) {
+  assert.ok(shell.includes(label), `missing nav item ${label}`)
+}
+assert.ok(!shell.includes("label: '工作流'"), 'workflow must not remain a standalone menu')
+assert.ok(!shell.includes("label: '人工分流'"), 'triage must not remain a standalone menu')
+assert.ok(shell.includes('statusText'), 'topbar context must be derived from the active route')
+
+for (const sample of ['http://127.0.0.1:8000', "url.pathname = '/api'", "toLowerCase() === 'api'"]) {
+  assert.ok(client.includes(sample), `API base normalization missing ${sample}`)
+}
+for (const kind of ['invalid_base', 'network', 'not_found', 'http']) {
+  assert.ok(client.includes(kind), `API error kind missing ${kind}`)
 }
 
-const workflowSource = readFileSync(new URL('../src/views/WorkflowView.vue', import.meta.url), 'utf8')
-for (const step of ['Excel 解析', '结构检测', '内容检测', 'AI 分析']) {
-  assert.ok(workflowSource.includes(step), `missing workflow step ${step}`)
+assert.ok(upload.includes('listWorkflows'), 'upload page must query backend workflows')
+for (const label of ['诊断任务', '上传文件名', '创建时间', '当前阶段', '真实进度', '问题数量', '审核状态', '当前可执行操作']) {
+  assert.ok(upload.includes(label), `upload task center missing ${label}`)
+}
+assert.ok(upload.includes('进入建议审核'), 'waiting workflow must enter review')
+assert.ok(upload.includes('查看完整报告'), 'verified workflow must expose its final report')
+assert.ok(upload.includes('删除文件') && upload.includes('requestHistoryDelete'), 'historical files must expose safe deletion')
+assert.ok(!upload.includes("router.push(`/workflow/"), 'new upload must remain on upload page')
+
+assert.ok(reviews.includes('listReviewBatches'), 'review center must query backend batches')
+assert.ok(reviews.includes('loading') && reviews.includes('error'), 'review center must distinguish loading/error/empty')
+for (const action of ['选择全部待审核项', '通过选中修改', '驳回选中', '批量通过全部待审核项', '批量驳回全部待审核项', '批量暂不处理全部待审核项', '批量确认全部为误报', '执行修改']) {
+  assert.ok(review.includes(action), `review page missing ${action}`)
+}
+for (const code of ['missing_parent', 'depth_exceeded', 'width_exceeded', 'synonym_format', 'naming_nonstandard', 'synonym_conflict', 'parent_child_redundancy', 'semantic_misplacement', 'synonym_overlap']) {
+  assert.ok(review.includes(code), `review page missing stable issue category ${code}`)
+}
+assert.ok(review.includes(':disabled="!selectedIds.length || loading"'), 'selected review actions must enable from the real pending selection count')
+assert.ok(review.includes('batch?.can_generate_preview') && review.includes('batch?.can_execute'), 'preview and execution controls must use backend capabilities')
+assert.ok(review.includes('incompleteApprovalIds') && review.includes('approveExecutableOnly'), 'incomplete selected proposals must offer a recovery choice')
+assert.ok(review.includes('executeReviewBatch'), 'review page must execute approved suggestions')
+for (const component of ['SuggestionReviewCard', 'SuggestionEditDialog']) assert.ok(review.includes(component), `review page missing ${component}`)
+for (const label of ['通过修改', '编辑后通过', '驳回建议', '展开详情', '完整路径', '影响范围']) {
+  assert.ok(reviewCard.includes(label), `review card missing ${label}`)
+}
+assert.ok(!reviewCard.includes('JSON.stringify'), 'review card must not render raw JSON')
+for (const label of ['原名称', '新名称', '原同义词', '原父节点', '被合并节点', '历史建议未记录该信息']) {
+  assert.ok(comparison.includes(label), `comparison missing ${label}`)
+}
+for (const label of ['完整证据', '判断理由', '格式化动作字段', 'work_item_id', 'analysis_run_id']) {
+  assert.ok(details.includes(label), `details missing ${label}`)
+}
+assert.ok(!details.includes('JSON.stringify'), 'details must not render action payload as JSON')
+assert.ok(editDialog.includes('保存并通过修改'), 'edit dialog missing save action')
+
+assert.ok(diagnosis.includes('route.params.versionId'), 'diagnosis must be route-version driven')
+assert.ok(diagnosis.includes('选择要查看的版本'), 'diagnosis without a version must offer a selector')
+for (const message of ['诊断尚未完成', '该版本不存在']) assert.ok(diagnosis.includes(message), `diagnosis missing state ${message}`)
+assert.ok(!diagnosis.includes('state.taskId'), 'diagnosis must not infer a version from taskId')
+for (const field of ['可信诊断覆盖漏斗', 'rule_scanned_nodes', 'deep_diagnosed_count', 'tokens_used', '问题来源']) {
+  assert.ok(diagnosis.includes(field), `diagnosis coverage UI missing ${field}`)
 }
 
-const uploadViewSource = readFileSync(new URL('../src/views/UploadView.vue', import.meta.url), 'utf8')
-assert.ok(uploadViewSource.includes('开始诊断'), 'upload page must expose the diagnosis-first user action')
-assert.ok(uploadViewSource.includes('分类层级'), 'upload page must show parsed taxonomy metrics')
-assert.ok(uploadViewSource.includes('runDiagnosis'), 'upload page must start the simplified diagnosis flow')
-assert.ok(uploadViewSource.includes('快速模式（关闭 AI）'), 'AI must be disabled by default for fast diagnosis')
-assert.ok(uploadViewSource.includes('本地模型 qwen3:8b'), 'upload page must expose the local model choice')
-assert.ok(uploadViewSource.includes('DeepSeek API'), 'upload page must expose the deployment model choice')
-assert.ok(uploadViewSource.includes('listFiles'), 'upload page must load previously uploaded files')
-assert.ok(uploadViewSource.includes('历史文件'), 'upload page must show a historical file section')
-assert.ok(uploadViewSource.includes('selectExistingFile'), 'upload page must allow selecting an existing file without re-uploading')
-
-const clientSource = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
-assert.ok(clientSource.includes("localStorage.getItem('apiBaseUrl') || 'http://127.0.0.1:8000/api'"), 'missing api base url default')
-
-const workspaceSource = readFileSync(new URL('../src/state/workspace.ts', import.meta.url), 'utf8')
-assert.ok(workspaceSource.includes("import { reactive } from 'vue'"), 'workspace must import reactive for runtime mount')
-for (const key of ['fileId', 'fileName', 'taskId', 'workflowId', 'threadId', 'currentVersionId', 'newVersionId', 'versionNo', 'reviewBatchId', 'reportPath', 'enableAiAnalysis', 'modelProvider', 'modelName']) {
-  assert.ok(workspaceSource.includes(key), `missing workspace key ${key}`)
+assert.ok(reports.includes('listReports'), 'report page must query report resources first')
+assert.ok(!reports.includes('generateReport'), 'preview failure must not generate a report')
+for (const type of ['诊断草稿', '部分完成报告', '失败报告', '最终报告', '历史诊断报告', '尚未生成']) {
+  assert.ok(reports.includes(type), `report page missing ${type}`)
 }
 
-const appShellSource = readFileSync(new URL('../src/components/AppShell.vue', import.meta.url), 'utf8')
-for (const label of ['上传分析', '工作流', '建议审核', '版本管理', '报告']) {
-  assert.ok(appShellSource.includes(label), `missing nav item ${label}`)
+assert.ok(evaluation.includes('route.query.version_id'), 'evaluation must support direct URL version context')
+assert.ok(evaluation.includes('getVersionQuality'), 'evaluation must query version quality')
+assert.ok(versions.includes('listFiles') && versions.includes('listVersions'), 'version management must query backend resources')
+for (const field of ['generatePreview', 'database_backup_path', 'filesystem_paths', 'expectedConfirmation', 'executeConfirmed']) {
+  assert.ok(cleanupDialog.includes(field), `two-phase cleanup UI missing ${field}`)
 }
-assert.ok(!appShellSource.includes("to: '/report/0'"), 'report nav must use current workspace version instead of /report/0')
-
-for (const view of ['OverviewView', 'TreeView', 'DiagnosisView']) {
-  assert.ok(routerSource.includes(`import ${view}`), `router must import ${view}`)
-  assert.ok(routerSource.includes(`component: ${view}`), `router must mount ${view}`)
-}
-const evaluationSource = readFileSync(new URL('../src/components/EvaluationDashboard.vue', import.meta.url), 'utf8')
-for (const label of ['Precision', 'Recall', 'F1', '危险动作漏拦截率', 'Model calls', 'Token', 'Cache hit', 'P95 latency', 'Triage']) assert.ok(evaluationSource.includes(label), `evaluation dashboard missing ${label}`)
-for (const component of ['AgentRunProgress', 'AgentEventLog']) {
-  assert.ok(workflowSource.includes(component), `workflow must use ${component}`)
-}
-for (const eventName of ['agent_step', 'agent_tool_completed', 'candidate_completed']) {
-  assert.ok(workflowSource.includes(eventName), `workflow must consume ${eventName}`)
-}
-assert.ok(workflowSource.includes('cancelWorkflow'), 'workflow must expose safe cancellation')
-for (const label of ['Model calls', 'Token', 'Wall time', 'Batch decision', 'Triage']) assert.ok(workflowSource.includes(label), `workflow budget missing ${label}`)
-const triageSource = readFileSync(new URL('../src/views/TriageView.vue', import.meta.url), 'utf8')
-for (const label of ['确认问题', '确认正常', '仍不确定', '检测器分歧']) assert.ok(triageSource.includes(label), `triage view missing ${label}`)
-
-const reviewSource = readFileSync(new URL('../src/views/ReviewView.vue', import.meta.url), 'utf8')
-const actionPreviewSource = readFileSync(new URL('../src/components/ActionPreview.vue', import.meta.url), 'utf8')
-assert.ok(reviewSource.includes('ActionPreview'), 'review must render action preview')
-assert.ok(reviewSource.includes('previewReviewBatch'), 'review must request server-side simulation')
-assert.ok(actionPreviewSource.includes('执行前模拟'), 'action preview must explain simulation')
-
-const progressSource = readFileSync(new URL('../src/components/AgentRunProgress.vue', import.meta.url), 'utf8')
-for (const label of ['候选总数', '已处理', '发现问题', '正常', '不确定', '失败', '剩余']) {
-  assert.ok(progressSource.includes(label), `agent progress must show ${label}`)
-}
-
-const diagnosisViewSource = readFileSync(new URL('../src/views/DiagnosisView.vue', import.meta.url), 'utf8')
-assert.ok(
-  diagnosisViewSource.includes(':to="`/report/${summary.version_id}`">查看报告</RouterLink>'),
-  'diagnosis result header must always expose the report for the loaded version',
-)
-for (const value of ['体系体检报告', '结构问题', '内容问题', '高风险问题', '综合评分', '问题原因', '检测依据', '建议动作']) {
-  assert.ok(diagnosisViewSource.includes(value), `diagnosis report must display ${value}`)
-}
-
-const versionTableSource = readFileSync(new URL('../src/components/VersionTable.vue', import.meta.url), 'utf8')
-assert.ok(versionTableSource.includes('type="checkbox"'), 'version table must allow selecting two versions for diff')
-
-const versionsViewSource = readFileSync(new URL('../src/views/VersionsView.vue', import.meta.url), 'utf8')
-assert.ok(versionsViewSource.includes('listFiles'), 'versions page must load files for file-scoped version management')
-assert.ok(versionsViewSource.includes('selectedFileId'), 'versions page must maintain selected file context')
-assert.ok(versionsViewSource.includes('orderedSelectedIds'), 'versions page must compare versions from older to newer')
-for (const fn of ['loadDiff', 'doExport', 'doRollback']) {
-  const sourceFromFunction = versionsViewSource.slice(versionsViewSource.indexOf(`async function ${fn}`))
-  assert.ok(sourceFromFunction.includes('try {'), `${fn} must display API errors instead of failing silently`)
-}
-
-const reviewViewSource = readFileSync(new URL('../src/views/ReviewView.vue', import.meta.url), 'utf8')
-assert.ok(reviewViewSource.slice(reviewViewSource.indexOf('onMounted')).includes('catch'), 'review batch loading must display API errors')
-assert.ok(reviewViewSource.includes('resumeWorkflow'), 'review page must resume the interrupted LangGraph workflow')
-assert.ok(reviewViewSource.includes('接受选中建议'), 'review page must expose an accept action')
-assert.ok(reviewViewSource.includes('拒绝其余建议'), 'review page must expose a reject action')
-assert.ok(reviewViewSource.includes('applyReviewDecision'), 'simplified diagnosis review must not require workflow resume')
-assert.ok(!reviewViewSource.includes('editJson'), 'review page must not require users to type a JSON edits array')
-
-const reviewApiSource = readFileSync(new URL('../src/api/reviews.ts', import.meta.url), 'utf8')
-assert.ok(reviewApiSource.includes('/decision'), 'review api must expose decision endpoint')
-assert.ok(reviewApiSource.includes('/execute'), 'review api must expose execute endpoint')
 
 console.log('navigation contract checks passed')

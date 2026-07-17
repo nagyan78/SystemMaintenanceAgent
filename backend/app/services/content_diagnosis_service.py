@@ -18,6 +18,7 @@ from backend.app.services.model_router import ModelBudgetExceededError
 from backend.app.repositories.taxonomy_repo import TaxonomyRepository
 from backend.app.schemas.issue import ContentIssue, DiagnosisPlan
 from backend.app.services.tool_factory import AgentResourceLimits, AgentToolFactory
+from backend.app.domain.issue_types import normalize_issue_type_code
 
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,8 @@ class ContentDiagnosisAgent:
         self.trace_log: list[str] = []
         self.event_sink = event_sink
         self.progress_sink = progress_sink
+        self.model_calls_used = 0
+        self.tokens_used = 0
 
     def run(self, version_id: int, plan: DiagnosisPlan) -> list[ContentIssue]:
         if self.llm is None:
@@ -91,7 +94,7 @@ class ContentDiagnosisAgent:
         deadline = time.monotonic() + max(1, self.settings.diagnosis_ai_wall_seconds)
         for index, candidate in enumerate(candidates, start=1):
             self._ensure_within_deadline(deadline)
-            issue = self._diagnose_candidate(llm_with_tools, version_id, candidate, deadline)
+            issue = self._diagnose_candidate(llm_with_tools, version_id, candidate, plan, deadline)
             if issue:
                 issues.append(issue)
             if self.progress_sink:
@@ -103,6 +106,9 @@ class ContentDiagnosisAgent:
         return TaxonomyRepository(self.settings).list_content_diagnosis_candidates(
             version_id,
             priority_subtrees=plan.priority_subtrees,
+            priority_subtree_ids=plan.priority_subtree_ids,
+            focus_issues=plan.focus_issues,
+            sample_strategy=plan.sample_strategy,
             limit=limit,
         )
 
@@ -111,17 +117,28 @@ class ContentDiagnosisAgent:
         llm_with_tools: Any,
         version_id: int,
         candidate: dict[str, Any],
+        plan: DiagnosisPlan,
         deadline: float,
     ) -> ContentIssue | None:
         messages = [
             SystemMessage(
                 content=f"{CONTENT_DIAGNOSIS_SYSTEM_PROMPT}\n\n{CONTENT_DIAGNOSIS_FEW_SHOT}"
             ),
-            HumanMessage(content=_candidate_prompt(version_id, candidate)),
+            HumanMessage(content=_candidate_prompt(version_id, candidate, plan)),
         ]
         for _ in range(self.max_iter):
             self._ensure_within_deadline(deadline)
             response = llm_with_tools.invoke(messages)
+            self.model_calls_used += 1
+            usage = getattr(response, "usage_metadata", None) or {}
+            call_tokens = int(usage.get("total_tokens", 0) or 0)
+            self.tokens_used += call_tokens
+            if self.event_sink:
+                self.event_sink({
+                    "event_type": "model_call_completed", "status": "completed",
+                    "token_usage": {"total_tokens": call_tokens},
+                    "summary": {"model_calls": 1},
+                })
             self._trace(f"Thought: {response.content}")
             tool_calls = getattr(response, "tool_calls", []) or []
             if not tool_calls:
@@ -130,7 +147,7 @@ class ContentDiagnosisAgent:
                 continue
             messages.append(response)
             for tool_call in tool_calls:
-                issue = self._execute_tool_call(tool_call, messages)
+                issue = self._execute_tool_call(tool_call, messages, plan.focus_issues)
                 if issue:
                     return issue
         logger.warning("Content diagnosis max_iter exhausted for candidate %s", candidate)
@@ -141,13 +158,22 @@ class ContentDiagnosisAgent:
         if time.monotonic() >= deadline:
             raise ModelBudgetExceededError("MODEL_BUDGET_EXCEEDED: wall_time")
 
-    def _execute_tool_call(self, tool_call: dict[str, Any], messages: list[Any]) -> ContentIssue | None:
+    def _execute_tool_call(
+        self, tool_call: dict[str, Any], messages: list[Any], focus_issues: list[str] | None = None,
+    ) -> ContentIssue | None:
         name = tool_call["name"]
         args = tool_call.get("args") or {}
         tool_obj = self.tool_map[name]
         self._trace(f"Action: {name} {json.dumps(args, ensure_ascii=False)}")
         if self.event_sink:
             self.event_sink({"event_type": "agent_step", "tool_name": name, "status": "running", "summary": {"action": "tool_started"}})
+        if name == "submit_diagnosis" and focus_issues:
+            submitted = normalize_issue_type_code((args.get("issue") or {}).get("issue_type"))
+            allowed = {normalize_issue_type_code(value) for value in focus_issues}
+            if submitted not in allowed:
+                observation = {"accepted": False, "reason": "issue_type is outside DiagnosisPlan.focus_issues"}
+                messages.append(ToolMessage(content=json.dumps(observation, ensure_ascii=False), tool_call_id=tool_call.get("id", name)))
+                return None
         observation = tool_obj.invoke(args)
         self._trace(f"Observation: {observation}")
         if self.event_sink:
@@ -188,11 +214,13 @@ def run_agent(
     return ContentDiagnosisAgent(settings).run(version_id, plan)
 
 
-def _candidate_prompt(version_id: int, candidate: dict[str, Any]) -> str:
+def _candidate_prompt(version_id: int, candidate: dict[str, Any], plan: DiagnosisPlan) -> str:
     return json.dumps(
         {
             "version_id": version_id,
             "candidate": candidate,
+            "focus_issue_types": plan.focus_issues,
+            "sample_strategy": plan.sample_strategy,
             "instruction": "请按 Thought-Action-Observation 循环诊断该节点。",
         },
         ensure_ascii=False,

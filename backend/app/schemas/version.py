@@ -20,6 +20,17 @@ class VersionRecord(BaseModel):
     description: str | None = None
     quality_score: float | None = None
     snapshot_path: str | None = None
+    parent_version_id: int | None = None
+    source_workflow_id: str | None = None
+    action_batch_id: str | None = None
+    verification_status: str = "not_verified"
+    export_path: str | None = None
+    supersedes_version_id: int | None = None
+    lifecycle_status: str = "draft"
+    diagnosis_mode: str | None = None
+    diagnosis_model: str | None = None
+    verification_mode: str | None = None
+    verification_model: str | None = None
     created_time: str | None = None
 
 
@@ -41,6 +52,8 @@ class SaveVersionResult(BaseModel):
     executed_count: int = 0
     failed_count: int = 0
     quality_score: float | None = None
+    action_batch_id: str | None = None
+    reused: bool = False
 
 
 class VersionDiff(BaseModel):

@@ -103,7 +103,7 @@ def test_export_excel_writes_standard_columns(tmp_path):
 
     export_path = export_excel(version_id, settings)
 
-    assert export_path.name == "v1.0_taxonomy.xlsx"
+    assert export_path.name == f"file-1_v1.0_version-{version_id}_taxonomy.xlsx"
     workbook = load_workbook(export_path, read_only=True)
     rows = list(workbook.active.iter_rows(values_only=True))
     assert rows[0] == (

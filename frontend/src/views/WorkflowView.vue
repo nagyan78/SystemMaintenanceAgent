@@ -13,9 +13,8 @@
       <p v-if="enableAi && candidateCount" class="muted">AI 候选进度：{{ aiProcessedCount }} / {{ candidateCount }}；单批最长约 5 分钟，达到边界后会生成部分完成报告。</p>
       <div class="action-row">
         <RouterLink v-if="currentVersionId" class="button primary" :to="`/diagnosis/${currentVersionId}`">查看诊断结果</RouterLink>
-        <RouterLink v-if="reviewBatchId" class="button secondary" :to="`/review/${reviewBatchId}?task_id=${taskId}`">建议审核</RouterLink>
         <RouterLink v-if="fileId" class="button secondary" :to="`/versions?file_id=${fileId}`">版本管理</RouterLink>
-        <RouterLink v-if="currentVersionId" class="button secondary" :to="`/report/${currentVersionId}`">查看报告</RouterLink>
+        <RouterLink v-if="currentVersionId" class="button secondary" :to="`/report/${currentVersionId}?type=${status==='waiting_review'?'draft':'final'}`">查看报告</RouterLink>
         <button v-if="status==='running'" class="button danger" @click="cancel">安全停止</button>
       </div>
     </section>
@@ -36,7 +35,7 @@ import { cancelWorkflow, getWorkflowStatus, workflowEvents } from '../api/workfl
 import { useWorkspace } from '../state/workspace'
 
 const route=useRoute(), taskId=String(route.params.taskId), {state,patch}=useWorkspace()
-const status=ref('pending'), progress=ref(0), currentStep=ref(''), currentVersionId=ref<number|null>(null), fileId=ref<number|null>(state.fileId), reviewBatchId=ref(''), errorMessage=ref(''), enableAi=ref(false), modelName=ref(''), timer=ref<number|null>(null)
+const status=ref('pending'), progress=ref(0), currentStep=ref(''), currentVersionId=ref<number|null>(null), fileId=ref<number|null>(state.fileId), errorMessage=ref(''), enableAi=ref(false), modelName=ref(''), timer=ref<number|null>(null)
 const eventSource=ref<EventSource|null>(null), agentEvents=ref<AgentEvent[]>([]), seenEventIds=new Set<number>()
 const rawCounts=ref<Record<string,number>>({})
 const planRevision=ref(1),planDecision=ref('initial'),stopReason=ref(''),modelCallsUsed=ref(0),tokensUsed=ref(0),wallSecondsUsed=ref(0),triageCount=ref(0),candidateCount=ref(0),aiProcessedCount=ref(0)
@@ -51,7 +50,7 @@ const steps=computed(()=>[
   ...(enableAi.value?[{key:'ai',label:'AI 分析',description:`仅分析候选问题 · ${modelName.value}`}]:[]),
 ].map((step,index)=>({...step,state:status.value==='completed'||index<activeIndex.value?'completed':index===activeIndex.value&&status.value==='running'?'running':'pending'})))
 
-async function refresh(){try{const data=await getWorkflowStatus(taskId);status.value=data.status;progress.value=data.progress;currentStep.value=data.current_step;currentVersionId.value=data.current_version_id||null;fileId.value=data.file_id;reviewBatchId.value=data.review_batch_id||'';errorMessage.value=data.error_message||'';enableAi.value=Boolean(data.enable_ai_analysis);modelName.value=data.model_name||'';rawCounts.value=data.work_item_counts||{};planRevision.value=Number(data.plan_revision||1);planDecision.value=String(data.plan_decision||'initial');stopReason.value=String(data.stop_reason||'');modelCallsUsed.value=Number(data.model_calls_used||0);tokensUsed.value=Number(data.tokens_used||0);wallSecondsUsed.value=Number(data.wall_seconds_used||0);triageCount.value=Number(data.triage_count||0);candidateCount.value=Number(data.candidate_count||0);aiProcessedCount.value=Number(data.ai_processed_count||0);patch({taskId,fileId:data.file_id,currentVersionId:data.current_version_id||null,reviewBatchId:data.review_batch_id||null,enableAiAnalysis:enableAi.value,modelName:modelName.value});if(['completed','failed','waiting_review','cancelled'].includes(data.status))stop()}catch(e){errorMessage.value=e instanceof Error?e.message:'状态查询失败';stop()}}
+async function refresh(){try{const data=await getWorkflowStatus(taskId);status.value=data.status;progress.value=data.progress;currentStep.value=data.current_step;currentVersionId.value=data.current_version_id||null;fileId.value=data.file_id;errorMessage.value=data.error_message||'';enableAi.value=Boolean(data.enable_ai_analysis);modelName.value=data.model_name||'';rawCounts.value=data.work_item_counts||{};planRevision.value=Number(data.plan_revision||1);planDecision.value=String(data.plan_decision||'initial');stopReason.value=String(data.stop_reason||'');modelCallsUsed.value=Number(data.model_calls_used||0);tokensUsed.value=Number(data.tokens_used||0);wallSecondsUsed.value=Number(data.wall_seconds_used||0);triageCount.value=Number(data.triage_count||0);candidateCount.value=Number(data.candidate_count||0);aiProcessedCount.value=Number(data.ai_processed_count||0);patch({taskId,fileId:data.file_id,currentVersionId:data.current_version_id||null,enableAiAnalysis:enableAi.value,modelName:modelName.value});if(['completed','failed','cancelled'].includes(data.status))stop()}catch(e){errorMessage.value=e instanceof Error?e.message:'状态查询失败';stop()}}
 function consumeAgentEvent(type:string,event:MessageEvent){const data=JSON.parse(event.data||'{}'),id=Number(data.event_id||event.lastEventId||0);if(id&&seenEventIds.has(id))return;if(id)seenEventIds.add(id);agentEvents.value=[...agentEvents.value,{event_id:id,event_type:type,agent_name:data.agent_name,status:data.status,attempt:data.attempt,tool_name:data.tool_name,latency_ms:data.latency_ms,summary:data.summary,evidence_refs:data.evidence_refs}].slice(-200)}
 function startEvents(){eventSource.value=workflowEvents(taskId);for(const type of ['agent_step','agent_tool_completed','candidate_completed','issue_completed'])eventSource.value.addEventListener(type,(event)=>consumeAgentEvent(type,event as MessageEvent))}
 async function cancel(){try{status.value='running';currentStep.value='正在安全停止';await cancelWorkflow(taskId);await refresh()}catch(e){errorMessage.value=e instanceof Error?e.message:'取消失败'}}

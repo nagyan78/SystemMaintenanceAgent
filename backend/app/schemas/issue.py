@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -8,6 +8,9 @@ class DiagnosisIssueRecord(BaseModel):
     issue_type: str
     node_id: int | None = None
     node_name: str | None = None
+    subject_node_id: int | None = None
+    subject_node_name: str | None = None
+    subject_path: str | None = None
     description: str
     reason: str
     risk_level: str
@@ -34,9 +37,36 @@ class IndexResult(BaseModel):
 
 class DiagnosisPlan(BaseModel):
     priority_subtrees: list[str] = Field(default_factory=list)
+    priority_subtree_ids: list[int] = Field(default_factory=list)
     sample_strategy: Literal["focused", "full_scan", "sampling"] = "focused"
     focus_issues: list[str] = Field(default_factory=list)
     estimated_candidates: int = 200
+
+
+class DiagnosisCoverage(BaseModel):
+    """Stable, shared coverage facts for API, report and acceptance checks."""
+
+    total_nodes: int = 0
+    rule_scanned_nodes: int = 0
+    rule_issue_count: int = 0
+    candidate_count: int = 0
+    deep_diagnosed_count: int = 0
+    ai_issue_count: int = 0
+    skipped_count: int = 0
+    failed_count: int = 0
+    unexamined_reasons: dict[str, int] = Field(default_factory=dict)
+    model_calls: int = 0
+    tokens_used: int = 0
+    wall_seconds: float = 0
+    plan_revision: int = 1
+    stop_reason: str | None = None
+    rules_complete: bool = False
+    ai_complete: bool = False
+    coverage_complete: bool = False
+    completion_status: Literal["completed", "partial", "failed"] = "completed"
+    run_id: str | None = None
+    workflow_id: str | None = None
+    plan: dict[str, Any] = Field(default_factory=dict)
 
 
 class ContentDiagnosisOutput(BaseModel):

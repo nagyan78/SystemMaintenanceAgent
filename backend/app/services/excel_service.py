@@ -59,7 +59,7 @@ class ExcelService:
             raise ExcelValidationError("Only .xlsx files are supported.", "INVALID_FILE_TYPE")
 
         self.settings.upload_dir.mkdir(parents=True, exist_ok=True)
-        saved_path = self.settings.upload_dir / self._saved_file_name(original_name)
+        saved_path = (self.settings.upload_dir / self._saved_file_name(original_name)).resolve()
 
         with saved_path.open("wb") as output:
             shutil.copyfileobj(upload_file.file, output)
@@ -114,6 +114,9 @@ class ExcelService:
             raise ExcelValidationError("Uploaded file was not found.", "FILE_NOT_FOUND")
 
         file_path = Path(file_record["file_path"])
+        if not file_path.is_absolute():
+            candidates = [file_path.resolve(), (self.settings.upload_dir / file_path.name).resolve()]
+            file_path = next((candidate for candidate in candidates if candidate.exists()), candidates[0])
         if not file_path.exists():
             raise ExcelValidationError("Uploaded file path does not exist.", "FILE_NOT_FOUND")
 

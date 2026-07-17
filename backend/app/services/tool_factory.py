@@ -9,6 +9,7 @@ from langchain_core.tools import tool
 from langchain_openai import OpenAIEmbeddings
 
 from backend.app.config import Settings
+from backend.app.domain.issue_types import normalize_issue_type_code
 from backend.app.repositories.diagnosis_repo import DiagnosisRepository
 from backend.app.repositories.suggestion_repo import SuggestionRepository
 from backend.app.repositories.taxonomy_repo import TaxonomyRepository
@@ -107,7 +108,7 @@ class AgentToolFactory:
                 )
                 return f"triage_{triage_id}"
             record = DiagnosisIssueRecord(
-                issue_type=issue["issue_type"], node_id=issue.get("node_id"),
+                issue_type=normalize_issue_type_code(issue.get("issue_type")), node_id=issue.get("node_id"),
                 node_name=issue.get("node_name"),
                 description=issue.get("description") or issue.get("reason") or "内容诊断问题",
                 reason=issue.get("reason", ""), risk_level=issue.get("risk_level", "low"),

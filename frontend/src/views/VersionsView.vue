@@ -7,7 +7,7 @@
             <p class="eyebrow">文件范围</p>
             <h2>按文件管理版本</h2>
           </div>
-          <span class="badge">{{ files.length }} 个文件</span>
+          <span class="badge">{{ loadingFiles ? '正在读取文件…' : `${files.length} 个文件` }}</span>
         </div>
         <label class="api-input file-picker">
           当前文件
@@ -18,6 +18,8 @@
             </option>
           </select>
         </label>
+        <p v-if="loadingFiles" class="muted">正在从后端读取文件列表…</p>
+        <p v-else-if="!error && !files.length" class="muted">后端当前确实没有文件。</p>
       </section>
 
       <VersionTable title="版本列表" name="version-picker" :versions="versions" :selected-ids="selectedIds" @select="selectVersion" />
@@ -32,12 +34,19 @@
         </div>
         <div class="action-row">
           <button class="button primary" :disabled="selectedIds.length !== 2" @click="loadDiff">查看 Diff</button>
+          <RouterLink v-if="selectedReportRoute" class="button secondary" :to="selectedReportRoute">查看报告</RouterLink>
           <button class="button secondary" :disabled="!selectedIds[0]" @click="doExport">导出版本</button>
           <button class="button danger" :disabled="!selectedIds[0]" @click="doRollback">回滚版本</button>
         </div>
         <p v-if="message" class="lead">{{ message }}</p>
         <p v-if="downloadUrl" class="lead">下载地址：{{ downloadUrl }}</p>
         <p v-if="error" class="error">{{ error }}</p>
+      </section>
+
+      <VersionOptimizationPanel v-if="optimizationVersionId" :version-id="optimizationVersionId" />
+      <section v-if="quality" class="card quality-summary">
+        <div class="card-head"><div><p class="eyebrow">复诊摘要</p><h2>版本质量摘要</h2></div><RouterLink class="button primary" :to="`/report/${quality.version_id}`">查看完整报告</RouterLink></div>
+        <div class="metric-grid"><div><span>当前质量分</span><strong>{{ quality.quality_after ?? '-' }}</strong></div><div><span>问题数量</span><strong>{{ quality.before_issue_count }} → {{ quality.after_issue_count }}</strong></div><div><span>已解决</span><strong>{{ quality.resolved_issues.length }}</strong></div><div><span>新增</span><strong>{{ quality.new_issues.length }}</strong></div><div><span>改善率</span><strong>{{ quality.improvement_rate }}%</strong></div><div><span>复诊状态</span><strong>{{ quality.verification_status || '-' }}</strong></div></div>
       </section>
 
       <!-- ===== Diff 弹窗 ===== -->
@@ -108,9 +117,11 @@ import { useRoute, useRouter } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
 import VersionTable from '../components/VersionTable.vue'
 import Modal from '../components/Modal.vue'
+import VersionOptimizationPanel from '../components/VersionOptimizationPanel.vue'
 import { listFiles } from '../api/files'
 import type { FileRecord } from '../api/files'
-import { exportVersion, getVersionDiff, listVersions, rollbackVersion } from '../api/versions'
+import { exportVersion, getVersionDiff, getVersionQuality, listVersions, rollbackVersion } from '../api/versions'
+import type { VersionQuality } from '../api/versions'
 import { useWorkspace } from '../state/workspace'
 
 const route = useRoute()
@@ -122,10 +133,24 @@ const selectedIds = ref<number[]>([])
 const diff = ref<any>(null)
 const message = ref('')
 const error = ref('')
+const loadingFiles = ref(false)
 const downloadUrl = ref('')
+const quality = ref<VersionQuality | null>(null)
 const selectedFileId = ref(Number(route.query.file_id || state.fileId) || 0)
 const showDiffModal = ref(false)
 const orderedSelectedIds = computed(() => [...selectedIds.value].sort((left, right) => left - right))
+const optimizationVersionId = computed(() => orderedSelectedIds.value.at(-1) || 0)
+const selectedReportRoute = computed(() => {
+  const selectedVersionId = orderedSelectedIds.value[orderedSelectedIds.value.length - 1]
+  const version = versions.value.find(item => item.id === selectedVersionId)
+  if (!version) return ''
+  const isFinal = Boolean(
+    version.parent_version_id
+      && version.action_batch_id
+      && ['passed', 'partial'].includes(String(version.verification_status || '')),
+  )
+  return `/report/${version.id}?type=${isFinal ? 'final' : 'draft'}`
+})
 const fromVersion = computed(() => orderedSelectedIds.value[0] || '-')
 const toVersion = computed(() => orderedSelectedIds.value[1] || '-')
 const diffGroups = computed(() => diff.value ? [
@@ -139,10 +164,13 @@ const diffGroups = computed(() => diff.value ? [
 function selectVersion(id: number) {
   if (selectedIds.value.includes(id)) {
     selectedIds.value = selectedIds.value.filter(value => value !== id)
+    void loadQualitySummary()
     return
   }
   selectedIds.value = selectedIds.value.length >= 2 ? [selectedIds.value[1], id] : [...selectedIds.value, id]
+  void loadQualitySummary()
 }
+async function loadQualitySummary(){quality.value=optimizationVersionId.value?await getVersionQuality(optimizationVersionId.value):null}
 
 async function loadDiff() {
   if (selectedIds.value.length !== 2) return
@@ -222,6 +250,7 @@ async function loadVersions() {
     const newest = versions.value[versions.value.length - 1]
     const prev = versions.value[versions.value.length - 2]
     selectedIds.value = prev ? [prev.id, newest.id] : newest ? [newest.id] : []
+    await loadQualitySummary()
   } catch (err) {
     error.value = err instanceof Error ? err.message : '版本列表加载失败'
   }
@@ -274,10 +303,13 @@ const summaryText = computed(() => {
 })
 
 onMounted(async () => {
+  loadingFiles.value = true
   try {
     await loadFiles()
   } catch (err) {
     error.value = err instanceof Error ? err.message : '文件列表加载失败'
+  } finally {
+    loadingFiles.value = false
   }
   await loadVersions()
 })
@@ -285,6 +317,7 @@ onMounted(async () => {
 
 <style scoped>
 .actions-card { max-width: 720px; }
+.quality-summary .metric-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}.quality-summary .metric-grid div{padding:12px;border:1px solid var(--line);border-radius:12px}.quality-summary span{display:block;color:var(--muted);font-size:12px}.quality-summary strong{display:block;margin-top:5px;font-size:18px}@media(max-width:900px){.quality-summary .metric-grid{grid-template-columns:repeat(2,1fr)}}
 
 /* ---- diff-in-modal overrides ---- */
 .diff-in-modal { max-height: 60vh; overflow-y: auto; padding-right: 4px; }

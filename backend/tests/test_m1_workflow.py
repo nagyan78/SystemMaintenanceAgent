@@ -7,6 +7,7 @@ from backend.app.config import Settings
 from backend.app.main import create_app
 from backend.app.repositories.file_repo import FileRepository
 from backend.app.services.excel_service import UploadedFileMetadata
+from backend.app.repositories.task_repo import TaskRepository
 
 
 SAMPLE_PATH = Path("data/sample/产品标准体系.xlsx")
@@ -109,17 +110,15 @@ def test_m1_workflow_api_runs_upload_to_report_with_real_data(tmp_path):
     status_response = client.get(f"/api/workflows/{start_body['task_id']}")
     assert status_response.status_code == 200
     status_body = status_response.json()
-    assert status_body["status"] in {"completed", "waiting_review"}
-    assert status_body["current_step"] in {"completed", "human_review"}
-    assert status_body["progress"] in {80, 100}
+    assert status_body["status"] == "waiting_review"
+    assert status_body["current_step"] == "review_pending"
+    assert status_body["progress"] == 80
     assert status_body["file_id"] == file_id
     assert status_body["version_no"] == "v1.0"
     assert status_body["node_count"] == 21090
     assert status_body["structure_issue_count"] >= 44
-    if status_body["status"] == "completed":
-        assert Path(status_body["report_path"]).exists()
-    else:
-        assert status_body["review_batch_id"]
+    assert Path(status_body["report_path"]).exists()
+    assert status_body["review_batch_id"]
 
     with sqlite3.connect(tmp_path / "app.db") as connection:
         task = connection.execute(
@@ -142,3 +141,23 @@ def test_m1_workflow_api_runs_upload_to_report_with_real_data(tmp_path):
         status_body["progress"],
     )
     assert event_count >= 6
+
+
+def test_terminal_task_status_cannot_be_overwritten_by_later_node(tmp_path):
+    settings = _settings(tmp_path)
+    create_app(settings)
+    repo = TaskRepository(settings)
+    with sqlite3.connect(tmp_path / "app.db") as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("INSERT INTO uploaded_file(id,file_name,file_path) VALUES(1,'test.xlsx','test.xlsx')")
+    task_id = repo.create_task(file_id=1, task_type="test")
+    repo.update_task(task_id=task_id, status="failed", current_step="content_diagnosis", progress=60,
+                     error_message="model failed")
+    repo.update_task(task_id=task_id, status="completed", current_step="report", progress=100,
+                     result_payload={"report_path": "failure.md"})
+    task = repo.get_task(task_id)
+    assert task["status"] == "failed"
+    assert task["current_step"] == "content_diagnosis"
+    assert task["progress"] == 60
+    assert task["error_message"] == "model failed"
+    assert "failure.md" in task["result_payload"]

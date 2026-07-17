@@ -67,9 +67,9 @@ def test_graph_runs_m1_deterministic_workflow_to_report(tmp_path):
 
     result = graph.invoke(state, config={"configurable": {"thread_id": state.thread_id}})
 
-    assert result["status"] == "completed"
-    assert result["current_step"] == "completed"
-    assert result["progress"] == 100
+    assert result["status"] == "waiting_review"
+    assert result["current_step"] == "review_pending"
+    assert result["progress"] == 80
     assert result["version_no"] == "v1.0"
     assert result["node_count"] == 21090
     assert result["structure_issue_count"] >= 44

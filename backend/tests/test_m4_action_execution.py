@@ -12,6 +12,7 @@ from backend.app.services.action_service import ActionService
 from backend.app.services.review_service import ReviewService
 from backend.app.tools.validation_tools import validate_suggestion_action
 from fastapi.testclient import TestClient
+import pytest
 from backend.app.services.version_service import VersionService
 
 
@@ -390,7 +391,7 @@ def test_add_node_requires_new_name_and_parent_id(tmp_path):
     assert "add_node" in result.reason
 
 
-def test_review_batch_can_execute_approved_suggestions_incrementally(tmp_path):
+def test_review_batch_requires_all_suggestions_reviewed_before_execution(tmp_path):
     settings = _settings(tmp_path)
     base_version_id = _seed_version(settings)
     issue_id = _create_issue(settings, base_version_id, 21, "synonym_pollution")
@@ -439,6 +440,16 @@ def test_review_batch_can_execute_approved_suggestions_incrementally(tmp_path):
             "operator": "tester",
         },
     )
+    with pytest.raises(ValueError):
+        review_service.execute_approved_actions(review_batch_id)
+
+    review_service.apply_workflow_decision(
+        review_batch_id,
+        {"decision": "reject", "approved_suggestion_ids": [],
+         "rejected_suggestion_ids": [second_id], "edits": [], "operator": "tester"},
+    )
+    from backend.app.services.execution_preview_service import ExecutionPreviewService
+    ExecutionPreviewService(settings).create(review_batch_id)
     first_result = review_service.execute_approved_actions(review_batch_id)
 
     first_node = TaxonomyRepository(settings).get_node_detail(first_result["new_version_id"], 21)
@@ -448,23 +459,7 @@ def test_review_batch_can_execute_approved_suggestions_incrementally(tmp_path):
         item.id: item.status
         for item in SuggestionRepository(settings).list_suggestions(review_batch_id=review_batch_id)
     }
-    assert statuses == {first_id: "executed", second_id: "pending"}
-
-    review_service.apply_workflow_decision(
-        review_batch_id,
-        {
-            "decision": "approve",
-            "approved_suggestion_ids": [second_id],
-            "rejected_suggestion_ids": [],
-            "edits": [],
-            "operator": "tester",
-        },
-    )
-    second_result = review_service.execute_approved_actions(review_batch_id)
-
-    second_node = TaxonomyRepository(settings).get_node_detail(second_result["new_version_id"], 21)
-    assert second_result["new_version_no"] == "v1.2"
-    assert second_node["syn_list"] == "红富士"
+    assert statuses == {first_id: "executed", second_id: "rejected"}
 
 
 def test_review_api_decision_and_execute_generate_new_version(tmp_path):
@@ -500,12 +495,17 @@ def test_review_api_decision_and_execute_generate_new_version(tmp_path):
             "operator": "tester",
         },
     )
+    preview = client.post(
+        f"/api/reviews/{review_batch_id}/execution-preview",
+        json={},
+    )
     execute = client.post(
         f"/api/reviews/{review_batch_id}/execute",
         json={"operator": "tester"},
     )
 
     assert decision.status_code == 200
+    assert preview.status_code == 200
     assert execute.status_code == 200
     assert execute.json()["new_version_no"] == "v1.1"
     assert execute.json()["executed_count"] == 1

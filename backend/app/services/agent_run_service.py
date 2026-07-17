@@ -1,5 +1,6 @@
 import time
 import threading
+from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -26,19 +27,37 @@ class AgentRunService:
 
     def prepare_content_candidates(
         self, *, workflow_id: str, version_id: int, plan: DiagnosisPlan | None = None,
+        rule_scanned_nodes: int = 0, rule_issue_count: int = 0,
+        budget: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         resolved_plan = plan or DiagnosisPlan()
+        configured_budget = {
+            "candidate_limit": min(max(resolved_plan.estimated_candidates, 0), 1000),
+            "max_model_calls": self.settings.llm_max_calls,
+            "max_tokens": self.settings.llm_max_tokens,
+            "max_wall_seconds": self.settings.diagnosis_ai_wall_seconds,
+            "rule_scanned_nodes": rule_scanned_nodes,
+            "rule_issue_count": rule_issue_count,
+            "plan": resolved_plan.model_dump(),
+            **(budget or {}),
+        }
         run_id = self.repo.create_run(AgentRunRecord(
             workflow_id=workflow_id, agent_type="content_diagnosis", version_id=version_id,
             model_profile=self.settings.llm_model,
-            budget={"candidate_limit": min(max(resolved_plan.estimated_candidates, 1), 1000)},
+            budget=configured_budget,
         ))
         candidates = TaxonomyRepository(self.settings).list_content_diagnosis_candidates(
             version_id, priority_subtrees=resolved_plan.priority_subtrees,
+            priority_subtree_ids=resolved_plan.priority_subtree_ids,
+            focus_issues=resolved_plan.focus_issues,
+            sample_strategy=resolved_plan.sample_strategy,
             limit=min(max(resolved_plan.estimated_candidates, 1), 1000),
         )
         ids = [self.repo.upsert_work_item(run_id, "candidate", str(item["category_id"]), item) for item in candidates]
-        self.repo.update_run(run_id, status="running", coverage={"total": len(ids)})
+        self.repo.update_run(run_id, status="running", coverage={
+            "total_nodes": rule_scanned_nodes, "rule_scanned_nodes": rule_scanned_nodes,
+            "rule_issue_count": rule_issue_count, "candidate_count": len(ids),
+        })
         return {"run_id": run_id, "work_item_ids": ids}
 
     def execute_content_work_item(self, item_id: str, *, worker_id: str = "local-worker") -> dict[str, int]:
@@ -50,16 +69,38 @@ class AgentRunService:
         run = self.repo.get_run(item.run_id)
         if run is None:
             return _zero_delta()
+        budget = run.get("budget") or {}
+        usage = self.repo.usage_totals(item.run_id)
+        max_calls = int(budget.get("max_model_calls") or self.settings.llm_max_calls)
+        max_tokens = int(budget.get("max_tokens") or self.settings.llm_max_tokens)
+        max_wall = int(budget.get("max_wall_seconds") or self.settings.diagnosis_ai_wall_seconds)
+        elapsed = _elapsed_seconds(run.get("created_time"))
+        if usage["model_calls"] >= max_calls or usage["tokens_used"] >= max_tokens or elapsed >= max_wall:
+            reason = "model_calls" if usage["model_calls"] >= max_calls else "tokens" if usage["tokens_used"] >= max_tokens else "wall_time"
+            self.repo.skip_work_item(item_id, reason=f"budget exhausted: {reason}")
+            return {**_zero_delta(), "skipped_count": 1}
         started = time.perf_counter()
         self.repo.record_event(workflow_id=run["workflow_id"], run_id=item.run_id,
                                work_item_id=item_id, agent_name="content_diagnosis",
                                event_type="agent_step", phase="candidate", status="running",
                                attempt=item.attempt, summary={"subject_id": item.subject_id})
         try:
+            remaining_calls = max(1, max_calls - usage["model_calls"])
+            remaining_tokens = max(1, max_tokens - usage["tokens_used"])
+            runtime_settings = self.settings.model_copy(update={
+                "llm_max_calls": remaining_calls,
+                "llm_max_tokens": remaining_tokens,
+                "diagnosis_ai_max_iter": min(self.settings.diagnosis_ai_max_iter, remaining_calls),
+                "diagnosis_ai_wall_seconds": min(
+                    self.settings.diagnosis_ai_wall_seconds,
+                    int(budget.get("max_wall_seconds") or self.settings.diagnosis_ai_wall_seconds),
+                ),
+            })
             scope = ToolScope(run["workflow_id"], int(run["version_id"]), int(item.subject_id))
-            tools = AgentToolFactory(self.settings, resource_limits=self.resource_limits).content_diagnosis_tools(scope)
+            tools = AgentToolFactory(runtime_settings, resource_limits=self.resource_limits).content_diagnosis_tools(scope)
             agent = ContentDiagnosisAgent(
-                self.settings, llm=self.llm, tools=tools,
+                runtime_settings, llm=self.llm, tools=tools,
+                max_iter=runtime_settings.diagnosis_ai_max_iter,
                 candidate_selector=lambda _version_id, _plan: [item.input_payload],
                 event_sink=lambda event: self.repo.record_event(
                     workflow_id=run["workflow_id"], run_id=item.run_id, work_item_id=item_id,
@@ -80,7 +121,7 @@ class AgentRunService:
                 model=self.settings.llm_model,
                 summary={"subject_id": item.subject_id, "issue_count": len(issues)},
             )
-            return {"processed_count": 1, "issue_count": len(issues), "clean_count": int(not issues), "inconclusive_count": 0, "failed_count": 0}
+            return {"processed_count": 1, "issue_count": len(issues), "clean_count": int(not issues), "inconclusive_count": 0, "failed_count": 0, "skipped_count": 0}
         except Exception as exc:
             retryable = self.retry.classify(exc) == "retryable_external"
             status = self.repo.fail_work_item(item_id, retryable=retryable, error_code=type(exc).__name__, error_message=str(exc))
@@ -91,15 +132,59 @@ class AgentRunService:
                 latency_ms=int((time.perf_counter() - started) * 1000),
                 summary={"subject_id": item.subject_id, "error_code": type(exc).__name__},
             )
-            return {"processed_count": 1, "issue_count": 0, "clean_count": 0, "inconclusive_count": 0, "failed_count": 1}
+            return {"processed_count": 1, "issue_count": 0, "clean_count": 0, "inconclusive_count": 0, "failed_count": 1, "skipped_count": 0}
 
     def finalize_run(self, run_id: str) -> dict[str, int]:
         counts = self.repo.counts(run_id)
         unfinished = counts.get("pending", 0) + counts.get("running", 0) + counts.get("retryable_failed", 0)
         failed = counts.get("permanent_failed", 0)
-        status = "running" if unfinished else "completed_degraded" if failed else "completed"
-        self.repo.update_run(run_id, status=status, coverage=counts)
+        status = "running" if unfinished else "completed_degraded" if failed or counts.get("skipped", 0) else "completed"
+        run = self.repo.get_run(run_id) or {}
+        budget = run.get("budget") or {}
+        usage = self.repo.usage_totals(run_id)
+        deep_count = sum(int(counts.get(key, 0)) for key in ("succeeded", "clean", "inconclusive"))
+        failed_count = int(counts.get("permanent_failed", 0))
+        skipped_count = int(counts.get("skipped", 0))
+        reasons: dict[str, int] = {}
+        for item in self.repo.list_work_items(run_id):
+            if item.status in {"skipped", "permanent_failed", "retryable_failed"}:
+                key = item.error_code or item.status
+                reasons[key] = reasons.get(key, 0) + 1
+        completion = "partial" if failed_count or skipped_count or unfinished else "completed"
+        stop_reason = None
+        if skipped_count:
+            stop_reason = "模型调用、Token 或运行时间预算达到上限"
+        elif failed_count:
+            stop_reason = "部分候选深诊断失败"
+        coverage = {
+            "total_nodes": int(budget.get("rule_scanned_nodes", 0)),
+            "rule_scanned_nodes": int(budget.get("rule_scanned_nodes", 0)),
+            "rule_issue_count": int(budget.get("rule_issue_count", 0)),
+            "candidate_count": int(counts.get("total", 0)),
+            "deep_diagnosed_count": deep_count,
+            "ai_issue_count": int(counts.get("succeeded", 0)),
+            "skipped_count": skipped_count,
+            "failed_count": failed_count,
+            "unexamined_reasons": reasons,
+            **usage,
+            "wall_seconds": round(_elapsed_seconds(run.get("created_time")), 3),
+            "plan_revision": int(run.get("plan_revision", 1)),
+            "stop_reason": stop_reason,
+            "rules_complete": int(budget.get("rule_scanned_nodes", 0)) > 0,
+            "ai_complete": completion == "completed",
+            "coverage_complete": completion == "completed" and int(budget.get("rule_scanned_nodes", 0)) > 0,
+            "completion_status": completion,
+            "run_id": run_id,
+            "workflow_id": run.get("workflow_id"),
+            "plan": budget.get("plan") or {},
+            "work_item_counts": counts,
+        }
+        self.repo.update_run(run_id, status=status, coverage=coverage)
         return counts
+
+    def coverage_for_run(self, run_id: str) -> dict[str, Any]:
+        run = self.repo.get_run(run_id)
+        return dict(run.get("coverage") or {}) if run else {}
 
     def prepare_suggestion_issues(
         self, *, workflow_id: str, version_id: int, analysis_run_id: str | None = None,
@@ -162,4 +247,16 @@ class AgentRunService:
 
 
 def _zero_delta() -> dict[str, int]:
-    return {"processed_count": 0, "issue_count": 0, "clean_count": 0, "inconclusive_count": 0, "failed_count": 0}
+    return {"processed_count": 0, "issue_count": 0, "clean_count": 0, "inconclusive_count": 0, "failed_count": 0, "skipped_count": 0}
+
+
+def _elapsed_seconds(created_time: Any) -> float:
+    if not created_time:
+        return 0.0
+    try:
+        created = datetime.fromisoformat(str(created_time))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - created).total_seconds())
+    except (TypeError, ValueError):
+        return 0.0

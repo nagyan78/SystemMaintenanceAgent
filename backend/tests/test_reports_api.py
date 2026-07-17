@@ -50,20 +50,27 @@ def test_report_api_generates_previews_and_downloads_markdown(tmp_path):
     client = TestClient(create_app(settings))
     version_id = _seed_version(settings)
 
-    missing = client.get(f"/api/reports/{version_id}/preview")
-    assert missing.status_code == 404
+    generated_on_demand = client.get(f"/api/reports/{version_id}/preview?report_type=draft")
+    assert generated_on_demand.status_code == 200
 
     generated = client.post(
         "/api/reports/generate",
-        json={"version_id": version_id, "format": "markdown"},
+        json={"version_id": version_id, "format": "markdown", "report_type": "draft"},
     )
     assert generated.status_code == 200
-    assert generated.json()["download_url"] == f"/api/reports/{version_id}/download"
+    assert generated.json()["download_url"] == f"/api/reports/{version_id}/download?report_type=draft"
+    assert generated.json()["pdf_download_url"] == f"/api/reports/{version_id}/download-pdf?report_type=draft"
 
-    preview = client.get(f"/api/reports/{version_id}/preview")
+    preview = client.get(f"/api/reports/{version_id}/preview?report_type=draft")
     assert preview.status_code == 200
     assert "# 产品标准体系诊断报告" in preview.json()["markdown"]
 
-    download = client.get(f"/api/reports/{version_id}/download")
+    download = client.get(f"/api/reports/{version_id}/download?report_type=draft")
     assert download.status_code == 200
     assert "产品标准体系诊断报告" in download.content.decode("utf-8")
+
+    pdf_download = client.get(f"/api/reports/{version_id}/download-pdf?report_type=draft")
+    assert pdf_download.status_code == 200
+    assert pdf_download.headers["content-type"] == "application/pdf"
+    assert pdf_download.content.startswith(b"%PDF-")
+    assert len(pdf_download.content) > 5_000

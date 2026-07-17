@@ -23,9 +23,13 @@ from backend.app.services.suggestion_service import SuggestionAgent
 from backend.app.services.taxonomy_service import TaxonomyService
 from backend.app.services.vector_index_service import VectorIndexService
 from backend.app.services.version_service import VersionService
+from backend.app.services.version_verification_service import VersionVerificationService
 from backend.app.services.adaptive_planning_service import AdaptivePlanningService
 from backend.app.schemas.planning import DiagnosisBatchFeedback, MaintenancePlan
 from backend.app.repositories.triage_repo import TriageRepository
+from backend.app.repositories.diagnosis_repo import DiagnosisRepository
+from backend.app.repositories.review_batch_repo import ReviewBatchRepository
+from backend.app.repositories.version_repo import VersionRepository
 
 
 StateUpdate = dict[str, Any]
@@ -156,6 +160,11 @@ def build_tree_node(state: TaxonomyGraphState) -> StateUpdate:
 
 def save_initial_version_node(state: TaxonomyGraphState) -> StateUpdate:
     result = VersionService(_current_settings()).create_initial_version(_require_file_id(state))
+    VersionRepository(_current_settings()).update_model_metadata(
+        result.version_id,
+        diagnosis_mode="ai_enhanced" if state.enable_ai_analysis else "deterministic_rules",
+        diagnosis_model=state.model_name if state.enable_ai_analysis else None,
+    )
     return _complete_step(
         state,
         "save_initial_version_node",
@@ -171,6 +180,15 @@ def save_initial_version_node(state: TaxonomyGraphState) -> StateUpdate:
 
 
 def index_vector_node(state: TaxonomyGraphState) -> StateUpdate:
+    if not state.enable_ai_analysis:
+        return _complete_step(
+            state,
+            "index_vector_node",
+            current_step="index_vector_skipped",
+            progress=40,
+            vector_index_status="skipped",
+            vector_index_count=0,
+        )
     result = VectorIndexService(_current_settings()).index_version(
         _require_current_version_id(state)
     )
@@ -202,7 +220,18 @@ def diagnosis_planning_node(state: TaxonomyGraphState) -> StateUpdate:
     version_id = _require_current_version_id(state)
     if state.enable_ai_analysis:
         maintenance = AdaptivePlanningService().create(workflow_id=state.workflow_id, version_id=version_id, candidate_budget=20)
-        plan = DiagnosisPlan(sample_strategy=maintenance.strategy, estimated_candidates=sum(item.candidate_budget for item in maintenance.targets))
+        plan = DiagnosisPlan(
+            priority_subtree_ids=state.priority_subtree_ids,
+            sample_strategy=state.sample_strategy,
+            focus_issues=state.focus_issues,
+            estimated_candidates=state.ai_candidate_limit or sum(item.candidate_budget for item in maintenance.targets),
+        )
+        maintenance = maintenance.model_copy(update={
+            "strategy": "full_screening" if state.sample_strategy == "full_scan" else state.sample_strategy,
+            "max_model_calls": state.ai_max_model_calls or maintenance.max_model_calls,
+            "max_tokens": state.ai_token_budget or maintenance.max_tokens,
+            "max_wall_seconds": state.ai_wall_seconds or maintenance.max_wall_seconds,
+        })
     else:
         maintenance = None
         plan = DiagnosisPlan(sample_strategy="focused", estimated_candidates=0)
@@ -221,23 +250,46 @@ def content_diagnosis_node(state: TaxonomyGraphState) -> StateUpdate:
     version_id = _require_current_version_id(state)
     plan = DiagnosisPlan.model_validate(state.diagnosis_plan or {})
     plan.estimated_candidates = min(plan.estimated_candidates, 50)  # hard cap to prevent excessive API calls
+    rule_issue_count = DiagnosisService(_current_settings()).run_content_rule_diagnosis(version_id)
     if state.enable_ai_analysis:
         from backend.app.agents.content_diagnosis_subgraph import build_content_diagnosis_subgraph
         subgraph_result = build_content_diagnosis_subgraph(settings=_current_settings()).invoke(
-            {"workflow_id": state.workflow_id, "version_id": version_id, "plan": plan.model_dump()},
+            {"workflow_id": state.workflow_id, "version_id": version_id, "plan": plan.model_dump(),
+             "rule_scanned_nodes": state.node_count, "rule_issue_count": state.structure_issue_count + rule_issue_count,
+             "budget": {
+                 "max_model_calls": state.ai_max_model_calls or _current_settings().llm_max_calls,
+                 "max_tokens": state.ai_token_budget or _current_settings().llm_max_tokens,
+                 "max_wall_seconds": state.ai_wall_seconds or _current_settings().diagnosis_ai_wall_seconds,
+             }},
             config={"max_concurrency": _current_settings().agent_llm_max_concurrency},
         )
-        issues_count = int(subgraph_result.get("issue_count", 0))
+        issues_count = rule_issue_count + int(subgraph_result.get("issue_count", 0))
         analysis_run_id = subgraph_result.get("run_id")
         work_item_counts = subgraph_result.get("work_item_counts", {})
+        coverage = subgraph_result.get("coverage", {})
+        if analysis_run_id:
+            DiagnosisRepository(_current_settings()).link_run_issues(
+                run_id=str(analysis_run_id), version_id=version_id,
+            )
     else:
-        issues_count, analysis_run_id, work_item_counts = 0, None, {}
+        issues_count, analysis_run_id, work_item_counts = rule_issue_count, None, {}
+        coverage = {
+            "total_nodes": state.node_count, "rule_scanned_nodes": state.node_count,
+            "rule_issue_count": state.structure_issue_count + rule_issue_count,
+            "candidate_count": 0, "deep_diagnosed_count": 0, "ai_issue_count": 0,
+            "skipped_count": 0, "failed_count": 0, "unexamined_reasons": {},
+            "model_calls": 0, "tokens_used": 0, "wall_seconds": 0,
+            "plan_revision": state.plan_revision, "stop_reason": None,
+            "rules_complete": True, "ai_complete": True, "coverage_complete": True,
+            "completion_status": "completed", "run_id": None,
+            "workflow_id": state.workflow_id, "plan": plan.model_dump(),
+        }
     triage_count = len(TriageRepository(_current_settings()).list(state.workflow_id))
     plan_update = {}
     if state.maintenance_plan:
         maintenance = MaintenancePlan.model_validate(state.maintenance_plan)
         processed = sum(int(work_item_counts.get(key, 0)) for key in ("succeeded", "clean", "inconclusive", "permanent_failed"))
-        feedback = DiagnosisBatchFeedback(batch_id=analysis_run_id or "rules", plan_revision=maintenance.revision, processed=processed, issues=issues_count, clean=int(work_item_counts.get("clean",0)), inconclusive=int(work_item_counts.get("inconclusive",0)), failed=int(work_item_counts.get("permanent_failed",0)), model_calls=processed, tokens=0, wall_seconds=0)
+        feedback = DiagnosisBatchFeedback(batch_id=analysis_run_id or "rules", plan_revision=maintenance.revision, processed=processed, issues=issues_count, clean=int(work_item_counts.get("clean",0)), inconclusive=int(work_item_counts.get("inconclusive",0)), failed=int(work_item_counts.get("permanent_failed",0)), model_calls=int(coverage.get("model_calls", processed)), tokens=int(coverage.get("tokens_used", 0)), wall_seconds=float(coverage.get("wall_seconds", 0)))
         revised = AdaptivePlanningService().revise(maintenance, feedback)
         plan_update = {"maintenance_plan": revised.model_dump(), "plan_revision": revised.revision, "plan_decision": revised.decision, "stop_reason": revised.stop_reason, "model_calls_used": feedback.model_calls, "tokens_used": feedback.tokens, "wall_seconds_used": feedback.wall_seconds}
     return _complete_step(
@@ -248,6 +300,8 @@ def content_diagnosis_node(state: TaxonomyGraphState) -> StateUpdate:
         content_issue_count=issues_count,
         analysis_run_id=analysis_run_id,
         work_item_counts=work_item_counts,
+        coverage=coverage,
+        diagnosis_completion_status=str(coverage.get("completion_status") or "completed"),
         triage_count=triage_count,
         **plan_update,
     )
@@ -272,6 +326,14 @@ def generate_suggestion_node(state: TaxonomyGraphState) -> StateUpdate:
             progress=78,
             suggestion_count=0,
         )
+    version = VersionRepository(_current_settings()).get_version(version_id)
+    if review_batch_id and version:
+        batch_repo = ReviewBatchRepository(_current_settings())
+        batch_repo.create(
+            batch_id=str(review_batch_id), file_id=int(version["file_id"]),
+            version_id=version_id, task_id=state.task_id, workflow_id=state.workflow_id,
+        )
+        batch_repo.refresh_status(str(review_batch_id))
     return _complete_step(
         state,
         "generate_suggestion_node",
@@ -301,7 +363,7 @@ def wait_human_review_node(state: TaxonomyGraphState) -> StateUpdate:
         )
     decision = interrupt(interrupt_payload)
     review_decision = decision.get("decision")
-    if review_decision not in {"approve", "reject", "edit"}:
+    if review_decision not in {"approve", "reject", "edit", "confirm_no_action", "uncertain"}:
         raise WorkflowNodeError("INVALID_REVIEW_DECISION", "Review decision is invalid.")
     approved_count = ReviewService(_current_settings()).apply_workflow_decision(
         review_batch_id,
@@ -362,6 +424,8 @@ def save_new_version_node(state: TaxonomyGraphState) -> StateUpdate:
         base_version_id=current_version_id,
         review_batch_id=review_batch_id,
         nodes=nodes,
+        action_batch_id=state.action_batch_id,
+        source_workflow_id=state.workflow_id,
     )
     return _complete_step(
         state,
@@ -377,19 +441,55 @@ def save_new_version_node(state: TaxonomyGraphState) -> StateUpdate:
     )
 
 
+def verify_new_version_node(state: TaxonomyGraphState) -> StateUpdate:
+    if state.base_version_id is None or state.new_version_id is None:
+        raise WorkflowNodeError("MISSING_VERSION_ID", "Version verification requires old and new versions.")
+    result = VersionVerificationService(_current_settings()).verify(
+        base_version_id=state.base_version_id,
+        new_version_id=state.new_version_id,
+        build_vector_index=state.enable_ai_analysis,
+    )
+    return _complete_step(
+        state,
+        "verify_new_version_node",
+        current_step="verify_new_version",
+        progress=98,
+        verification_status=result.status,
+        quality_before=result.quality_before,
+        quality_after=result.quality_after,
+        quality_delta=result.quality_delta,
+        remaining_issue_count=result.remaining_issue_count,
+        vector_index_status=result.vector_index_status,
+        export_path=result.export_path,
+    )
+
+
 def generate_report_node(state: TaxonomyGraphState) -> StateUpdate:
     version_id = state.current_version_id or state.base_version_id
     if version_id is None:
         raise WorkflowNodeError("MISSING_VERSION_ID", "Workflow requires version_id.")
-    result = ReportService(_current_settings()).generate_diagnosis_report(version_id)
+    is_draft = state.review_batch_id is not None and state.new_version_id is None
+    report_type = (
+        "final" if state.new_version_id is not None
+        else "partial" if state.diagnosis_completion_status == "partial"
+        else "draft" if is_draft else "final"
+    )
+    result = ReportService(_current_settings()).generate_diagnosis_report(
+        version_id,
+        report_type=report_type,
+        review_batch_id=state.review_batch_id,
+        workflow_id=state.workflow_id,
+        run_id=state.analysis_run_id,
+    )
     return _complete_step(
         state,
         "generate_report_node",
-        current_step="completed",
-        progress=100,
-        status="completed",
+        current_step="review_pending" if is_draft else "completed",
+        progress=80 if is_draft else 100,
+        status="waiting_review" if is_draft else ("partial" if report_type == "partial" else "completed"),
         report_id=version_id,
         report_path=str(result.report_path),
+        report_type=report_type,
     )
 
 
@@ -465,4 +565,5 @@ generate_suggestion_node = node_guard(
 validate_action_node = node_guard("validate_action_node", validate_action_node)
 execute_action_node = node_guard("execute_action_node", execute_action_node)
 save_new_version_node = node_guard("save_new_version_node", save_new_version_node)
+verify_new_version_node = node_guard("verify_new_version_node", verify_new_version_node)
 generate_report_node = node_guard("generate_report_node", generate_report_node)

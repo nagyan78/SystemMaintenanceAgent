@@ -34,11 +34,22 @@ class AgentRunRepository:
         current = self.get_run(run_id)
         if current is None:
             return
+        requested = status or current["status"]
+        if current["status"] in {"completed", "completed_degraded", "failed", "cancelled"} and requested != current["status"]:
+            requested = current["status"]
         with connect(self.settings) as connection:
             connection.execute(
                 "UPDATE agent_run SET status = ?, coverage = ?, updated_time = CURRENT_TIMESTAMP WHERE id = ?",
-                (status or current["status"], _dump(coverage if coverage is not None else current["coverage"]), run_id),
+                (requested, _dump(coverage if coverage is not None else current["coverage"]), run_id),
             )
+
+    def list_runs_for_workflow(self, workflow_id: str) -> list[dict[str, Any]]:
+        with connect(self.settings) as connection:
+            rows = connection.execute(
+                "SELECT * FROM agent_run WHERE workflow_id=? ORDER BY created_time,id",
+                (workflow_id,),
+            ).fetchall()
+        return [_decode(dict(row), "budget", "coverage") for row in rows]
 
     def upsert_work_item(
         self, run_id: str, subject_type: str, subject_id: str, input_payload: dict,
@@ -107,6 +118,14 @@ class AgentRunRepository:
                 (status, _dump(result_payload or {}), item_id),
             )
 
+    def skip_work_item(self, item_id: str, *, reason: str) -> None:
+        with connect(self.settings) as connection:
+            connection.execute(
+                """UPDATE agent_work_item SET status='skipped',error_code='BUDGET_EXHAUSTED',
+                       error_message=?,lease_expires_at=NULL,updated_time=CURRENT_TIMESTAMP WHERE id=?""",
+                (reason, item_id),
+            )
+
     def fail_work_item(self, item_id: str, *, retryable: bool, error_code: str, error_message: str) -> str:
         item = self.get_work_item(item_id)
         if item is None:
@@ -133,6 +152,20 @@ class AgentRunRepository:
         result = {str(row["status"]): int(row["count"]) for row in rows}
         result["total"] = sum(result.values())
         return result
+
+    def usage_totals(self, run_id: str) -> dict[str, int]:
+        calls = tokens = 0
+        with connect(self.settings) as connection:
+            rows = connection.execute(
+                "SELECT token_usage,summary FROM agent_event WHERE run_id=?",
+                (run_id,),
+            ).fetchall()
+        for row in rows:
+            usage = _decode({"value": row["token_usage"]}, "value").get("value") or {}
+            summary = _decode({"value": row["summary"]}, "value").get("value") or {}
+            calls += int(summary.get("model_calls", 0) or 0)
+            tokens += int(usage.get("total_tokens", 0) or 0)
+        return {"model_calls": calls, "tokens_used": tokens}
 
     def record_event(self, *, workflow_id: str, event_type: str, run_id: str | None = None,
                      work_item_id: str | None = None, agent_name: str | None = None,

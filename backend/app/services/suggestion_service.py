@@ -1,4 +1,4 @@
-import json
+﻿import json
 import logging
 from typing import Any
 from uuid import uuid4
@@ -14,6 +14,8 @@ from backend.app.repositories.suggestion_repo import SuggestionRepository
 from backend.app.schemas.suggestion import AdjustmentSuggestion, SuggestionGenerationResult, SuggestionRecord
 from backend.app.services.tool_factory import AgentResourceLimits, AgentToolFactory
 from backend.app.services.agent_memory_service import AgentMemoryService
+from backend.app.services.remediation_planning_service import RemediationPlanningService
+from backend.app.services.suggestion_consistency_service import SuggestionConsistencyService
 from backend.app.tools.validation_tools import (
     validate_suggestion_action,
 )
@@ -60,7 +62,9 @@ class SuggestionAgent:
             issues = [issue for issue in issues if int(issue["id"]) in allowed]
         records: list[SuggestionRecord] = []
         for issue in issues:
-            record = self._rule_based_suggestion_record(version_id, issue)
+            # Explicitly injected tools/LLM are used for agent-loop tests and custom
+            # deployments; the built-in runtime prefers reproducible rule plans.
+            record = None if self.llm is not None and not self.uses_internal_submit_tool else self._rule_based_suggestion_record(version_id, issue)
             if record is None and self.llm is not None:
                 record = self._generate_llm_suggestion_record(version_id, issue)
             if record is None:
@@ -68,7 +72,7 @@ class SuggestionAgent:
             records.append(record)
         return SuggestionGenerationResult(
             version_id=version_id,
-            review_batch_id=self.review_batch_id if records else None,
+            review_batch_id=self.review_batch_id,
             generated_count=len(records),
             suggestions=records,
         )
@@ -128,9 +132,16 @@ class SuggestionAgent:
         )
         if name != "submit_suggestion":
             return None
-        suggestion = AdjustmentSuggestion.model_validate(args["suggestion"])
+        try:
+            suggestion = AdjustmentSuggestion.model_validate(args["suggestion"])
+        except Exception:
+            return None
+        checked = SuggestionConsistencyService(self.settings).check(suggestion, normalize_new=True)
+        suggestion = checked.suggestion
         if self.uses_internal_submit_tool:
             payload = _load_observation(observation)
+            if not payload.get("valid") or not payload.get("suggestion_id"):
+                return None
             suggestion_id = int(payload["suggestion_id"])
         else:
             suggestion_id = self.suggestion_repo.create_suggestion(
@@ -140,44 +151,21 @@ class SuggestionAgent:
                 analysis_run_id=self.analysis_run_id,
                 workflow_id=self.workflow_id,
             )
+            self.suggestion_repo.update_consistency(suggestion_id, suggestion=suggestion,
+                change_preview=checked.change_preview, status="invalid" if checked.downgraded else "valid", reason=checked.reason)
         return SuggestionRecord(
             id=suggestion_id,
             review_batch_id=self.review_batch_id,
+            change_preview=checked.change_preview,
+            consistency_status="invalid" if checked.downgraded else "valid",
+            consistency_reason=checked.reason,
             **suggestion.model_dump(),
         )
 
     def _rule_based_suggestion_record(self, version_id: int, issue: dict[str, Any]) -> SuggestionRecord | None:
-        issue_type = issue["issue_type"]
-        if issue_type == "wide_node":
-            suggestion = _suggestion_from_issue(
-                version_id,
-                issue,
-                action_type="split_subtree",
-                suggestion="建议为该过宽节点设计更细的中间分类，拆分前需人工确认拆分方案。",
-                risk_level="high",
-                action_payload={"strategy": "manual_split_plan"},
-            )
-        elif issue_type in {"duplicate_name", "deep_level"}:
-            suggestion = _suggestion_from_issue(
-                version_id,
-                issue,
-                action_type="mark_as_valid",
-                suggestion="建议先标记为需人工判断的合理复用或可接受结构，不自动调整节点。",
-                risk_level="low",
-                action_payload={"mark_reason": issue.get("description", "")},
-                need_confirm=False,
-            )
-        elif issue_type == "missing_parent":
-            suggestion = _suggestion_from_issue(
-                version_id,
-                issue,
-                action_type="add_node",
-                suggestion="建议补齐缺失父节点或中间分类，新增前需人工确认名称与位置。",
-                risk_level="medium",
-                action_payload={"source": "missing_parent"},
-            )
-        else:
-            return None
+        suggestion = RemediationPlanningService(self.settings).plan(version_id, issue)
+        checked = SuggestionConsistencyService(self.settings).check(suggestion, normalize_new=True)
+        suggestion = checked.suggestion
         validation = validate_suggestion_action(suggestion, self.settings)
         if not validation.valid:
             logger.warning("suggestion validation failed: %s", validation.reason)
@@ -189,9 +177,14 @@ class SuggestionAgent:
             analysis_run_id=self.analysis_run_id,
             workflow_id=self.workflow_id,
         )
+        self.suggestion_repo.update_consistency(suggestion_id, suggestion=suggestion,
+            change_preview=checked.change_preview, status="invalid" if checked.downgraded else "valid", reason=checked.reason)
         return SuggestionRecord(
             id=suggestion_id,
             review_batch_id=self.review_batch_id,
+            change_preview=checked.change_preview,
+            consistency_status="invalid" if checked.downgraded else "valid",
+            consistency_reason=checked.reason,
             **suggestion.model_dump(),
         )
 
@@ -201,7 +194,12 @@ class SuggestionAgent:
         @tool
         def submit_suggestion(suggestion: dict) -> str:
             """提交一条维护建议，返回建议 ID。"""
-            record = AdjustmentSuggestion.model_validate(suggestion)
+            try:
+                record = AdjustmentSuggestion.model_validate(suggestion)
+            except Exception as exc:
+                return json.dumps({"valid": False, "reason": f"模型建议解析失败：{exc}"}, ensure_ascii=False)
+            checked = SuggestionConsistencyService(agent.settings).check(record, normalize_new=True)
+            record = checked.suggestion
             validation = validate_suggestion_action(record, agent.settings)
             if not validation.valid:
                 return json.dumps({"valid": False, "reason": validation.reason}, ensure_ascii=False)
@@ -212,6 +210,8 @@ class SuggestionAgent:
                 analysis_run_id=agent.analysis_run_id,
                 workflow_id=agent.workflow_id,
             )
+            agent.suggestion_repo.update_consistency(suggestion_id, suggestion=record,
+                change_preview=checked.change_preview, status="invalid" if checked.downgraded else "valid", reason=checked.reason)
             return json.dumps(
                 {
                     "valid": True,

@@ -1,5 +1,5 @@
+from hashlib import sha256
 from typing import Any
-from uuid import uuid4
 
 from backend.app.config import Settings
 from backend.app.repositories.operation_log_repo import OperationLogRepository
@@ -46,11 +46,14 @@ class ActionService:
         review_batch_id: str,
         operator: str = "local_user",
     ) -> ExecuteActionsResult:
-        approved = self.suggestion_repo.list_suggestions(
-            version_id=version_id,
-            review_batch_id=review_batch_id,
-            status="approved",
-        )
+        approved = [
+            item
+            for item in self.suggestion_repo.list_suggestions(
+                version_id=version_id,
+                review_batch_id=review_batch_id,
+            )
+            if item.status in {"approved", "executed"}
+        ]
         return self.execute_suggestion_records(
             version_id=version_id,
             review_batch_id=review_batch_id,
@@ -80,13 +83,17 @@ class ActionService:
             return ExecuteActionsResult(
                 source_version_id=version_id,
                 review_batch_id=review_batch_id,
-                action_batch_id=str(uuid4()),
+                action_batch_id=_action_batch_id(version_id, review_batch_id, []),
                 executed_count=0,
                 failed_count=0,
                 nodes=self.taxonomy_repo.list_node_records(version_id),
             )
 
-        action_batch_id = str(uuid4())
+        action_batch_id = _action_batch_id(
+            version_id,
+            review_batch_id,
+            [item.id for item in approved],
+        )
         preview = ActionSimulationService(self.settings).simulate(version_id, approved)
         failures: list[dict[str, Any]] = preview.errors
 
@@ -235,3 +242,12 @@ def _is_descendant(
             return True
         current = nodes.get(current.parent_id)
     return False
+
+
+def _action_batch_id(
+    version_id: int,
+    review_batch_id: str,
+    suggestion_ids: list[int],
+) -> str:
+    material = f"{version_id}:{review_batch_id}:{','.join(map(str, sorted(suggestion_ids)))}"
+    return f"action_{sha256(material.encode('utf-8')).hexdigest()[:20]}"

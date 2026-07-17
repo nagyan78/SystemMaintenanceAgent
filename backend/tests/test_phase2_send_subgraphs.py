@@ -98,7 +98,7 @@ def test_suggestion_subgraph_does_not_duplicate_saved_suggestions(tmp_path):
     graph.invoke(first, config={"max_concurrency": 1})
     suggestions = SuggestionRepository(settings).list_suggestions(version_id=version_id)
     assert len(suggestions) == 3
-    assert len({item.action_payload["work_item_id"] for item in suggestions}) == 3
+    assert len({item.work_item_id for item in suggestions}) == 3
 
 
 def test_candidate_48_failure_preserves_other_49_and_retries_only_it(tmp_path):
@@ -138,3 +138,20 @@ def test_candidate_48_stops_after_max_attempts(tmp_path):
     before = llm.calls_by_candidate[48]
     graph.invoke(state, config={"max_concurrency":4})
     assert llm.calls_by_candidate[48] == before == 3
+
+
+def test_run_budget_skips_remaining_candidates_and_records_coverage(tmp_path):
+    settings, version_id = _seed(tmp_path, 3)
+    llm = FailOnceForCandidate(-1)
+    graph = build_content_diagnosis_subgraph(settings=settings, llm=llm)
+    result = graph.invoke({
+        "workflow_id": "wf-budget", "version_id": version_id,
+        "plan": {"estimated_candidates": 3}, "rule_scanned_nodes": 3,
+        "rule_issue_count": 0, "budget": {"max_model_calls": 1, "max_tokens": 10000},
+    }, config={"max_concurrency": 1})
+    counts = AgentRunRepository(settings).counts(result["run_id"])
+    assert counts["succeeded"] == 1
+    assert counts["skipped"] == 2
+    assert result["coverage"]["completion_status"] == "partial"
+    assert result["coverage"]["model_calls"] == 1
+    assert result["coverage"]["unexamined_reasons"] == {"BUDGET_EXHAUSTED": 2}
