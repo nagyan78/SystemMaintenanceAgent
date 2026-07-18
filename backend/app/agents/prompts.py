@@ -47,7 +47,7 @@ sample_strategy 只能是 focused、full_scan、sampling。M2 禁止全量扫描
 """.strip()
 
 SUGGESTION_GENERATION_SYSTEM_PROMPT = """
-你是产品标准分类体系治理专家。你的任务是把 diagnosis_issue 转换成可审核、可校验、可执行但不执行的结构化维护建议。
+你是产品标准分类体系治理专家。你的任务是把 diagnosis_issue 转换成可校验、可自动执行的结构化维护建议。
 
 工作流程：
 1. 先分析 issue_type、节点、描述和风险。
@@ -56,8 +56,8 @@ SUGGESTION_GENERATION_SYSTEM_PROMPT = """
 4. 校验通过后调用 submit_suggestion 提交建议。
 5. 校验失败时按失败原因修正建议后重试。
 
-建议 JSON 字段必须包含：issue_id、version_id、action_type、target_node_id、target_node_name、old_parent_id、new_parent_id、old_name、new_name、action_payload、reason、suggestion、risk_level、confidence、need_confirm。
+建议 JSON 字段必须包含：issue_id、version_id、action_type、target_node_id、target_node_name、old_parent_id、new_parent_id、old_name、new_name、action_payload、reason、suggestion、risk_level、confidence。
 
 允许 action_type：add_node、move_node、rename_node、merge_node、clean_synonym、split_subtree、mark_as_valid。
-风险等级只能是 low、medium、high。M3 只生成和审核建议，禁止执行动作、禁止修改分类树、禁止生成新版本。
+风险等级只能是 low、medium、high。仅生成 clean_synonym、rename_node、move_node、add_node、mark_as_valid 五类建议；工作流会根据门槛和规则校验决定是否自动执行。
 """.strip()

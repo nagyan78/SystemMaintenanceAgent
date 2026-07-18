@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 from zoneinfo import ZoneInfo
 
 from backend.app.config import Settings
@@ -7,6 +8,7 @@ from backend.app.repositories.diagnosis_repo import DiagnosisRepository
 from backend.app.repositories.file_repo import FileRepository
 from backend.app.repositories.suggestion_repo import SuggestionRepository
 from backend.app.repositories.version_repo import VersionRepository
+from backend.app.repositories.workflow_evidence_repo import WorkflowEvidenceRepository
 from backend.app.schemas.issue import ReportResult
 from backend.app.services.taxonomy_service import TaxonomyService
 
@@ -15,7 +17,16 @@ class ReportService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    def generate_diagnosis_report(self, version_id: int) -> ReportResult:
+    def generate_diagnosis_report(
+        self,
+        version_id: int,
+        *,
+        workflow_id: str | None = None,
+        analysis_run_id: str | None = None,
+        analyzed_version_id: int | None = None,
+        result_version_id: int | None = None,
+        verification: dict | None = None,
+    ) -> ReportResult:
         version = VersionRepository(self.settings).get_version(version_id)
         if version is None:
             raise ValueError(f"Taxonomy version {version_id} was not found.")
@@ -23,16 +34,46 @@ class ReportService:
         if file_record is None:
             file_record = {"file_name": f"file_{version['file_id']}"}
         overview = TaxonomyService(self.settings).get_overview(version_id)
-        issue_repo = DiagnosisRepository(self.settings)
-        issue_summary = issue_repo.count_by_type(version_id)
-        content_issue_count = issue_repo.count_content_issues(version_id)
-        examples = issue_repo.list_examples(version_id, limit=5)
-        content_examples = issue_repo.list_content_examples(version_id, limit=3)
-        suggestions = SuggestionRepository(self.settings).list_suggestions(version_id=version_id)
-        operation_logs = _list_operation_logs(self.settings, version_id)
+        workflow_evidence = None
+        if workflow_id is not None and analysis_run_id is not None:
+            workflow_evidence = WorkflowEvidenceRepository(
+                self.settings
+            ).get_report_evidence(
+                workflow_id=workflow_id,
+                analysis_run_id=analysis_run_id,
+                analyzed_version_id=analyzed_version_id or version_id,
+                result_version_id=result_version_id,
+            )
+            scoped_issues = workflow_evidence["issues"]
+            issue_summary: dict[str, int] = {}
+            for item in scoped_issues:
+                issue_summary[item["issue_type"]] = (
+                    issue_summary.get(item["issue_type"], 0) + 1
+                )
+            structure_types = DiagnosisRepository._STRUCTURE_TYPES
+            content_issues = [
+                item for item in scoped_issues if item["issue_type"] not in structure_types
+            ]
+            content_issue_count = len(content_issues)
+            examples = scoped_issues[:5]
+            content_examples = content_issues[:3]
+            suggestions = workflow_evidence["suggestions"]
+            operation_logs = workflow_evidence["operations"]
+        else:
+            issue_repo = DiagnosisRepository(self.settings)
+            issue_summary = issue_repo.count_by_type(version_id)
+            content_issue_count = issue_repo.count_content_issues(version_id)
+            examples = issue_repo.list_examples(version_id, limit=5)
+            content_examples = issue_repo.list_content_examples(version_id, limit=3)
+            suggestions = SuggestionRepository(self.settings).list_suggestions(version_id=version_id)
+            operation_logs = _list_operation_logs(self.settings, version_id)
 
         self.settings.report_dir.mkdir(parents=True, exist_ok=True)
-        report_name = f"{version['version_no']}_diagnosis_report.md"
+        report_name = (
+            f"{version['version_no']}_{workflow_id}_diagnosis_report.md"
+            if workflow_id
+            else f"{version['version_no']}_diagnosis_report.md"
+        )
         report_path = self.settings.report_dir / report_name
         report_path.write_text(
             self._render(
@@ -45,6 +86,8 @@ class ReportService:
                 content_examples,
                 suggestions,
                 operation_logs,
+                workflow_evidence=workflow_evidence,
+                verification=verification,
             ),
             encoding="utf-8",
         )
@@ -66,6 +109,9 @@ class ReportService:
         content_examples: list[dict],
         suggestions: list,
         operation_logs: list[dict],
+        *,
+        workflow_evidence: dict | None = None,
+        verification: dict | None = None,
     ) -> str:
         created_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
         example_lines = "\n".join(
@@ -87,15 +133,22 @@ class ReportService:
         else:
             content_section = "内容诊断 Agent 已运行但未发现语义异常（或 M2 Agent Loop 未在本次执行中激活）。"
 
-        total_issues = sum(issue_summary.values()) + content_issue_count
         quality_score = (
             float(version["quality_score"])
             if version.get("quality_score") is not None
-            else _calc_quality_score(overview.node_count, total_issues)
+            else None
         )
-        quality_label = _quality_label(quality_score)
+        quality_line = (
+            f"体系健康度：{_quality_label(quality_score)}（{quality_score:.1f}/100）"
+            if quality_score is not None
+            else "体系健康度：待执行 quality-v1 评价"
+        )
         suggestion_lines = _render_suggestions(suggestions)
         operation_lines = _render_operations(operation_logs)
+        workflow_section = _render_workflow_evidence(
+            workflow_evidence,
+            verification,
+        )
         return f"""# 产品标准体系诊断报告
 
 ## 1. 基本信息
@@ -131,7 +184,7 @@ class ReportService:
 
 {example_lines}
 
-## 6. 智能维护建议
+## 6. 自动决策摘要
 
 {suggestion_lines}
 
@@ -141,10 +194,9 @@ class ReportService:
 
 ## 8. 质量评分
 
-体系健康度：{quality_label}（{quality_score:.1f}/100）
+{quality_line}
 
-> 计算公式：基础分 100 - 结构问题扣分 - 内容问题扣分。问题越多扣分越多。
-> 详细规则见 `_calc_quality_score` 函数。
+> 版本分数只读取持久化的 `quality-v1` 评价；未评价时不使用报告内临时公式补分。
 
 ## 9. 后续优化建议
 
@@ -152,21 +204,29 @@ class ReportService:
 - 对层级过深的路径评估是否需要归并或重命名。
 - 对直接子节点过宽的类目增加中间层。
 - 对重复名称节点结合完整路径判断是否需要合并、重命名或保留。
+
+{workflow_section}
 """
 
 
 def _render_suggestions(suggestions: list) -> str:
     if not suggestions:
-        return "- 暂无智能维护建议。"
+        return "- 暂无智能维护建议，本轮无需自动变更。"
     lines = []
     status_counts: dict[str, int] = {}
     for suggestion in suggestions:
         status_counts[suggestion.status] = status_counts.get(suggestion.status, 0) + 1
     counts = "，".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
-    lines.append(f"- 建议总数：{len(suggestions)}（{counts}）")
-    for suggestion in suggestions[:5]:
+    lines.append(f"- 自动决策建议总数：{len(suggestions)}（{counts}）")
+    for suggestion in suggestions:
+        decision_reason = suggestion.action_payload.get(
+            "automatic_decision_reason", suggestion.reason
+        )
         lines.append(
-            f"- [{suggestion.status}] {suggestion.action_type}：{suggestion.suggestion}"
+            "- "
+            f"[{suggestion.status}] {suggestion.action_type}：{suggestion.suggestion}；"
+            f"风险={suggestion.risk_level}，置信度={suggestion.confidence:.2f}；"
+            f"依据={decision_reason}"
         )
     return "\n".join(lines)
 
@@ -195,11 +255,25 @@ def _list_operation_logs(settings: Settings, version_id: int) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def _calc_quality_score(node_count: int, total_issues: int) -> float:
-    """Simple health score: start at 100, penalize per issue, floor at 0."""
-    base = 100.0
-    issue_penalty = min(total_issues * 0.1, 90.0)
-    return max(base - issue_penalty, 0.0)
+def _render_workflow_evidence(
+    evidence: dict | None,
+    verification: dict | None,
+) -> str:
+    if evidence is None and verification is None:
+        return ""
+    before = evidence.get("evaluation_before") if evidence else None
+    after = evidence.get("evaluation_after") if evidence else None
+    before_payload = before.model_dump() if before is not None else None
+    after_payload = after.model_dump() if after is not None else None
+    return "\n".join(
+        (
+            "## 10. Workflow 评价与验证证据",
+            "",
+            f"- 修改前质量：`{json.dumps(before_payload, ensure_ascii=False)}`",
+            f"- 修改后质量：`{json.dumps(after_payload, ensure_ascii=False)}`",
+            f"- Verification：`{json.dumps(verification, ensure_ascii=False)}`",
+        )
+    )
 
 
 def _quality_label(score: float) -> str:

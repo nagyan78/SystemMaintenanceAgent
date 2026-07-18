@@ -22,50 +22,96 @@ class ActionService:
         self.log_repo = OperationLogRepository(settings)
         self.taxonomy_repo = TaxonomyRepository(settings)
 
-    def validate_approved_actions(self, review_batch_id: str) -> list[ActionValidationResult]:
-        approved = [
-            item
-            for item in self.suggestion_repo.list_suggestions(review_batch_id=review_batch_id)
-            if item.status == "approved"
-        ]
-        return self.validate_suggestion_records(approved)
+    def validate_automatic_actions(
+        self,
+        version_id: int,
+        *,
+        analysis_run_id: str | None = None,
+        workflow_id: str | None = None,
+    ) -> list[ActionValidationResult]:
+        suggestions = (
+            self.suggestion_repo.list_for_run(analysis_run_id)
+            if analysis_run_id
+            else self.suggestion_repo.list_suggestions(version_id=version_id)
+        )
+        pending = [item for item in suggestions if item.status == "pending"]
+        eligible: list[SuggestionRecord] = []
+        for suggestion in pending:
+            if suggestion.confidence < 0.8 or suggestion.risk_level == "high":
+                self.suggestion_repo.update_status(suggestion.id, "skipped")
+                self.suggestion_repo.record_decision_reason(
+                    suggestion.id, "未达到自动执行门槛"
+                )
+                self.log_repo.create_log(
+                    version_id=version_id,
+                    workflow_id=workflow_id,
+                    analysis_run_id=analysis_run_id,
+                    operator="agent",
+                    operation_type="skip_automatic_suggestion",
+                    operation_detail={
+                        "suggestion_id": suggestion.id,
+                        "confidence": suggestion.confidence,
+                        "risk_level": suggestion.risk_level,
+                        "reason": "未达到自动执行门槛",
+                    },
+                )
+                continue
+            eligible.append(suggestion)
+        results = self.validate_suggestion_records(eligible)
+        for result in results:
+            if result.suggestion_id is None:
+                continue
+            self.suggestion_repo.update_status(
+                result.suggestion_id,
+                "validated" if result.valid else "failed",
+            )
+            if not result.valid:
+                self.suggestion_repo.record_decision_reason(
+                    result.suggestion_id, result.reason
+                )
+        return results
 
     def validate_suggestion_records(self, suggestions: list[SuggestionRecord]) -> list[ActionValidationResult]:
         return [
             validate_suggestion_action(
-                AdjustmentSuggestion.model_validate(item.model_dump(exclude={"id", "review_batch_id"})),
+                AdjustmentSuggestion.model_validate(item.model_dump(exclude={"id"})),
                 self.settings,
             ).model_copy(update={"suggestion_id": item.id})
             for item in suggestions
         ]
 
-    def execute_actions(
+    def execute_validated_actions(
         self,
         version_id: int,
-        review_batch_id: str,
         operator: str = "local_user",
+        *,
+        workflow_id: str | None = None,
+        analysis_run_id: str | None = None,
     ) -> ExecuteActionsResult:
-        approved = self.suggestion_repo.list_suggestions(
-            version_id=version_id,
-            review_batch_id=review_batch_id,
-            status="approved",
+        suggestions = (
+            self.suggestion_repo.list_for_run(analysis_run_id)
+            if analysis_run_id
+            else self.suggestion_repo.list_suggestions(version_id=version_id, status="validated")
         )
+        validated = [item for item in suggestions if item.status == "validated"]
         return self.execute_suggestion_records(
             version_id=version_id,
-            review_batch_id=review_batch_id,
-            approved=approved,
+            suggestions=validated,
             operator=operator,
+            workflow_id=workflow_id,
+            analysis_run_id=analysis_run_id,
         )
 
     def execute_suggestion_records(
         self,
         *,
         version_id: int,
-        review_batch_id: str,
-        approved: list[SuggestionRecord],
+        suggestions: list[SuggestionRecord],
         operator: str = "local_user",
+        workflow_id: str | None = None,
+        analysis_run_id: str | None = None,
     ) -> ExecuteActionsResult:
-        validations = self.validate_suggestion_records(approved)
+        validations = self.validate_suggestion_records(suggestions)
         failed_validations = [item for item in validations if not item.valid]
         if failed_validations:
             for item in failed_validations:
@@ -73,10 +119,9 @@ class ActionService:
                     self.suggestion_repo.update_status(item.suggestion_id, "failed")
             joined = "; ".join(item.reason for item in failed_validations)
             raise ValueError(f"动作校验失败：{joined}")
-        if not approved:
+        if not suggestions:
             return ExecuteActionsResult(
                 source_version_id=version_id,
-                review_batch_id=review_batch_id,
                 action_batch_id=str(uuid4()),
                 executed_count=0,
                 failed_count=0,
@@ -89,7 +134,7 @@ class ActionService:
         }
         action_batch_id = str(uuid4())
         failures: list[dict[str, Any]] = []
-        for suggestion in approved:
+        for suggestion in suggestions:
             try:
                 self._apply_action(nodes, suggestion)
             except ValueError as exc:
@@ -106,34 +151,35 @@ class ActionService:
                 self.suggestion_repo.update_status(int(failure["suggestion_id"]), "failed")
             self.log_repo.create_log(
                 version_id=version_id,
+                workflow_id=workflow_id,
+                analysis_run_id=analysis_run_id,
                 operator=operator,
                 operation_type="execute_actions_failed",
                 operation_detail={
-                    "review_batch_id": review_batch_id,
                     "action_batch_id": action_batch_id,
                     "failures": failures,
                 },
             )
             raise ValueError(f"动作执行失败：{failures[0]['reason']}")
 
-        for suggestion in approved:
+        for suggestion in suggestions:
             self.suggestion_repo.update_status(suggestion.id, "executed")
         self.log_repo.create_log(
             version_id=version_id,
+            workflow_id=workflow_id,
+            analysis_run_id=analysis_run_id,
             operator=operator,
             operation_type="execute_actions",
             operation_detail={
-                "review_batch_id": review_batch_id,
                 "action_batch_id": action_batch_id,
-                "executed_count": len(approved),
-                "suggestion_ids": [item.id for item in approved],
+                "executed_count": len(suggestions),
+                "suggestion_ids": [item.id for item in suggestions],
             },
         )
         return ExecuteActionsResult(
             source_version_id=version_id,
-            review_batch_id=review_batch_id,
             action_batch_id=action_batch_id,
-            executed_count=len(approved),
+            executed_count=len(suggestions),
             failed_count=0,
             nodes=list(nodes.values()),
         )

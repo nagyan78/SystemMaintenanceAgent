@@ -96,7 +96,19 @@ class ContentDiagnosisAgent:
         self.max_iter = max_iter
         self.trace_log: list[str] = []
 
-    def run(self, version_id: int, plan: DiagnosisPlan) -> list[ContentIssue]:
+    def run(
+        self,
+        version_id: int,
+        plan: DiagnosisPlan,
+        *,
+        workflow_id: str | None = None,
+        analysis_run_id: str | None = None,
+    ) -> list[ContentIssue]:
+        configure_tree_tool_runtime(
+            settings=self.settings,
+            workflow_id=workflow_id,
+            analysis_run_id=analysis_run_id,
+        )
         if self.llm is None:
             logger.warning("Content diagnosis skipped because DeepSeek API key is not configured.")
             return []

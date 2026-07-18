@@ -7,13 +7,11 @@ ActionType = Literal[
     "add_node",
     "move_node",
     "rename_node",
-    "merge_node",
     "clean_synonym",
-    "split_subtree",
     "mark_as_valid",
 ]
 RiskLevel = Literal["low", "medium", "high"]
-SuggestionStatus = Literal["pending", "approved", "rejected", "edited", "executed", "failed"]
+SuggestionStatus = Literal["pending", "validated", "skipped", "executed", "failed"]
 
 
 class AdjustmentSuggestion(BaseModel):
@@ -31,18 +29,15 @@ class AdjustmentSuggestion(BaseModel):
     suggestion: str
     risk_level: RiskLevel
     confidence: float = Field(ge=0.0, le=1.0)
-    need_confirm: bool = True
     status: SuggestionStatus = "pending"
 
 
 class SuggestionRecord(AdjustmentSuggestion):
     id: int
-    review_batch_id: str | None = None
 
 
 class SuggestionGenerationResult(BaseModel):
     version_id: int
-    review_batch_id: str | None = None
     generated_count: int
     suggestions: list[SuggestionRecord] = Field(default_factory=list)
 

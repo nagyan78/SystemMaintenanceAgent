@@ -1,3 +1,3 @@
-import { apiGet, apiPost, apiUpload } from './client'
+import { apiGet, apiPost, apiUpload, apiUrl } from './client'
 
-export { apiGet, apiPost, apiUpload }
+export { apiGet, apiPost, apiUpload, apiUrl }

@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 from backend.app.config import Settings
 from backend.app.repositories.operation_log_repo import OperationLogRepository
 from backend.app.repositories.suggestion_repo import SuggestionRepository
@@ -56,37 +58,68 @@ class VersionService:
     def save_new_version(
         self,
         base_version_id: int,
-        review_batch_id: str,
+        action_batch_id: str,
         nodes: list[TaxonomyNodeRecord] | None = None,
+        *,
+        workflow_id: str | None = None,
+        analysis_run_id: str | None = None,
     ) -> SaveVersionResult:
         version_repo = VersionRepository(self.settings)
         taxonomy_repo = TaxonomyRepository(self.settings)
         base_version = version_repo.get_version(base_version_id)
         if base_version is None:
             raise ValueError(f"Taxonomy version {base_version_id} was not found.")
-        snapshot_nodes = nodes or taxonomy_repo.list_node_records(base_version_id)
+        existing = version_repo.get_by_action_batch(action_batch_id)
+        if existing is not None:
+            return SaveVersionResult(
+                source_version_id=base_version_id,
+                new_version_id=int(existing["id"]),
+                new_version_no=str(existing["version_no"]),
+                node_count=taxonomy_repo.count_nodes(int(existing["id"])),
+                quality_score=existing.get("quality_score"),
+            )
+        snapshot_nodes = (
+            nodes
+            if nodes is not None
+            else taxonomy_repo.list_node_records(base_version_id)
+        )
         recalculated = _recalculate_tree(snapshot_nodes)
-        new_version_no = self._next_version_no(int(base_version["file_id"]))
-        quality_score = _calc_quality_score(recalculated)
-        new_version_id = version_repo.create_version(
+        quality_score = None
+        new_version_id, new_version_no, created = version_repo.create_next_version(
             file_id=int(base_version["file_id"]),
-            version_no=new_version_no,
-            description=f"基于 {base_version['version_no']} 执行审核批次 {review_batch_id}",
+            description=f"基于 {base_version['version_no']} 自动执行维护动作",
+            parent_version_id=base_version_id,
+            source_workflow_id=workflow_id,
+            analysis_run_id=analysis_run_id,
+            action_batch_id=action_batch_id,
             quality_score=quality_score,
         )
+        if not created:
+            existing = version_repo.get_version(new_version_id)
+            return SaveVersionResult(
+                source_version_id=base_version_id,
+                new_version_id=new_version_id,
+                new_version_no=new_version_no,
+                node_count=taxonomy_repo.count_nodes(new_version_id),
+                quality_score=existing.get("quality_score") if existing else None,
+            )
         taxonomy_repo.bulk_insert_nodes(version_id=new_version_id, nodes=recalculated)
-        suggestions = SuggestionRepository(self.settings).list_suggestions(
-            review_batch_id=review_batch_id
+        suggestions = (
+            SuggestionRepository(self.settings).list_for_run(analysis_run_id)
+            if analysis_run_id
+            else []
         )
         executed_count = sum(1 for item in suggestions if item.status == "executed")
         failed_count = sum(1 for item in suggestions if item.status == "failed")
         OperationLogRepository(self.settings).create_log(
             version_id=new_version_id,
-            operator="local_user",
+            workflow_id=workflow_id,
+            analysis_run_id=analysis_run_id,
+            operator="agent",
             operation_type="save_new_version",
             operation_detail={
                 "base_version_id": base_version_id,
-                "review_batch_id": review_batch_id,
+                "action_batch_id": action_batch_id,
                 "node_count": len(recalculated),
             },
         )
@@ -167,31 +200,44 @@ class VersionService:
         self,
         version_id: int,
         operator: str = "local_user",
+        *,
+        workflow_id: str | None = None,
+        analysis_run_id: str | None = None,
+        action_batch_id: str | None = None,
     ) -> SaveVersionResult:
         version_repo = VersionRepository(self.settings)
         target = version_repo.get_version(version_id)
         if target is None:
             raise ValueError(f"Taxonomy version {version_id} was not found.")
         nodes = TaxonomyRepository(self.settings).list_node_records(version_id)
-        new_version_no = self._next_version_no(int(target["file_id"]))
-        quality_score = _calc_quality_score(nodes)
-        new_version_id = version_repo.create_version(
+        quality_score = None
+        latest = version_repo.get_latest_for_file(int(target["file_id"]))
+        parent_version_id = int(latest["id"]) if latest else version_id
+        resolved_action_batch_id = action_batch_id or f"rollback:{uuid4().hex}"
+        new_version_id, new_version_no, created = version_repo.create_next_version(
             file_id=int(target["file_id"]),
-            version_no=new_version_no,
             description=f"回滚到 {target['version_no']} 的快照",
+            parent_version_id=parent_version_id,
+            source_workflow_id=workflow_id,
+            analysis_run_id=analysis_run_id,
+            action_batch_id=resolved_action_batch_id,
             quality_score=quality_score,
         )
-        TaxonomyRepository(self.settings).bulk_insert_nodes(
-            version_id=new_version_id,
-            nodes=_recalculate_tree(nodes),
-        )
+        if created:
+            TaxonomyRepository(self.settings).bulk_insert_nodes(
+                version_id=new_version_id,
+                nodes=_recalculate_tree(nodes),
+            )
         OperationLogRepository(self.settings).create_log(
             version_id=new_version_id,
+            workflow_id=workflow_id,
+            analysis_run_id=analysis_run_id,
             operator=operator,
             operation_type="rollback_version",
             operation_detail={
                 "rollback_from_version_id": version_id,
                 "rollback_from_version_no": target["version_no"],
+                "action_batch_id": resolved_action_batch_id,
             },
         )
         return SaveVersionResult(
@@ -201,20 +247,6 @@ class VersionService:
             node_count=len(nodes),
             quality_score=quality_score,
         )
-
-    def _next_version_no(self, file_id: int) -> str:
-        versions = VersionRepository(self.settings).list_versions(file_id=file_id)
-        max_minor = -1
-        for version in versions:
-            version_no = str(version["version_no"])
-            if not version_no.startswith("v1."):
-                continue
-            try:
-                max_minor = max(max_minor, int(version_no.split(".", 1)[1]))
-            except ValueError:
-                continue
-        return f"v1.{max_minor + 1 if max_minor >= 0 else 0}"
-
 
 def _recalculate_tree(nodes: list[TaxonomyNodeRecord]) -> list[TaxonomyNodeRecord]:
     node_map = {node.category_id: node for node in nodes}
@@ -256,15 +288,3 @@ def _recalculate_tree(nodes: list[TaxonomyNodeRecord]) -> list[TaxonomyNodeRecor
 
 def _split_synonyms(syn_list: str) -> list[str]:
     return [item.strip() for item in syn_list.replace("，", ",").split(",") if item.strip()]
-
-
-def _calc_quality_score(nodes: list[TaxonomyNodeRecord]) -> float:
-    missing_parent_count = sum(
-        1
-        for node in nodes
-        if node.parent_id is not None and node.parent_id not in {item.category_id for item in nodes}
-    )
-    duplicate_names = len(nodes) - len({(node.parent_id, node.category_name) for node in nodes})
-    max_depth_penalty = sum(max(node.level - 7, 0) for node in nodes) * 0.2
-    score = 100.0 - missing_parent_count - duplicate_names * 0.5 - max_depth_penalty
-    return max(round(score, 1), 0.0)

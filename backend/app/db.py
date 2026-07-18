@@ -95,7 +95,6 @@ def init_db(settings: Settings) -> None:
             CREATE TABLE IF NOT EXISTS adjustment_suggestion (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 issue_id INTEGER NOT NULL,
-                review_batch_id TEXT,
                 version_id INTEGER NOT NULL,
                 action_type TEXT NOT NULL,
                 target_node_id INTEGER,
@@ -109,7 +108,6 @@ def init_db(settings: Settings) -> None:
                 suggestion TEXT,
                 risk_level TEXT,
                 confidence REAL,
-                need_confirm INTEGER DEFAULT 1,
                 status TEXT DEFAULT 'pending',
                 created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (issue_id) REFERENCES diagnosis_issue(id),
@@ -140,6 +138,41 @@ def init_db(settings: Settings) -> None:
                 created_time DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS analysis_run (
+                id TEXT PRIMARY KEY,
+                workflow_id TEXT NOT NULL,
+                round INTEGER NOT NULL,
+                analyzed_version_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'running',
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                completed_time DATETIME,
+                UNIQUE(workflow_id, round)
+            );
+
+            CREATE TABLE IF NOT EXISTS quality_evaluation (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                version_id INTEGER NOT NULL,
+                workflow_id TEXT NOT NULL,
+                analysis_run_id TEXT NOT NULL,
+                evaluation_role TEXT NOT NULL,
+                score_version TEXT NOT NULL,
+                total_score REAL NOT NULL,
+                available_points REAL NOT NULL,
+                coverage_ratio REAL NOT NULL,
+                dimensions TEXT NOT NULL,
+                available_dimensions TEXT NOT NULL,
+                metrics TEXT NOT NULL,
+                detector_versions TEXT NOT NULL,
+                risks TEXT NOT NULL,
+                narrative TEXT NOT NULL DEFAULT '',
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(
+                    workflow_id, analysis_run_id, version_id,
+                    score_version, evaluation_role
+                )
+            );
+
             CREATE UNIQUE INDEX IF NOT EXISTS idx_category_node_version_category
             ON category_node(version_id, category_id);
 
@@ -156,12 +189,72 @@ def init_db(settings: Settings) -> None:
                 "version_id": "INTEGER",
                 "interrupt_payload": "TEXT",
                 "result_payload": "TEXT",
+                "workflow_mode": "TEXT DEFAULT 'import'",
+                "base_version_id": "INTEGER",
+                "result_version_id": "INTEGER",
+                "round": "INTEGER DEFAULT 1",
+                "analysis_run_id": "TEXT",
+                "interrupt_id": "TEXT",
+                "consumed_interrupt_id": "TEXT",
+                "resume_result_payload": "TEXT",
             },
         )
         _ensure_columns(
             connection,
             "adjustment_suggestion",
-            {"review_batch_id": "TEXT"},
+            {
+                "workflow_id": "TEXT",
+                "analysis_run_id": "TEXT",
+            },
+        )
+        _ensure_columns(
+            connection,
+            "diagnosis_issue",
+            {
+                "workflow_id": "TEXT",
+                "analysis_run_id": "TEXT",
+                "detector_version": "TEXT DEFAULT 'legacy-v1'",
+            },
+        )
+        _ensure_columns(
+            connection,
+            "operation_log",
+            {"workflow_id": "TEXT", "analysis_run_id": "TEXT"},
+        )
+        _ensure_columns(
+            connection,
+            "taxonomy_version",
+            {
+                "parent_version_id": "INTEGER",
+                "source_workflow_id": "TEXT",
+                "analysis_run_id": "TEXT",
+                "action_batch_id": "TEXT",
+                "vector_index_status": "TEXT DEFAULT 'unknown'",
+                "vector_index_generation": "INTEGER DEFAULT 0",
+                "verification_status": "TEXT",
+            },
+        )
+        connection.execute("DROP INDEX IF EXISTS idx_issue_unique_rule")
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_unique_run_rule
+            ON diagnosis_issue(
+                analysis_run_id, detector_version, issue_type, node_id, description
+            )
+            """
+        )
+        _create_unique_index_if_clean(
+            connection,
+            table_name="taxonomy_version",
+            index_name="idx_version_file_version_no",
+            columns=("file_id", "version_no"),
+        )
+        _create_unique_index_if_clean(
+            connection,
+            table_name="taxonomy_version",
+            index_name="idx_version_action_batch",
+            columns=("action_batch_id",),
+            where="action_batch_id IS NOT NULL",
         )
 
 
@@ -179,3 +272,33 @@ def _ensure_columns(
             connection.execute(
                 f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
             )
+
+
+def _create_unique_index_if_clean(
+    connection: sqlite3.Connection,
+    *,
+    table_name: str,
+    index_name: str,
+    columns: tuple[str, ...],
+    where: str | None = None,
+) -> None:
+    column_sql = ", ".join(columns)
+    where_sql = f"WHERE {where}" if where else ""
+    duplicate = connection.execute(
+        f"""
+        SELECT 1 FROM {table_name}
+        {where_sql}
+        GROUP BY {column_sql}
+        HAVING COUNT(*) > 1
+        LIMIT 1
+        """
+    ).fetchone()
+    if duplicate is not None:
+        raise RuntimeError(
+            f"Cannot create required unique index {index_name}: "
+            f"duplicate values exist in {table_name}({column_sql})."
+        )
+    connection.execute(
+        f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} "
+        f"ON {table_name}({column_sql}) {where_sql}"
+    )

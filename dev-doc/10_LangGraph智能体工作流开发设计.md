@@ -2,6 +2,7 @@
 
 > 功能编号：F10
 > 里程碑归属：M1-M5 全程（编排文档）
+> **治理更新（2026-07-17）**：`wait_human_review_node`、`waiting_review`、审核 interrupt/resume 和 `review_batch_id` 已删除。建议生成后直接进入自动门槛筛选和 `validate_action_node`；有至少一项 `validated` 建议时自动执行并保存新版本，无合格建议时完成并生成无需变更报告。本文其余旧审核节点示例均已废止。
 > 独立测试目标：系统能通过 LangGraph 编排 Excel 解析、分类树构建、结构诊断、诊断规划、内容诊断、建议生成、人工审核、动作执行、版本保存和报告生成，支持中断、恢复、状态查询、流式进度、人工审核和失败重试。
 > 相关源需求：PRD 2、6、8.4-8.10、10、11、12；技术架构 3、5、6.2、6.3、6.4、10、11、12、15。
 > 官方定位参考：[LangGraph overview](https://docs.langchain.com/oss/python/langgraph/overview)、[LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence)、[LangGraph interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts)、[LangChain overview](https://docs.langchain.com/oss/javascript/langchain/overview)。

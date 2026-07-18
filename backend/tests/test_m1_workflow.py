@@ -7,9 +7,7 @@ from backend.app.config import Settings
 from backend.app.main import create_app
 from backend.app.repositories.file_repo import FileRepository
 from backend.app.services.excel_service import UploadedFileMetadata
-
-
-SAMPLE_PATH = Path("data/sample/产品标准体系.xlsx")
+from backend.tests.taxonomy_fixture import TAXONOMY_COLUMNS, write_taxonomy_workbook
 
 
 def _settings(tmp_path):
@@ -23,22 +21,15 @@ def _settings(tmp_path):
     )
 
 
-def _create_sample_file_record(settings):
+def _create_sample_file_record(settings, sample_path: Path):
     metadata = UploadedFileMetadata(
-        file_name=SAMPLE_PATH.name,
-        file_path=SAMPLE_PATH,
-        file_size=SAMPLE_PATH.stat().st_size,
+        file_name=sample_path.name,
+        file_path=sample_path,
+        file_size=sample_path.stat().st_size,
         sheet_name="Sheet1",
-        row_count=21090,
+        row_count=3,
         column_count=6,
-        columns=[
-            "category_id",
-            "category_name",
-            "category_group_id",
-            "category_pids",
-            "category_group_name",
-            "syn_list",
-        ],
+        columns=TAXONOMY_COLUMNS,
     )
     return FileRepository(settings).create_uploaded_file(metadata)
 
@@ -52,7 +43,9 @@ def test_m1_services_build_real_sample_version_and_report(tmp_path):
 
     settings = _settings(tmp_path)
     create_app(settings)
-    file_id = _create_sample_file_record(settings)
+    file_id = _create_sample_file_record(
+        settings, write_taxonomy_workbook(tmp_path / "taxonomy.xlsx")
+    )
 
     build_result = TaxonomyService(settings).build_tree(file_id)
     version_result = VersionService(settings).create_initial_version(file_id)
@@ -63,31 +56,30 @@ def test_m1_services_build_real_sample_version_and_report(tmp_path):
         version_result.version_id
     )
 
-    assert build_result.node_count == 21090
-    assert build_result.max_depth == 10
+    assert build_result.node_count == 3
+    assert build_result.max_depth == 3
     assert version_result.version_no == "v1.0"
-    assert version_result.node_count == 21090
-    assert diagnosis_result.summary["missing_parent"] == 44
+    assert version_result.node_count == 3
     assert diagnosis_result.issue_count == sum(diagnosis_result.summary.values())
     assert report_result.report_path.exists()
     report_text = report_result.report_path.read_text(encoding="utf-8")
-    assert "节点总数：21090" in report_text
-    assert "父节点缺失：44" in report_text
+    assert "节点总数：3" in report_text
 
     issue_summary = DiagnosisRepository(settings).count_by_type(version_result.version_id)
-    assert issue_summary["missing_parent"] == 44
+    assert sum(issue_summary.values()) == diagnosis_result.issue_count
 
 
 def test_m1_workflow_api_runs_upload_to_report_with_real_data(tmp_path):
     settings = _settings(tmp_path)
     client = TestClient(create_app(settings))
 
-    with SAMPLE_PATH.open("rb") as file_obj:
+    sample_path = write_taxonomy_workbook(tmp_path / "taxonomy.xlsx")
+    with sample_path.open("rb") as file_obj:
         upload_response = client.post(
             "/api/files/upload",
             files={
                 "file": (
-                    SAMPLE_PATH.name,
+                sample_path.name,
                     file_obj,
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
@@ -109,17 +101,13 @@ def test_m1_workflow_api_runs_upload_to_report_with_real_data(tmp_path):
     status_response = client.get(f"/api/workflows/{start_body['task_id']}")
     assert status_response.status_code == 200
     status_body = status_response.json()
-    assert status_body["status"] in {"completed", "waiting_review"}
-    assert status_body["current_step"] in {"completed", "human_review"}
-    assert status_body["progress"] in {80, 100}
+    assert status_body["status"] == "completed"
+    assert status_body["current_step"] == "completed"
+    assert status_body["progress"] == 100
     assert status_body["file_id"] == file_id
     assert status_body["version_no"] == "v1.0"
-    assert status_body["node_count"] == 21090
-    assert status_body["structure_issue_count"] >= 44
-    if status_body["status"] == "completed":
-        assert Path(status_body["report_path"]).exists()
-    else:
-        assert status_body["review_batch_id"]
+    assert status_body["node_count"] == 3
+    assert Path(status_body["report_path"]).exists()
 
     with sqlite3.connect(tmp_path / "app.db") as connection:
         task = connection.execute(

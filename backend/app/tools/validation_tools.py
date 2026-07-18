@@ -31,9 +31,7 @@ ALLOWED_ACTION_TYPES = {
     "add_node",
     "move_node",
     "rename_node",
-    "merge_node",
     "clean_synonym",
-    "split_subtree",
     "mark_as_valid",
 }
 
@@ -66,8 +64,6 @@ def validate_suggestion_action(
         return _invalid("risk_level 必须是 low、medium 或 high。")
     if not 0 <= suggestion.confidence <= 1:
         return _invalid("confidence 必须在 0 到 1 之间。")
-    if suggestion.need_confirm is False and suggestion.risk_level in {"medium", "high"}:
-        return _invalid("中高风险建议必须 need_confirm=true。")
     if not _issue_exists(runtime_settings, suggestion.version_id, suggestion.issue_id):
         return _invalid("issue_id 不存在。")
     if suggestion.action_type != "add_node" and suggestion.target_node_id is None:
@@ -126,9 +122,6 @@ def validate_suggestion_action(
             int(new_parent_id),
         ):
             return _invalid("move_node 不能移动到自身子树下。")
-    if suggestion.action_type == "merge_node":
-        if not suggestion.action_payload.get("source_node_id") or not suggestion.action_payload.get("target_node_id"):
-            return _invalid("merge_node 必须包含 source_node_id 和 target_node_id。")
     return ActionValidationResult(valid=True)
 
 

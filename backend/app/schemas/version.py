@@ -20,12 +20,18 @@ class VersionRecord(BaseModel):
     description: str | None = None
     quality_score: float | None = None
     snapshot_path: str | None = None
+    parent_version_id: int | None = None
+    source_workflow_id: str | None = None
+    analysis_run_id: str | None = None
+    action_batch_id: str | None = None
+    vector_index_status: str = "unknown"
+    vector_index_generation: int = 0
+    verification_status: str | None = None
     created_time: str | None = None
 
 
 class ExecuteActionsResult(BaseModel):
     source_version_id: int
-    review_batch_id: str
     action_batch_id: str
     executed_count: int
     failed_count: int

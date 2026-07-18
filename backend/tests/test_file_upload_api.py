@@ -7,6 +7,7 @@ from openpyxl import Workbook
 
 from backend.app.config import Settings
 from backend.app.main import create_app
+from backend.tests.taxonomy_fixture import write_taxonomy_workbook
 
 
 EXPECTED_COLUMNS = [
@@ -77,16 +78,16 @@ def test_upload_xlsx_saves_file_and_returns_metadata(tmp_path):
     assert task == (1, "import_excel", "pending", "uploaded", 0)
 
 
-def test_upload_sample_xlsx_returns_expected_metadata(tmp_path):
-    sample_path = Path("data/sample/产品标准体系.xlsx")
+def test_upload_generated_xlsx_returns_expected_metadata(tmp_path):
+    sample_path = write_taxonomy_workbook(tmp_path / "taxonomy.xlsx")
     client, _settings = _create_client(tmp_path)
 
     response = _upload(client, sample_path, file_name=sample_path.name)
 
     assert response.status_code == 200
     body = response.json()
-    assert body["file_name"] == "产品标准体系.xlsx"
-    assert body["row_count"] == 21090
+    assert body["file_name"] == "taxonomy.xlsx"
+    assert body["row_count"] == 3
     assert body["column_count"] == 6
     assert body["columns"] == EXPECTED_COLUMNS
     assert body["task_id"].startswith("import_excel_")

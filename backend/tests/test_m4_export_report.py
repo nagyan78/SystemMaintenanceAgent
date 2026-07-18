@@ -76,7 +76,6 @@ def _seed_version(settings: Settings) -> int:
         ),
     )
     SuggestionRepository(settings).create_suggestion(
-        review_batch_id="batch-report",
         suggestion=AdjustmentSuggestion(
             issue_id=issue_id,
             version_id=version_id,
@@ -88,8 +87,7 @@ def _seed_version(settings: Settings) -> int:
             suggestion="删除污染词",
             risk_level="medium",
             confidence=0.9,
-            need_confirm=True,
-            status="approved",
+            status="validated",
         ),
     )
     return version_id
@@ -122,7 +120,7 @@ def test_m4_report_contains_suggestions_execution_and_version_sections(tmp_path)
     result = ReportService(settings).generate_diagnosis_report(version_id)
     report_text = result.report_path.read_text(encoding="utf-8")
 
-    assert "## 6. 智能维护建议" in report_text
+    assert "## 6. 自动决策摘要" in report_text
     assert "删除污染词" in report_text
     assert "## 7. 版本变更记录" in report_text
     assert "## 8. 质量评分" in report_text

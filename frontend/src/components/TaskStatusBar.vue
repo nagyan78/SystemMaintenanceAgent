@@ -25,7 +25,7 @@ import { workflowEvents } from '../api/workflows'
 const props = defineProps<{ taskId: string }>()
 const emit = defineEmits<{
   (e: 'progress', payload: Record<string, unknown>): void
-  (e: 'interrupt', reviewBatchId: string): void
+  (e: 'interrupt', payload: Record<string, unknown>): void
   (e: 'completed'): void
   (e: 'failed', message: string): void
 }>()
@@ -53,7 +53,6 @@ const stepLabels: Record<string, string> = {
   diagnosis_planning: '诊断规划 Agent',
   content_diagnosis: '内容诊断 Agent',
   generate_suggestion: '建议生成 Agent',
-  human_review: '人工审核',
   validate_action: '动作校验',
   execute_action: '执行动作',
   save_new_version: '保存新版本',
@@ -90,15 +89,23 @@ function onStep(data: Record<string, unknown>) {
   emit('progress', data)
 }
 
+function closeSource() {
+  source?.close()
+  source = null
+}
+
 function onInterrupt(data: Record<string, unknown>) {
-  emit('interrupt', (data.review_batch_id as string) || '')
+  closeSource()
+  emit('interrupt', data)
 }
 
 function onCompleted() {
+  closeSource()
   emit('completed')
 }
 
 function onFailed(data: Record<string, unknown>) {
+  closeSource()
   emit('failed', (data.message as string) || 'workflow failed')
 }
 
@@ -110,7 +117,10 @@ onMounted(() => {
   source = workflowEvents(props.taskId)
   source.addEventListener('workflow_step', (ev) => onStep(JSON.parse((ev as MessageEvent).data)))
   source.addEventListener('workflow_interrupt', (ev) => onInterrupt(JSON.parse((ev as MessageEvent).data)))
+  source.addEventListener('workflow_waiting_continue', (ev) => onInterrupt(JSON.parse((ev as MessageEvent).data)))
+  source.addEventListener('workflow_manual_intervention', (ev) => onInterrupt(JSON.parse((ev as MessageEvent).data)))
   source.addEventListener('workflow_completed', () => onCompleted())
+  source.addEventListener('workflow_completed_degraded', () => onCompleted())
   source.addEventListener('workflow_failed', (ev) => onFailed(JSON.parse((ev as MessageEvent).data)))
   source.onerror = () => {
     // Browser auto-reconnects; ignore transient errors.

@@ -1,8 +1,12 @@
 export const API_BASE_URL = localStorage.getItem('apiBaseUrl') || 'http://127.0.0.1:8000/api'
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export function apiUrl(path: string): string {
   const baseUrl = (localStorage.getItem('apiBaseUrl') || API_BASE_URL).replace(/\/$/, '')
-  const response = await fetch(`${baseUrl}${path}`, init)
+  return `${baseUrl}${path}`
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(apiUrl(path), init)
   const contentType = response.headers.get('content-type') || ''
   const body = contentType.includes('application/json') ? await response.json() : await response.text()
   if (!response.ok) {

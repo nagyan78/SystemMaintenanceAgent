@@ -16,6 +16,9 @@ class DiagnosisService:
         version_id: int,
         max_depth: int = 7,
         max_children: int = 80,
+        *,
+        workflow_id: str | None = None,
+        analysis_run_id: str | None = None,
     ) -> StructureDiagnosisResult:
         if VersionRepository(self.settings).get_version(version_id) is None:
             raise ValueError(f"Taxonomy version {version_id} was not found.")
@@ -28,9 +31,15 @@ class DiagnosisService:
         issues.extend(self._duplicate_name_issues(nodes))
         DiagnosisRepository(self.settings).replace_issues(
             version_id=version_id,
+            workflow_id=workflow_id,
+            analysis_run_id=analysis_run_id,
+            detector_version="structure-v1",
             issues=issues,
         )
-        summary = DiagnosisRepository(self.settings).count_by_type(version_id)
+        summary = DiagnosisRepository(self.settings).count_by_type(
+            version_id,
+            analysis_run_id=analysis_run_id,
+        )
         for key in ("missing_parent", "deep_level", "wide_node", "duplicate_name"):
             summary.setdefault(key, 0)
         return StructureDiagnosisResult(

@@ -13,6 +13,8 @@ from backend.app.vectorstores.qdrant_store import QdrantStore
 _runtime_settings: Settings = get_settings()
 _runtime_qdrant_store: Any | None = None
 _runtime_embeddings: Any | None = None
+_runtime_workflow_id: str | None = None
+_runtime_analysis_run_id: str | None = None
 
 
 def configure_tree_tool_runtime(
@@ -20,11 +22,16 @@ def configure_tree_tool_runtime(
     settings: Settings,
     qdrant_store: Any | None = None,
     embeddings: Any | None = None,
+    workflow_id: str | None = None,
+    analysis_run_id: str | None = None,
 ) -> None:
     global _runtime_settings, _runtime_qdrant_store, _runtime_embeddings
+    global _runtime_workflow_id, _runtime_analysis_run_id
     _runtime_settings = settings
     _runtime_qdrant_store = qdrant_store
     _runtime_embeddings = embeddings
+    _runtime_workflow_id = workflow_id
+    _runtime_analysis_run_id = analysis_run_id
 
 
 @tool
@@ -75,6 +82,9 @@ def submit_diagnosis(issue: dict) -> str:
     )
     issue_id = DiagnosisRepository(_runtime_settings).create_issue(
         version_id=version_id,
+        workflow_id=_runtime_workflow_id,
+        analysis_run_id=_runtime_analysis_run_id,
+        detector_version="content-v1",
         issue=record,
     )
     return f"issue_{issue_id}"
