@@ -32,7 +32,7 @@ def test_resolve_routes_import_maintain_and_verify_to_distinct_load_paths() -> N
 
 
 def test_graph_contains_explicit_mode_nodes_and_verify_has_no_forbidden_edge() -> None:
-    graph = build_taxonomy_graph(enable_suggestion_review=True).get_graph()
+    graph = build_taxonomy_graph().get_graph()
     node_ids = set(graph.nodes)
     edges = {(edge.source, edge.target) for edge in graph.edges}
 

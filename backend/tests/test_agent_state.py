@@ -28,7 +28,7 @@ def test_taxonomy_graph_state_rejects_invalid_progress():
         )
 
 
-def test_taxonomy_graph_state_requires_review_batch_when_waiting_review():
+def test_taxonomy_graph_state_rejects_removed_waiting_review_status():
     with pytest.raises(ValidationError):
         TaxonomyGraphState(
             workflow_id="workflow_1",

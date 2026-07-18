@@ -1,7 +1,6 @@
 import json
 import logging
 from typing import Any
-from uuid import uuid4
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
@@ -41,7 +40,6 @@ class SuggestionAgent:
         self.settings = settings or get_settings()
         configure_tree_tool_runtime(settings=self.settings)
         configure_validation_tool_runtime(self.settings)
-        self.review_batch_id = f"review_{uuid4().hex[:12]}"
         self.suggestion_repo = SuggestionRepository(self.settings)
         self.llm = llm or self._create_llm()
         self.uses_internal_submit_tool = tools is None
@@ -83,7 +81,6 @@ class SuggestionAgent:
             records.append(record)
         return SuggestionGenerationResult(
             version_id=version_id,
-            review_batch_id=self.review_batch_id if records else None,
             generated_count=len(records),
             suggestions=records,
         )
@@ -109,7 +106,7 @@ class SuggestionAgent:
                     if record is None:
                         continue
                     validation = validate_suggestion_action(
-                        AdjustmentSuggestion.model_validate(record.model_dump(exclude={"id", "review_batch_id"})),
+                        AdjustmentSuggestion.model_validate(record.model_dump(exclude={"id"})),
                         self.settings,
                     )
                     if validation.valid:
@@ -141,47 +138,30 @@ class SuggestionAgent:
             suggestion_id = int(payload["suggestion_id"])
         else:
             suggestion_id = self.suggestion_repo.create_suggestion(
-                review_batch_id=self.review_batch_id,
                 workflow_id=self.workflow_id,
                 analysis_run_id=self.analysis_run_id,
                 suggestion=suggestion,
             )
         return SuggestionRecord(
             id=suggestion_id,
-            review_batch_id=self.review_batch_id,
             **suggestion.model_dump(),
         )
 
     def _rule_based_suggestion_record(self, version_id: int, issue: dict[str, Any]) -> SuggestionRecord | None:
         issue_type = issue["issue_type"]
         if issue_type == "wide_node":
-            suggestion = _suggestion_from_issue(
-                version_id,
-                issue,
-                action_type="split_subtree",
-                suggestion="建议为该过宽节点设计更细的中间分类，拆分前需人工确认拆分方案。",
-                risk_level="medium",
-                action_payload={"strategy": "manual_split_plan"},
-            )
+            return None
         elif issue_type in {"duplicate_name", "deep_level"}:
             suggestion = _suggestion_from_issue(
                 version_id,
                 issue,
                 action_type="mark_as_valid",
-                suggestion="建议先标记为需人工判断的合理复用或可接受结构，不自动调整节点。",
+                suggestion="将该问题标记为当前分类体系中的有效结构。",
                 risk_level="low",
                 action_payload={"mark_reason": issue.get("description", "")},
-                need_confirm=False,
             )
         elif issue_type == "missing_parent":
-            suggestion = _suggestion_from_issue(
-                version_id,
-                issue,
-                action_type="add_node",
-                suggestion="建议补齐缺失父节点或中间分类，新增前需人工确认名称与位置。",
-                risk_level="medium",
-                action_payload={"source": "missing_parent"},
-            )
+            return None
         else:
             return None
         validation = validate_suggestion_action(suggestion, self.settings)
@@ -189,14 +169,12 @@ class SuggestionAgent:
             logger.warning("suggestion validation failed: %s", validation.reason)
             return None
         suggestion_id = self.suggestion_repo.create_suggestion(
-            review_batch_id=self.review_batch_id,
             workflow_id=self.workflow_id,
             analysis_run_id=self.analysis_run_id,
             suggestion=suggestion,
         )
         return SuggestionRecord(
             id=suggestion_id,
-            review_batch_id=self.review_batch_id,
             **suggestion.model_dump(),
         )
 
@@ -211,7 +189,6 @@ class SuggestionAgent:
             if not validation.valid:
                 return json.dumps({"valid": False, "reason": validation.reason}, ensure_ascii=False)
             suggestion_id = agent.suggestion_repo.create_suggestion(
-                review_batch_id=agent.review_batch_id,
                 workflow_id=agent.workflow_id,
                 analysis_run_id=agent.analysis_run_id,
                 suggestion=record,
@@ -220,7 +197,6 @@ class SuggestionAgent:
                 {
                     "valid": True,
                     "suggestion_id": suggestion_id,
-                    "review_batch_id": agent.review_batch_id,
                 },
                 ensure_ascii=False,
             )
@@ -262,7 +238,6 @@ def _suggestion_from_issue(
     suggestion: str,
     risk_level: str,
     action_payload: dict[str, Any],
-    need_confirm: bool = True,
 ) -> AdjustmentSuggestion:
     return AdjustmentSuggestion(
         issue_id=int(issue["id"]),
@@ -275,7 +250,6 @@ def _suggestion_from_issue(
         suggestion=suggestion,
         risk_level=risk_level,
         confidence=float(issue.get("confidence") or 0.5),
-        need_confirm=need_confirm,
     )
 
 

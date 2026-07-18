@@ -87,23 +87,14 @@ def map_workflow_event(row: dict[str, Any]) -> dict[str, Any] | None:
 def interrupt_event(interrupt_payload: str | None) -> dict[str, Any]:
     """Build the ``workflow_interrupt`` SSE event from a task's payload."""
     payload = _loads(interrupt_payload)
-    interrupt_type = payload.get("interrupt_type") or payload.get("type") or "human_review"
-    event_name = (
-        EVENT_WAITING_CONTINUE
-        if interrupt_type == "continue_optimization"
-        else EVENT_INTERRUPT
-    )
+    interrupt_type = payload.get("interrupt_type") or payload.get("type") or "continue_optimization"
     return {
-        "event": event_name,
+        "event": EVENT_WAITING_CONTINUE,
         "data": {
             "type": interrupt_type,
             "interrupt_type": interrupt_type,
             "interrupt_id": payload.get("interrupt_id"),
-            "review_batch_id": payload.get("review_batch_id"),
-            "suggestion_count": payload.get("suggestion_count"),
-            "required_actions": payload.get(
-                "required_actions", ["approve", "reject", "edit"]
-            ),
+            "round": payload.get("round"),
         },
     }
 

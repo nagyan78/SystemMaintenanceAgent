@@ -20,7 +20,6 @@ from backend.app.services.diagnosis_service import DiagnosisService
 from backend.app.services.excel_service import ExcelService
 from backend.app.services.report_service import ReportService
 from backend.app.services.quality_evaluation_service import QualityEvaluationService
-from backend.app.services.review_service import ReviewService
 from backend.app.services.suggestion_service import SuggestionAgent
 from backend.app.services.taxonomy_service import TaxonomyService
 from backend.app.services.vector_index_service import VectorIndexService
@@ -105,10 +104,10 @@ def _require_current_version_id(state: TaxonomyGraphState) -> int:
     return state.current_version_id
 
 
-def _require_review_batch_id(state: TaxonomyGraphState) -> str:
-    if state.review_batch_id is None:
-        raise WorkflowNodeError("MISSING_REVIEW_BATCH_ID", "Workflow requires review_batch_id.")
-    return state.review_batch_id
+def _require_action_batch_id(state: TaxonomyGraphState) -> str:
+    if state.action_batch_id is None:
+        raise WorkflowNodeError("MISSING_ACTION_BATCH_ID", "Workflow requires action_batch_id.")
+    return state.action_batch_id
 
 
 def resolve_input_node(state: TaxonomyGraphState) -> StateUpdate:
@@ -414,7 +413,7 @@ def apply_continue_decision(
 ) -> StateUpdate:
     if decision == "finish":
         return {
-            "review_payload": {"decision": "finish"},
+            "continuation_payload": {"decision": "finish"},
             "interrupt_type": None,
             "interrupt_id": None,
         }
@@ -432,12 +431,10 @@ def apply_continue_decision(
         "round": state.round + 1,
         "analysis_run_id": None,
         "diagnosis_plan": None,
-        "review_batch_id": None,
-        "review_decision": None,
-        "review_payload": {"decision": "continue"},
+        "continuation_payload": {"decision": "continue"},
         "action_batch_id": None,
         "executed_nodes": [],
-        "approved_action_count": 0,
+        "validated_action_count": 0,
         "executed_action_count": 0,
         "failed_action_count": 0,
         "suggestion_count": 0,
@@ -552,55 +549,16 @@ def generate_suggestion_node(state: TaxonomyGraphState) -> StateUpdate:
         current_step="generate_suggestion",
         progress=78,
         suggestion_count=result.generated_count,
-        review_batch_id=result.review_batch_id,
-    )
-
-
-def wait_human_review_node(state: TaxonomyGraphState) -> StateUpdate:
-    review_batch_id = _require_review_batch_id(state)
-    interrupt_payload = {
-        "type": "human_review",
-        "interrupt_type": "human_review",
-        "interrupt_id": state.interrupt_id or str(uuid4()),
-        "review_batch_id": review_batch_id,
-        "suggestion_count": state.suggestion_count,
-        "required_actions": ["approve", "reject", "edit"],
-    }
-    if state.task_id:
-        TaskRepository(_runtime_settings).update_task(
-            task_id=state.task_id,
-            status="waiting_review",
-            current_step="human_review",
-            progress=80,
-            interrupt_payload=interrupt_payload,
-            result_payload={"review_batch_id": review_batch_id},
-            interrupt_id=interrupt_payload["interrupt_id"],
-        )
-    decision = interrupt(interrupt_payload)
-    review_decision = decision.get("decision")
-    if review_decision not in {"approve", "reject", "edit"}:
-        raise WorkflowNodeError("INVALID_REVIEW_DECISION", "Review decision is invalid.")
-    approved_count = ReviewService(_runtime_settings).apply_workflow_decision(
-        review_batch_id,
-        decision,
-    )
-    return _complete_step(
-        state,
-        "wait_human_review_node",
-        current_step="human_review_completed",
-        progress=82,
-        status="running",
-        review_decision=review_decision,
-        review_payload=decision,
-        interrupt_type="human_review",
-        interrupt_id=interrupt_payload["interrupt_id"],
-        approved_action_count=approved_count,
     )
 
 
 def validate_action_node(state: TaxonomyGraphState) -> StateUpdate:
-    review_batch_id = _require_review_batch_id(state)
-    results = ActionService(_runtime_settings).validate_approved_actions(review_batch_id)
+    version_id = _require_current_version_id(state)
+    results = ActionService(_runtime_settings).validate_automatic_actions(
+        version_id,
+        analysis_run_id=state.analysis_run_id,
+        workflow_id=state.workflow_id,
+    )
     failed = [item for item in results if not item.valid]
     if failed:
         message = "; ".join(item.reason for item in failed)
@@ -610,15 +568,15 @@ def validate_action_node(state: TaxonomyGraphState) -> StateUpdate:
         "validate_action_node",
         current_step="validate_action",
         progress=86,
+        validated_action_count=sum(1 for item in results if item.valid),
     )
 
 
 def execute_action_node(state: TaxonomyGraphState) -> StateUpdate:
     version_id = _require_current_version_id(state)
-    review_batch_id = _require_review_batch_id(state)
-    result = ActionService(_runtime_settings).execute_actions(
+    result = ActionService(_runtime_settings).execute_validated_actions(
         version_id,
-        review_batch_id,
+        operator="agent",
         workflow_id=state.workflow_id,
         analysis_run_id=state.analysis_run_id,
     )
@@ -636,7 +594,6 @@ def execute_action_node(state: TaxonomyGraphState) -> StateUpdate:
 
 def save_new_version_node(state: TaxonomyGraphState) -> StateUpdate:
     current_version_id = _require_current_version_id(state)
-    review_batch_id = _require_review_batch_id(state)
     nodes = None
     if state.executed_nodes:
         from backend.app.schemas.taxonomy import TaxonomyNodeRecord
@@ -644,8 +601,7 @@ def save_new_version_node(state: TaxonomyGraphState) -> StateUpdate:
         nodes = [TaxonomyNodeRecord.model_validate(item) for item in state.executed_nodes]
     result = VersionService(_runtime_settings).save_new_version(
         base_version_id=current_version_id,
-        review_batch_id=review_batch_id,
-        action_batch_id=state.action_batch_id,
+        action_batch_id=_require_action_batch_id(state),
         workflow_id=state.workflow_id,
         analysis_run_id=state.analysis_run_id,
         nodes=nodes,

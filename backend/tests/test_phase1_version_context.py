@@ -83,7 +83,6 @@ def test_save_new_version_is_idempotent_by_action_batch(tmp_path) -> None:
 
     first = service.save_new_version(
         base_version_id=base_id,
-        review_batch_id="review-2",
         action_batch_id="batch-idempotent",
         workflow_id="wf-2",
         analysis_run_id="run-2",
@@ -91,7 +90,6 @@ def test_save_new_version_is_idempotent_by_action_batch(tmp_path) -> None:
     )
     second = service.save_new_version(
         base_version_id=base_id,
-        review_batch_id="review-2",
         action_batch_id="batch-idempotent",
         workflow_id="wf-2",
         analysis_run_id="run-2",
@@ -123,7 +121,6 @@ def test_action_batch_race_does_not_reinsert_existing_snapshot(
     ]
     first = service.save_new_version(
         base_version_id=base_id,
-        review_batch_id="review-race",
         action_batch_id="batch-race",
         nodes=nodes,
     )
@@ -135,7 +132,6 @@ def test_action_batch_race_does_not_reinsert_existing_snapshot(
 
     raced = service.save_new_version(
         base_version_id=base_id,
-        review_batch_id="review-race",
         action_batch_id="batch-race",
         nodes=[nodes[0].model_copy(update={"category_name": "竞争写入"})],
     )

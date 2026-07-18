@@ -27,17 +27,6 @@ class StartWorkflowRequest(BaseModel):
         return self
 
 
-class HumanReviewResume(BaseModel):
-    interrupt_type: Literal["human_review"]
-    interrupt_id: str
-    decision: Literal["approve", "reject", "edit"]
-    approved_suggestion_ids: list[int] = Field(default_factory=list)
-    rejected_suggestion_ids: list[int] = Field(default_factory=list)
-    edits: list[dict[str, Any]] = Field(default_factory=list)
-    operator: str = "local_user"
-    reject_reason: str | None = None
-
-
 class ContinueResume(BaseModel):
     interrupt_type: Literal["continue_optimization"]
     interrupt_id: str
@@ -45,12 +34,9 @@ class ContinueResume(BaseModel):
     operator: str = "local_user"
 
 
-ResumeWorkflowRequest = Annotated[
-    HumanReviewResume | ContinueResume,
-    Field(discriminator="interrupt_type"),
-]
+ResumeWorkflowRequest = Annotated[ContinueResume, Field(discriminator="interrupt_type")]
 _RESUME_ADAPTER = TypeAdapter(ResumeWorkflowRequest)
 
 
-def parse_resume_request(payload: dict[str, Any]) -> HumanReviewResume | ContinueResume:
+def parse_resume_request(payload: dict[str, Any]) -> ContinueResume:
     return _RESUME_ADAPTER.validate_python(payload)

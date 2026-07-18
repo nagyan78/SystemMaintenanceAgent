@@ -19,7 +19,6 @@ def _state(**updates) -> TaxonomyGraphState:
         "analysis_run_id": "run-1",
         "round": 1,
         "max_rounds": 2,
-        "review_batch_id": "review",
         "action_batch_id": "action",
         "diagnosis_plan": {"sample_strategy": "focused"},
         "executed_nodes": [{"category_id": 1}],
@@ -59,7 +58,6 @@ def test_continue_promotes_result_and_clears_round_scoped_state() -> None:
     assert update["result_version_id"] is None
     assert update["round"] == 2
     assert update["analysis_run_id"] is None
-    assert update["review_batch_id"] is None
     assert update["action_batch_id"] is None
     assert update["diagnosis_plan"] is None
     assert update["executed_nodes"] == []
@@ -79,23 +77,23 @@ def test_continue_is_rejected_at_round_limit() -> None:
 def test_continue_interrupt_has_distinct_sse_contract() -> None:
     event = interrupt_event(
         '{"interrupt_type":"continue_optimization","interrupt_id":"int-1",'
-        '"required_actions":["continue","finish"]}'
+        '"round":1}'
     )
 
     assert event["event"] == "workflow_waiting_continue"
     assert event["data"]["interrupt_id"] == "int-1"
-    assert event["data"]["required_actions"] == ["continue", "finish"]
+    assert event["data"]["round"] == 1
 
 
 def test_graph_continue_returns_through_new_analysis_run() -> None:
     edges = {
         (edge.source, edge.target)
-        for edge in build_taxonomy_graph(enable_suggestion_review=True).get_graph().edges
+        for edge in build_taxonomy_graph().get_graph().edges
     }
 
     assert ("verification_node", "wait_continue_node") in edges
     assert ("wait_continue_node", "create_analysis_run_node") in edges
     assert ("wait_continue_node", "generate_report_node") in edges
-    assert route_after_continue(_state(review_payload={"decision": "finish"})) == (
+    assert route_after_continue(_state(continuation_payload={"decision": "finish"})) == (
         "generate_report_node"
     )

@@ -159,6 +159,37 @@ class DiagnosisRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_issues(
+        self,
+        version_id: int,
+        *,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        clauses = ["version_id = ?"]
+        params: list[object] = [version_id]
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        params.append(limit)
+        with connect(self.settings) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT id, version_id, workflow_id, analysis_run_id, detector_version,
+                       issue_type, node_id, node_name, description, reason,
+                       risk_level, confidence, status
+                FROM diagnosis_issue
+                WHERE {' AND '.join(clauses)}
+                ORDER BY
+                    CASE risk_level WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+                    confidence DESC,
+                    id ASC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def list_examples(self, version_id: int, limit: int = 5) -> list[dict]:
         with connect(self.settings) as connection:
             rows = connection.execute(

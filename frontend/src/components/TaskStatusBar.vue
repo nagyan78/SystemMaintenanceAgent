@@ -53,7 +53,6 @@ const stepLabels: Record<string, string> = {
   diagnosis_planning: '诊断规划 Agent',
   content_diagnosis: '内容诊断 Agent',
   generate_suggestion: '建议生成 Agent',
-  human_review: '人工审核',
   validate_action: '动作校验',
   execute_action: '执行动作',
   save_new_version: '保存新版本',

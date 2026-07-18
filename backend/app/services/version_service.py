@@ -58,10 +58,9 @@ class VersionService:
     def save_new_version(
         self,
         base_version_id: int,
-        review_batch_id: str,
+        action_batch_id: str,
         nodes: list[TaxonomyNodeRecord] | None = None,
         *,
-        action_batch_id: str | None = None,
         workflow_id: str | None = None,
         analysis_run_id: str | None = None,
     ) -> SaveVersionResult:
@@ -70,8 +69,7 @@ class VersionService:
         base_version = version_repo.get_version(base_version_id)
         if base_version is None:
             raise ValueError(f"Taxonomy version {base_version_id} was not found.")
-        resolved_action_batch_id = action_batch_id or review_batch_id
-        existing = version_repo.get_by_action_batch(resolved_action_batch_id)
+        existing = version_repo.get_by_action_batch(action_batch_id)
         if existing is not None:
             return SaveVersionResult(
                 source_version_id=base_version_id,
@@ -89,11 +87,11 @@ class VersionService:
         quality_score = None
         new_version_id, new_version_no, created = version_repo.create_next_version(
             file_id=int(base_version["file_id"]),
-            description=f"基于 {base_version['version_no']} 执行审核批次 {review_batch_id}",
+            description=f"基于 {base_version['version_no']} 自动执行维护动作",
             parent_version_id=base_version_id,
             source_workflow_id=workflow_id,
             analysis_run_id=analysis_run_id,
-            action_batch_id=resolved_action_batch_id,
+            action_batch_id=action_batch_id,
             quality_score=quality_score,
         )
         if not created:
@@ -106,8 +104,10 @@ class VersionService:
                 quality_score=existing.get("quality_score") if existing else None,
             )
         taxonomy_repo.bulk_insert_nodes(version_id=new_version_id, nodes=recalculated)
-        suggestions = SuggestionRepository(self.settings).list_suggestions(
-            review_batch_id=review_batch_id
+        suggestions = (
+            SuggestionRepository(self.settings).list_for_run(analysis_run_id)
+            if analysis_run_id
+            else []
         )
         executed_count = sum(1 for item in suggestions if item.status == "executed")
         failed_count = sum(1 for item in suggestions if item.status == "failed")
@@ -115,12 +115,11 @@ class VersionService:
             version_id=new_version_id,
             workflow_id=workflow_id,
             analysis_run_id=analysis_run_id,
-            operator="local_user",
+            operator="agent",
             operation_type="save_new_version",
             operation_detail={
                 "base_version_id": base_version_id,
-                "review_batch_id": review_batch_id,
-                "action_batch_id": resolved_action_batch_id,
+                "action_batch_id": action_batch_id,
                 "node_count": len(recalculated),
             },
         )

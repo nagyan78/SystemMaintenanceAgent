@@ -80,7 +80,6 @@ def test_suggestions_and_operations_are_queryable_by_analysis_run(tmp_path) -> N
         issue=_issue("scoped issue"),
     )
     suggestion_id = SuggestionRepository(settings).create_suggestion(
-        review_batch_id="review-1",
         workflow_id="wf",
         analysis_run_id=run_id,
         suggestion=AdjustmentSuggestion(

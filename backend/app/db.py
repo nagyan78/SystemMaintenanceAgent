@@ -95,7 +95,6 @@ def init_db(settings: Settings) -> None:
             CREATE TABLE IF NOT EXISTS adjustment_suggestion (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 issue_id INTEGER NOT NULL,
-                review_batch_id TEXT,
                 version_id INTEGER NOT NULL,
                 action_type TEXT NOT NULL,
                 target_node_id INTEGER,
@@ -109,7 +108,6 @@ def init_db(settings: Settings) -> None:
                 suggestion TEXT,
                 risk_level TEXT,
                 confidence REAL,
-                need_confirm INTEGER DEFAULT 1,
                 status TEXT DEFAULT 'pending',
                 created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (issue_id) REFERENCES diagnosis_issue(id),
@@ -205,7 +203,6 @@ def init_db(settings: Settings) -> None:
             connection,
             "adjustment_suggestion",
             {
-                "review_batch_id": "TEXT",
                 "workflow_id": "TEXT",
                 "analysis_run_id": "TEXT",
             },

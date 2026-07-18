@@ -32,7 +32,6 @@ class VersionRecord(BaseModel):
 
 class ExecuteActionsResult(BaseModel):
     source_version_id: int
-    review_batch_id: str
     action_batch_id: str
     executed_count: int
     failed_count: int

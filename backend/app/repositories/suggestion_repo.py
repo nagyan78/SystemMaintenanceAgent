@@ -13,7 +13,6 @@ class SuggestionRepository:
     def create_suggestion(
         self,
         *,
-        review_batch_id: str,
         workflow_id: str | None = None,
         analysis_run_id: str | None = None,
         suggestion: AdjustmentSuggestion,
@@ -22,17 +21,16 @@ class SuggestionRepository:
             cursor = connection.execute(
                 """
                 INSERT INTO adjustment_suggestion (
-                    issue_id, review_batch_id, workflow_id, analysis_run_id,
+                    issue_id, workflow_id, analysis_run_id,
                     version_id, action_type, target_node_id,
                     target_node_name, old_parent_id, new_parent_id, old_name, new_name,
                     action_payload, reason, suggestion, risk_level, confidence,
-                    need_confirm, status
+                    status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     suggestion.issue_id,
-                    review_batch_id,
                     workflow_id,
                     analysis_run_id,
                     suggestion.version_id,
@@ -48,7 +46,6 @@ class SuggestionRepository:
                     suggestion.suggestion,
                     suggestion.risk_level,
                     suggestion.confidence,
-                    int(suggestion.need_confirm),
                     suggestion.status,
                 ),
             )
@@ -59,7 +56,6 @@ class SuggestionRepository:
         *,
         version_id: int | None = None,
         status: str | None = None,
-        review_batch_id: str | None = None,
     ) -> list[SuggestionRecord]:
         clauses: list[str] = []
         params: list[object] = []
@@ -69,17 +65,14 @@ class SuggestionRepository:
         if status is not None:
             clauses.append("status = ?")
             params.append(status)
-        if review_batch_id is not None:
-            clauses.append("review_batch_id = ?")
-            params.append(review_batch_id)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with connect(self.settings) as connection:
             rows = connection.execute(
                 f"""
-                SELECT id, issue_id, review_batch_id, version_id, action_type,
+                SELECT id, issue_id, version_id, action_type,
                        target_node_id, target_node_name, old_parent_id, new_parent_id,
                        old_name, new_name, action_payload, reason, suggestion,
-                       risk_level, confidence, need_confirm, status
+                       risk_level, confidence, status
                 FROM adjustment_suggestion
                 {where}
                 ORDER BY id
@@ -92,10 +85,10 @@ class SuggestionRepository:
         with connect(self.settings) as connection:
             rows = connection.execute(
                 """
-                SELECT id, issue_id, review_batch_id, version_id, action_type,
+                SELECT id, issue_id, version_id, action_type,
                        target_node_id, target_node_name, old_parent_id, new_parent_id,
                        old_name, new_name, action_payload, reason, suggestion,
-                       risk_level, confidence, need_confirm, status
+                       risk_level, confidence, status
                 FROM adjustment_suggestion
                 WHERE analysis_run_id = ?
                 ORDER BY id
@@ -120,6 +113,20 @@ class SuggestionRepository:
                 (status, suggestion_id),
             )
 
+    def record_decision_reason(self, suggestion_id: int, reason: str) -> None:
+        suggestion = self.get_suggestion(suggestion_id)
+        if suggestion is None:
+            return
+        payload = {
+            **suggestion.action_payload,
+            "automatic_decision_reason": reason,
+        }
+        with connect(self.settings) as connection:
+            connection.execute(
+                "UPDATE adjustment_suggestion SET action_payload = ? WHERE id = ?",
+                (json.dumps(payload, ensure_ascii=False), suggestion_id),
+            )
+
     def update_suggestion(self, suggestion_id: int, suggestion: AdjustmentSuggestion) -> None:
         with connect(self.settings) as connection:
             connection.execute(
@@ -128,7 +135,7 @@ class SuggestionRepository:
                 SET action_type = ?, target_node_id = ?, target_node_name = ?,
                     old_parent_id = ?, new_parent_id = ?, old_name = ?, new_name = ?,
                     action_payload = ?, reason = ?, suggestion = ?, risk_level = ?,
-                    confidence = ?, need_confirm = ?, status = 'edited'
+                    confidence = ?, status = 'pending'
                 WHERE id = ?
                 """,
                 (
@@ -144,7 +151,6 @@ class SuggestionRepository:
                     suggestion.suggestion,
                     suggestion.risk_level,
                     suggestion.confidence,
-                    int(suggestion.need_confirm),
                     suggestion_id,
                 ),
             )
@@ -154,10 +160,10 @@ class SuggestionRepository:
         with connect(self.settings) as connection:
             rows = connection.execute(
                 f"""
-                SELECT id, issue_id, review_batch_id, version_id, action_type,
+                SELECT id, issue_id, version_id, action_type,
                        target_node_id, target_node_name, old_parent_id, new_parent_id,
                        old_name, new_name, action_payload, reason, suggestion,
-                       risk_level, confidence, need_confirm, status
+                       risk_level, confidence, status
                 FROM adjustment_suggestion
                 WHERE id IN ({placeholders})
                 ORDER BY id
@@ -170,5 +176,4 @@ class SuggestionRepository:
 def _record_from_row(row: dict[str, Any]) -> SuggestionRecord:
     payload = row.get("action_payload")
     row["action_payload"] = json.loads(payload) if payload else {}
-    row["need_confirm"] = bool(row.get("need_confirm"))
     return SuggestionRecord.model_validate(row)

@@ -6,7 +6,6 @@ from pydantic import BaseModel, Field, model_validator
 WorkflowStatus = Literal[
     "pending",
     "running",
-    "waiting_review",
     "waiting_continue",
     "waiting_manual_intervention",
     "completed",
@@ -14,9 +13,6 @@ WorkflowStatus = Literal[
     "failed",
     "cancelled",
 ]
-
-ReviewDecision = Literal["approve", "reject", "edit"]
-
 
 class TaxonomyGraphState(BaseModel):
     workflow_id: str
@@ -59,17 +55,15 @@ class TaxonomyGraphState(BaseModel):
     content_issue_count: int = 0
     diagnosis_plan: dict[str, Any] | None = None
     suggestion_count: int = 0
-    approved_action_count: int = 0
+    validated_action_count: int = 0
     executed_action_count: int = 0
     failed_action_count: int = 0
     action_batch_id: str | None = None
     executed_nodes: list[dict[str, Any]] = Field(default_factory=list)
 
-    review_batch_id: str | None = None
-    review_decision: ReviewDecision | None = None
-    review_payload: dict[str, Any] | None = None
-    interrupt_type: Literal["human_review", "continue_optimization"] | None = None
+    interrupt_type: Literal["continue_optimization"] | None = None
     interrupt_id: str | None = None
+    continuation_payload: dict[str, Any] | None = None
 
     report_id: int | None = None
     report_path: str | None = None
@@ -79,9 +73,7 @@ class TaxonomyGraphState(BaseModel):
     error_message: str | None = None
 
     @model_validator(mode="after")
-    def validate_waiting_review_state(self) -> "TaxonomyGraphState":
-        if self.status == "waiting_review" and not self.review_batch_id:
-            raise ValueError("waiting_review state requires review_batch_id.")
+    def validate_waiting_state(self) -> "TaxonomyGraphState":
         if self.status == "waiting_continue" and (
             self.interrupt_type != "continue_optimization" or not self.interrupt_id
         ):

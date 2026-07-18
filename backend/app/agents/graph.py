@@ -32,7 +32,6 @@ from backend.app.agents.nodes import (
     verification_node,
     wait_continue_node,
     wait_manual_intervention_node,
-    wait_human_review_node,
 )
 from backend.app.agents.states import TaxonomyGraphState
 from backend.app.config import Settings
@@ -75,22 +74,10 @@ def create_memory_checkpointer() -> InMemorySaver:
     return InMemorySaver()
 
 
-def route_after_suggestion(state: TaxonomyGraphState, *, enable_suggestion_review: bool = True) -> str:
+def route_after_suggestion(state: TaxonomyGraphState) -> str:
     if state.status == "failed":
         return "generate_failed_report_node"
-    if not enable_suggestion_review:
-        return "generate_report_node"
-    if state.suggestion_count == 0 or state.review_batch_id is None:
-        return "generate_report_node"
-    return "wait_human_review_node"
-
-
-def route_after_review(state: TaxonomyGraphState) -> str:
-    if state.status == "failed":
-        return "generate_failed_report_node"
-    if state.review_decision == "reject":
-        return "generate_report_node"
-    if state.approved_action_count == 0:
+    if state.suggestion_count == 0:
         return "generate_report_node"
     return "validate_action_node"
 
@@ -98,6 +85,8 @@ def route_after_review(state: TaxonomyGraphState) -> str:
 def route_after_validate(state: TaxonomyGraphState) -> str:
     if state.status == "failed" and state.current_step == "validate_action_node":
         return "generate_failed_report_node"
+    if state.validated_action_count == 0:
+        return "generate_report_node"
     return "execute_action_node"
 
 
@@ -152,7 +141,7 @@ def route_after_verification(state: TaxonomyGraphState) -> str:
 def route_after_continue(state: TaxonomyGraphState) -> str:
     if state.status == "failed":
         return "generate_failed_report_node"
-    if (state.review_payload or {}).get("decision") == "continue":
+    if (state.continuation_payload or {}).get("decision") == "continue":
         return "create_analysis_run_node"
     return "generate_report_node"
 
@@ -160,8 +149,6 @@ def route_after_continue(state: TaxonomyGraphState) -> str:
 def build_taxonomy_graph(
     checkpointer=None,
     settings: Settings | None = None,
-    *,
-    enable_suggestion_review: bool = True,
 ):
     if settings is not None:
         configure_workflow_runtime(settings)
@@ -198,7 +185,6 @@ def build_taxonomy_graph(
     builder.add_node("diagnosis_planning_node", diagnosis_planning_node)
     builder.add_node("content_diagnosis_node", content_diagnosis_node)
     builder.add_node("generate_suggestion_node", generate_suggestion_node)
-    builder.add_node("wait_human_review_node", wait_human_review_node)
     builder.add_node("validate_action_node", validate_action_node)
     builder.add_node("execute_action_node", execute_action_node)
     builder.add_node("save_new_version_node", save_new_version_node)
@@ -339,19 +325,7 @@ def build_taxonomy_graph(
     )
     builder.add_conditional_edges(
         "generate_suggestion_node",
-        lambda state: route_after_suggestion(
-            state,
-            enable_suggestion_review=enable_suggestion_review,
-        ),
-        {
-            "wait_human_review_node": "wait_human_review_node",
-            "generate_report_node": "generate_report_node",
-            "generate_failed_report_node": "generate_failed_report_node",
-        },
-    )
-    builder.add_conditional_edges(
-        "wait_human_review_node",
-        route_after_review,
+        route_after_suggestion,
         {
             "validate_action_node": "validate_action_node",
             "generate_report_node": "generate_report_node",
@@ -363,6 +337,7 @@ def build_taxonomy_graph(
         route_after_validate,
         {
             "execute_action_node": "execute_action_node",
+            "generate_report_node": "generate_report_node",
             "generate_failed_report_node": "generate_failed_report_node",
         },
     )

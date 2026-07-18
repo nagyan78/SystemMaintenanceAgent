@@ -9,7 +9,6 @@ from backend.app.db import init_db
 from backend.app.repositories.task_repo import TaskRepository
 from backend.app.schemas.workflow import (
     ContinueResume,
-    HumanReviewResume,
     StartWorkflowRequest,
     parse_resume_request,
 )
@@ -34,14 +33,7 @@ def test_start_request_validates_each_workflow_mode() -> None:
         StartWorkflowRequest(mode="verify", base_version_id=2)
 
 
-def test_resume_request_is_discriminated_by_interrupt_type() -> None:
-    review = parse_resume_request(
-        {
-            "interrupt_type": "human_review",
-            "interrupt_id": "int-1",
-            "decision": "approve",
-        }
-    )
+def test_resume_request_only_accepts_continue_optimization() -> None:
     continuation = parse_resume_request(
         {
             "interrupt_type": "continue_optimization",
@@ -50,12 +42,11 @@ def test_resume_request_is_discriminated_by_interrupt_type() -> None:
         }
     )
 
-    assert isinstance(review, HumanReviewResume)
     assert isinstance(continuation, ContinueResume)
     with pytest.raises(ValidationError):
         parse_resume_request(
             {
-                "interrupt_type": "continue_optimization",
+                "interrupt_type": "human_review",
                 "interrupt_id": "int-3",
                 "decision": "approve",
             }

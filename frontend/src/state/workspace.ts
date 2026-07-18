@@ -16,7 +16,6 @@ export type WorkspaceState = {
   currentVersionId: number | null
   newVersionId: number | null
   versionNo: string | null
-  reviewBatchId: string | null
   evaluationBeforeId: number | null
   evaluationAfterId: number | null
   evaluationBefore: Record<string, unknown> | null
@@ -45,7 +44,6 @@ const defaultState = (): WorkspaceState => ({
   currentVersionId: null,
   newVersionId: null,
   versionNo: null,
-  reviewBatchId: null,
   evaluationBeforeId: null,
   evaluationAfterId: null,
   evaluationBefore: null,

@@ -108,7 +108,7 @@ def test_qdrant_failure_is_persisted_without_deleting_version(tmp_path) -> None:
 def test_saved_version_uses_post_change_index_path() -> None:
     edges = {
         (edge.source, edge.target)
-        for edge in build_taxonomy_graph(enable_suggestion_review=True).get_graph().edges
+        for edge in build_taxonomy_graph().get_graph().edges
     }
 
     assert ("save_new_version_node", "index_result_version_node") in edges

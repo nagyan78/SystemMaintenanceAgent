@@ -30,7 +30,6 @@ def test_v11_can_be_maintained_into_v12_without_mutating_history(tmp_path) -> No
     service = VersionService(settings)
     v11_result = service.save_new_version(
         base_version_id=v10,
-        review_batch_id="review-1",
         action_batch_id="action-1",
         workflow_id="wf-1",
         analysis_run_id="run-1",
@@ -44,7 +43,6 @@ def test_v11_can_be_maintained_into_v12_without_mutating_history(tmp_path) -> No
 
     v12_result = service.save_new_version(
         base_version_id=context.base_version_id,
-        review_batch_id="review-2",
         action_batch_id="action-2",
         workflow_id="wf-2",
         analysis_run_id="run-2",

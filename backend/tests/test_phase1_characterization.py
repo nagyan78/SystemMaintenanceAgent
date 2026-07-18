@@ -16,7 +16,7 @@ def test_legacy_initial_state_is_import_file_driven() -> None:
 
 
 def test_graph_resolves_mode_before_import_and_saves_new_version_before_report() -> None:
-    graph = build_taxonomy_graph(enable_suggestion_review=True).get_graph()
+    graph = build_taxonomy_graph().get_graph()
     edges = {(edge.source, edge.target) for edge in graph.edges}
 
     assert ("__start__", "resolve_input_node") in edges
@@ -38,12 +38,7 @@ def test_validation_failure_routes_to_failed_report() -> None:
     assert route_after_validate(state) == "generate_failed_report_node"
 
 
-def test_legacy_review_state_requires_review_batch() -> None:
-    state = TaxonomyGraphState(
-        workflow_id="wf",
-        thread_id="thread",
-        status="waiting_review",
-        review_batch_id="review-1",
-    )
+def test_no_validated_suggestions_route_directly_to_report() -> None:
+    state = TaxonomyGraphState(workflow_id="wf", thread_id="thread")
 
-    assert state.review_batch_id == "review-1"
+    assert route_after_validate(state) == "generate_report_node"

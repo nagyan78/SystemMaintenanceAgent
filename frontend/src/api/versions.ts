@@ -29,6 +29,13 @@ export type ExportResult = {
   download_url: string
 }
 
+export type ReportPreview = {
+  version_id: number
+  report_name: string
+  markdown: string
+  download_url: string
+}
+
 export function listVersions(fileId?: number) {
   const query = fileId ? `?file_id=${fileId}` : ''
   return apiGet<VersionRecord[]>(`/versions${query}`)
@@ -48,4 +55,8 @@ export function rollbackVersion(versionId: number) {
 
 export function exportVersion(versionId: number) {
   return apiGet<ExportResult>(`/versions/${versionId}/export`)
+}
+
+export function getReport(versionId: number) {
+  return apiGet<ReportPreview>(`/versions/${versionId}/report`)
 }

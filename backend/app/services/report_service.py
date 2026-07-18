@@ -184,7 +184,7 @@ class ReportService:
 
 {example_lines}
 
-## 6. 智能维护建议
+## 6. 自动决策摘要
 
 {suggestion_lines}
 
@@ -211,16 +211,22 @@ class ReportService:
 
 def _render_suggestions(suggestions: list) -> str:
     if not suggestions:
-        return "- 暂无智能维护建议。"
+        return "- 暂无智能维护建议，本轮无需自动变更。"
     lines = []
     status_counts: dict[str, int] = {}
     for suggestion in suggestions:
         status_counts[suggestion.status] = status_counts.get(suggestion.status, 0) + 1
     counts = "，".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
-    lines.append(f"- 建议总数：{len(suggestions)}（{counts}）")
-    for suggestion in suggestions[:5]:
+    lines.append(f"- 自动决策建议总数：{len(suggestions)}（{counts}）")
+    for suggestion in suggestions:
+        decision_reason = suggestion.action_payload.get(
+            "automatic_decision_reason", suggestion.reason
+        )
         lines.append(
-            f"- [{suggestion.status}] {suggestion.action_type}：{suggestion.suggestion}"
+            "- "
+            f"[{suggestion.status}] {suggestion.action_type}：{suggestion.suggestion}；"
+            f"风险={suggestion.risk_level}，置信度={suggestion.confidence:.2f}；"
+            f"依据={decision_reason}"
         )
     return "\n".join(lines)
 

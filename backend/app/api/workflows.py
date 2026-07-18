@@ -123,7 +123,6 @@ def get_workflow_status(task_id: str, request: Request) -> dict[str, Any]:
         "node_count": payload.get("node_count", 0),
         "structure_issue_count": payload.get("structure_issue_count", 0),
         "suggestion_count": payload.get("suggestion_count", 0),
-        "review_batch_id": payload.get("review_batch_id"),
         "report_path": payload.get("report_path"),
         "error_message": task.get("error_message"),
         "workflow_mode": task.get("workflow_mode") or "import",
@@ -180,7 +179,7 @@ def workflow_events(task_id: str, request: Request) -> StreamingResponse:
             if current is None:
                 return
             task_status = current["status"]
-            if task_status in {"waiting_review", "waiting_continue"}:
+            if task_status == "waiting_continue":
                 yield format_sse(interrupt_event(current.get("interrupt_payload")))
                 seen_terminal = True
             elif task_status == "waiting_manual_intervention":
@@ -229,7 +228,7 @@ def resume_workflow(
     normalized = dict(payload)
     normalized.setdefault(
         "interrupt_type",
-        stored_interrupt.get("interrupt_type") or "human_review",
+        stored_interrupt.get("interrupt_type") or "continue_optimization",
     )
     normalized.setdefault(
         "interrupt_id",
@@ -244,13 +243,8 @@ def resume_workflow(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=exc.errors(),
         ) from exc
-    expected_status = {
-        "human_review": "waiting_review",
-        "continue_optimization": "waiting_continue",
-    }[resume_request.interrupt_type]
-    stored_type = stored_interrupt.get("interrupt_type") or (
-        "human_review" if task["status"] == "waiting_review" else None
-    )
+    expected_status = "waiting_continue"
+    stored_type = stored_interrupt.get("interrupt_type")
     if task.get("consumed_interrupt_id") == resume_request.interrupt_id and task.get(
         "resume_result_payload"
     ):
@@ -281,7 +275,6 @@ def resume_workflow(
         graph = build_taxonomy_graph(
             _get_workflow_checkpointer(),
             settings=settings,
-            enable_suggestion_review=True,
         )
         result = graph.invoke(
             Command(resume=resume_request.model_dump()),
@@ -320,7 +313,6 @@ def _run_workflow(settings, context, task_id: str, workflow_id: str) -> None:
         graph = build_taxonomy_graph(
             _get_workflow_checkpointer(),
             settings=settings,
-            enable_suggestion_review=True,
         )
         result = graph.invoke(state, config={"configurable": {"thread_id": state.thread_id}})
         if result.get("status") == "failed":

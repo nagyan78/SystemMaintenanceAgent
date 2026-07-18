@@ -128,7 +128,7 @@ def test_comparator_uses_fingerprint_not_ephemeral_row_identity(tmp_path) -> Non
 def test_graph_runs_verification_after_result_evaluation() -> None:
     edges = {
         (edge.source, edge.target)
-        for edge in build_taxonomy_graph(enable_suggestion_review=True).get_graph().edges
+        for edge in build_taxonomy_graph().get_graph().edges
     }
 
     assert ("result_quality_evaluation_node", "verification_node") in edges
