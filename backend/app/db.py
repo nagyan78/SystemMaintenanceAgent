@@ -16,6 +16,9 @@ def connect(settings: Settings) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(db_path)
     connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA journal_mode = WAL")
+    connection.execute("PRAGMA busy_timeout = 5000")
     return connection
 
 
@@ -55,6 +58,7 @@ def init_db(settings: Settings) -> None:
                 description TEXT,
                 quality_score REAL,
                 snapshot_path TEXT,
+                vector_index_generation INTEGER NOT NULL DEFAULT 0,
                 created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (file_id) REFERENCES uploaded_file(id)
             );
@@ -73,6 +77,7 @@ def init_db(settings: Settings) -> None:
                 category_group_name TEXT,
                 syn_list TEXT,
                 is_leaf INTEGER DEFAULT 0,
+                node_status TEXT NOT NULL DEFAULT 'active',
                 created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (version_id) REFERENCES taxonomy_version(id)
             );
@@ -95,6 +100,7 @@ def init_db(settings: Settings) -> None:
             CREATE TABLE IF NOT EXISTS adjustment_suggestion (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 issue_id INTEGER NOT NULL,
+                review_batch_id TEXT,
                 version_id INTEGER NOT NULL,
                 action_type TEXT NOT NULL,
                 target_node_id INTEGER,
@@ -108,6 +114,7 @@ def init_db(settings: Settings) -> None:
                 suggestion TEXT,
                 risk_level TEXT,
                 confidence REAL,
+                need_confirm INTEGER DEFAULT 1,
                 status TEXT DEFAULT 'pending',
                 created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (issue_id) REFERENCES diagnosis_issue(id),
@@ -138,44 +145,156 @@ def init_db(settings: Settings) -> None:
                 created_time DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
-            CREATE TABLE IF NOT EXISTS analysis_run (
+            CREATE TABLE IF NOT EXISTS review_batch (
                 id TEXT PRIMARY KEY,
-                workflow_id TEXT NOT NULL,
-                round INTEGER NOT NULL,
-                analyzed_version_id INTEGER NOT NULL,
-                status TEXT NOT NULL DEFAULT 'running',
-                created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-                completed_time DATETIME,
-                UNIQUE(workflow_id, round)
-            );
-
-            CREATE TABLE IF NOT EXISTS quality_evaluation (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id INTEGER NOT NULL,
                 version_id INTEGER NOT NULL,
-                workflow_id TEXT NOT NULL,
-                analysis_run_id TEXT NOT NULL,
-                evaluation_role TEXT NOT NULL,
-                score_version TEXT NOT NULL,
-                total_score REAL NOT NULL,
-                available_points REAL NOT NULL,
-                coverage_ratio REAL NOT NULL,
-                dimensions TEXT NOT NULL,
-                available_dimensions TEXT NOT NULL,
-                metrics TEXT NOT NULL,
-                detector_versions TEXT NOT NULL,
-                risks TEXT NOT NULL,
-                narrative TEXT NOT NULL DEFAULT '',
+                task_id TEXT,
+                workflow_id TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                execution_status TEXT NOT NULL DEFAULT 'not_ready',
+                new_version_id INTEGER,
                 created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(
-                    workflow_id, analysis_run_id, version_id,
-                    score_version, evaluation_role
-                )
+                completed_time DATETIME,
+                FOREIGN KEY (file_id) REFERENCES uploaded_file(id),
+                FOREIGN KEY (version_id) REFERENCES taxonomy_version(id),
+                FOREIGN KEY (new_version_id) REFERENCES taxonomy_version(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS report_artifact (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                version_id INTEGER NOT NULL,
+                review_batch_id TEXT,
+                report_type TEXT NOT NULL,
+                report_path TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'generated',
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(version_id, report_type),
+                FOREIGN KEY (version_id) REFERENCES taxonomy_version(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_run (
+                id TEXT PRIMARY KEY,
+                workflow_id TEXT NOT NULL,
+                agent_type TEXT NOT NULL,
+                version_id INTEGER NOT NULL,
+                plan_revision INTEGER DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'pending',
+                model_profile TEXT DEFAULT 'default',
+                budget TEXT DEFAULT '{}',
+                coverage TEXT DEFAULT '{}',
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_time DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_work_item (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                subject_type TEXT NOT NULL,
+                subject_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempt INTEGER DEFAULT 0,
+                max_attempts INTEGER DEFAULT 3,
+                worker_id TEXT,
+                lease_expires_at DATETIME,
+                input_payload TEXT DEFAULT '{}',
+                result_payload TEXT DEFAULT '{}',
+                error_code TEXT,
+                error_message TEXT,
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (run_id) REFERENCES agent_run(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS run_issue (
+                run_id TEXT NOT NULL,
+                issue_id INTEGER NOT NULL,
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (run_id, issue_id),
+                FOREIGN KEY (run_id) REFERENCES agent_run(id),
+                FOREIGN KEY (issue_id) REFERENCES diagnosis_issue(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_event (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workflow_id TEXT NOT NULL,
+                run_id TEXT,
+                work_item_id TEXT,
+                agent_name TEXT,
+                event_type TEXT NOT NULL,
+                phase TEXT,
+                tool_name TEXT,
+                status TEXT,
+                attempt INTEGER,
+                latency_ms INTEGER,
+                model TEXT,
+                token_usage TEXT DEFAULT '{}',
+                summary TEXT DEFAULT '{}',
+                evidence_refs TEXT DEFAULT '[]',
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS tool_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workflow_id TEXT NOT NULL, version_id INTEGER, tool_name TEXT NOT NULL,
+                args_hash TEXT NOT NULL, data_revision TEXT NOT NULL, result_json TEXT NOT NULL,
+                expires_time DATETIME NOT NULL, hit_count INTEGER NOT NULL DEFAULT 0,
+                created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(workflow_id, version_id, tool_name, args_hash, data_revision)
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_memory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, memory_type TEXT NOT NULL,
+                scope_type TEXT NOT NULL, scope_key TEXT NOT NULL, content TEXT NOT NULL,
+                source_workflow_id TEXT, source_version_id INTEGER, valid_from_version_id INTEGER,
+                valid_until_version_id INTEGER, confidence REAL NOT NULL, created_time DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_evaluation (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, dataset_version TEXT NOT NULL, workflow_id TEXT NOT NULL,
+                metrics TEXT NOT NULL, agent_bundle_version TEXT, created_time DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS evaluation_baseline (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, baseline_id TEXT NOT NULL UNIQUE,
+                dataset_version TEXT NOT NULL UNIQUE, evaluation_id INTEGER NOT NULL,
+                agent_bundle_version TEXT NOT NULL, approved_by TEXT NOT NULL,
+                approved_time DATETIME DEFAULT CURRENT_TIMESTAMP, pinned INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY(evaluation_id) REFERENCES agent_evaluation(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS category_reference (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, version_id INTEGER NOT NULL,
+                category_id INTEGER NOT NULL, reference_type TEXT NOT NULL,
+                reference_key TEXT NOT NULL, created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(version_id, category_id, reference_type, reference_key)
+            );
+
+            CREATE TABLE IF NOT EXISTS diagnosis_triage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL,
+                version_id INTEGER NOT NULL, node_id INTEGER, node_name TEXT,
+                issue_type TEXT NOT NULL, reason TEXT, evidence TEXT,
+                confidence REAL NOT NULL, detector_disagreement INTEGER DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'needs_triage', decision TEXT,
+                operator TEXT, created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                decided_time DATETIME
             );
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_category_node_version_category
             ON category_node(version_id, category_id);
 
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_unique_rule
+            ON diagnosis_issue(version_id, issue_type, node_id, description);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_work_item_unique
+            ON agent_work_item(run_id, subject_type, subject_id);
+
+            CREATE INDEX IF NOT EXISTS idx_agent_work_item_status
+            ON agent_work_item(run_id, status);
+
+            CREATE INDEX IF NOT EXISTS idx_agent_event_workflow_sequence
+            ON agent_event(workflow_id, id);
             """
         )
         _ensure_columns(
@@ -187,76 +306,142 @@ def init_db(settings: Settings) -> None:
                 "version_id": "INTEGER",
                 "interrupt_payload": "TEXT",
                 "result_payload": "TEXT",
-                "workflow_mode": "TEXT DEFAULT 'import'",
-                "base_version_id": "INTEGER",
-                "result_version_id": "INTEGER",
-                "round": "INTEGER DEFAULT 1",
-                "analysis_run_id": "TEXT",
-                "interrupt_id": "TEXT",
-                "consumed_interrupt_id": "TEXT",
-                "resume_result_payload": "TEXT",
+                "enable_ai_analysis": "INTEGER DEFAULT 0",
+                "model_provider": "TEXT",
+                "model_name": "TEXT",
+                "start_time": "DATETIME",
+                "end_time": "DATETIME",
+                "primary_run_id": "TEXT",
             },
-        )
-        _ensure_columns(
-            connection,
-            "adjustment_suggestion",
-            {
-                "workflow_id": "TEXT",
-                "analysis_run_id": "TEXT",
-            },
-        )
-        _ensure_columns(
-            connection,
-            "diagnosis_issue",
-            {
-                "workflow_id": "TEXT",
-                "analysis_run_id": "TEXT",
-                "detector_version": "TEXT DEFAULT 'legacy-v1'",
-            },
-        )
-        _ensure_columns(
-            connection,
-            "operation_log",
-            {"workflow_id": "TEXT", "analysis_run_id": "TEXT"},
         )
         _ensure_columns(
             connection,
             "taxonomy_version",
             {
+                "vector_index_generation": "INTEGER NOT NULL DEFAULT 0",
                 "parent_version_id": "INTEGER",
                 "source_workflow_id": "TEXT",
-                "analysis_run_id": "TEXT",
                 "action_batch_id": "TEXT",
-                "vector_index_status": "TEXT DEFAULT 'unknown'",
-                "vector_index_generation": "INTEGER DEFAULT 0",
-                "verification_status": "TEXT",
+                "verification_status": "TEXT NOT NULL DEFAULT 'not_verified'",
+                "export_path": "TEXT",
+                "supersedes_version_id": "INTEGER",
+                "lifecycle_status": "TEXT NOT NULL DEFAULT 'draft'",
+                "diagnosis_mode": "TEXT",
+                "diagnosis_model": "TEXT",
+                "verification_mode": "TEXT",
+                "verification_model": "TEXT",
             },
         )
-        # The first M1 schema used this version-scoped index.  Some existing
-        # local databases contain duplicate legacy issues, so creating it
-        # during bootstrap prevents the migration below from ever running.
-        connection.execute("DROP INDEX IF EXISTS idx_issue_unique_rule")
-        _deduplicate_issues_for_run_index(connection)
+        _ensure_columns(
+            connection,
+            "category_node",
+            {"node_status": "TEXT NOT NULL DEFAULT 'active'"},
+        )
+        _ensure_columns(
+            connection,
+            "adjustment_suggestion",
+            {"review_batch_id": "TEXT", "old_value": "TEXT", "new_value": "TEXT",
+             "work_item_id": "TEXT", "analysis_run_id": "TEXT", "workflow_id": "TEXT",
+             "change_preview": "TEXT DEFAULT '{}'", "consistency_status": "TEXT DEFAULT 'unchecked'",
+             "consistency_reason": "TEXT", "is_manual": "INTEGER DEFAULT 0",
+             "regenerated_at": "DATETIME", "generator_version": "TEXT"},
+        )
+        _ensure_columns(
+            connection,
+            "review_batch",
+            {"workflow_state": "TEXT NOT NULL DEFAULT 'reviewing'", "preview_hash": "TEXT",
+             "preview_payload": "TEXT", "preview_base_version_id": "INTEGER",
+             "preview_base_generation": "INTEGER", "preview_created_time": "DATETIME"},
+        )
+        _ensure_columns(
+            connection,
+            "diagnosis_issue",
+            {"path": "TEXT", "evidence": "TEXT", "source": "TEXT",
+             "subject_node_id": "INTEGER", "subject_node_name": "TEXT", "subject_path": "TEXT",
+             "detector_version": "TEXT NOT NULL DEFAULT 'rules-v1'"},
+        )
+        _ensure_columns(
+            connection,
+            "report_artifact",
+            {"workflow_id": "TEXT", "run_id": "TEXT", "fact_payload": "TEXT DEFAULT '{}'"},
+        )
+        _ensure_columns(
+            connection,
+            "review_batch",
+            {"source_review_batch_id": "TEXT", "batch_kind": "TEXT NOT NULL DEFAULT 'current'"},
+        )
+        connection.execute("""UPDATE diagnosis_issue SET subject_node_id=COALESCE(subject_node_id,node_id),
+                              subject_node_name=COALESCE(subject_node_name,node_name),
+                              subject_path=COALESCE(subject_path,path)""")
         connection.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_unique_run_rule
-            ON diagnosis_issue(
-                analysis_run_id, detector_version, issue_type, node_id, description
-            )
-            """
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_suggestion_work_item ON adjustment_suggestion(work_item_id) WHERE work_item_id IS NOT NULL"
         )
-        _create_unique_index_if_clean(
-            connection,
-            table_name="taxonomy_version",
-            index_name="idx_version_file_version_no",
-            columns=("file_id", "version_no"),
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_version_action_batch ON taxonomy_version(action_batch_id) WHERE action_batch_id IS NOT NULL"
         )
-        _create_unique_index_if_clean(
+        connection.execute("""CREATE TABLE IF NOT EXISTS version_execution_record (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, review_batch_id TEXT NOT NULL,
+            source_version_id INTEGER NOT NULL, target_version_id INTEGER,
+            review_hash TEXT, action_summary TEXT DEFAULT '{}', status TEXT NOT NULL,
+            created_time DATETIME DEFAULT CURRENT_TIMESTAMP
+        )""")
+        _ensure_columns(
             connection,
-            table_name="taxonomy_version",
-            index_name="idx_version_action_batch",
-            columns=("action_batch_id",),
-            where="action_batch_id IS NOT NULL",
+            "version_execution_record",
+            {"workflow_id": "TEXT", "run_id": "TEXT", "error_code": "TEXT", "error_message": "TEXT"},
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_run_issue_issue ON run_issue(issue_id, run_id)"
+        )
+        connection.execute("""CREATE TABLE IF NOT EXISTS maintenance_cleanup_preview (
+            id TEXT PRIMARY KEY, request_payload TEXT NOT NULL, resolved_scope TEXT NOT NULL,
+            result_payload TEXT NOT NULL, scope_hash TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+            created_time DATETIME DEFAULT CURRENT_TIMESTAMP, expires_time DATETIME NOT NULL
+        )""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS pending_file_cleanup (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT NOT NULL, reason TEXT,
+            status TEXT NOT NULL DEFAULT 'pending', created_time DATETIME DEFAULT CURRENT_TIMESTAMP
+        )""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS maintenance_cleanup_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, cleanup_preview_id TEXT NOT NULL,
+            request_payload TEXT NOT NULL, resolved_scope TEXT NOT NULL,
+            deleted_payload TEXT NOT NULL, backup_path TEXT NOT NULL,
+            pending_payload TEXT DEFAULT '[]', status TEXT NOT NULL,
+            created_time DATETIME DEFAULT CURRENT_TIMESTAMP
+        )""")
+        connection.execute(
+            """INSERT OR IGNORE INTO review_batch(id,file_id,version_id,task_id,workflow_id,status,execution_status)
+               SELECT suggestion.review_batch_id, version.file_id, suggestion.version_id,
+                      task.id, suggestion.workflow_id,
+                      CASE WHEN SUM(suggestion.status='executed')>0 THEN 'executed'
+                           WHEN SUM(suggestion.status IN ('pending','edited'))=0 THEN 'reviewed'
+                           ELSE 'in_review' END,
+                       CASE WHEN SUM(suggestion.status='executed')>0 THEN 'executed'
+                            WHEN SUM(suggestion.status IN ('pending','edited'))=0 THEN 'missing'
+                           ELSE 'blocked' END
+               FROM adjustment_suggestion suggestion
+               JOIN taxonomy_version version ON version.id=suggestion.version_id
+               LEFT JOIN task_record task ON task.workflow_id=suggestion.workflow_id
+               WHERE suggestion.review_batch_id IS NOT NULL
+               GROUP BY suggestion.review_batch_id"""
+        )
+        # Compatibility is additive: historical decisions/actions remain untouched, while
+        # completed batches must obtain a fresh preview before any future execution.
+        connection.execute(
+            """UPDATE review_batch SET
+                   status=CASE WHEN status='executed' THEN 'executed'
+                               WHEN status IN ('completed','reviewed','preview_ready') THEN 'reviewed' ELSE 'in_review' END,
+                   execution_status=CASE WHEN execution_status='executed' THEN 'executed'
+                                         WHEN status IN ('completed','reviewed','preview_ready') THEN 'missing' ELSE 'blocked' END,
+                   workflow_state=CASE WHEN execution_status='executed' THEN 'executed'
+                                       WHEN status IN ('completed','reviewed','preview_ready') THEN 'review_completed' ELSE 'reviewing' END
+               WHERE preview_hash IS NULL"""
+        )
+        connection.execute(
+            """UPDATE taxonomy_version SET lifecycle_status=
+                   CASE verification_status WHEN 'passed' THEN 'passed' WHEN 'partial' THEN 'partial'
+                                            WHEN 'failed' THEN 'failed' ELSE 'draft' END
+               WHERE lifecycle_status IS NULL OR lifecycle_status='draft'"""
         )
 
 
@@ -274,54 +459,3 @@ def _ensure_columns(
             connection.execute(
                 f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
             )
-
-
-def _create_unique_index_if_clean(
-    connection: sqlite3.Connection,
-    *,
-    table_name: str,
-    index_name: str,
-    columns: tuple[str, ...],
-    where: str | None = None,
-) -> None:
-    column_sql = ", ".join(columns)
-    where_sql = f"WHERE {where}" if where else ""
-    duplicate = connection.execute(
-        f"""
-        SELECT 1 FROM {table_name}
-        {where_sql}
-        GROUP BY {column_sql}
-        HAVING COUNT(*) > 1
-        LIMIT 1
-        """
-    ).fetchone()
-    if duplicate is not None:
-        raise RuntimeError(
-            f"Cannot create required unique index {index_name}: "
-            f"duplicate values exist in {table_name}({column_sql})."
-        )
-    connection.execute(
-        f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} "
-        f"ON {table_name}({column_sql}) {where_sql}"
-    )
-
-
-def _deduplicate_issues_for_run_index(connection: sqlite3.Connection) -> None:
-    """Keep the earliest copy of duplicated issues before adding the run index.
-
-    This only affects issues that belong to an analysis run, which is the scope
-    of ``idx_issue_unique_run_rule``.  Legacy issues without an analysis run
-    remain untouched because SQLite's unique index permits their NULL values.
-    """
-    connection.execute(
-        """
-        DELETE FROM diagnosis_issue
-        WHERE analysis_run_id IS NOT NULL
-          AND id NOT IN (
-              SELECT MIN(id)
-              FROM diagnosis_issue
-              WHERE analysis_run_id IS NOT NULL
-              GROUP BY analysis_run_id, detector_version, issue_type, node_id, description
-          )
-        """
-    )

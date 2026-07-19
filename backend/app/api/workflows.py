@@ -1,10 +1,11 @@
 import asyncio
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from langgraph.types import Command
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
+from pydantic import Field
 
 from backend.app.agents.graph import (
     build_taxonomy_graph,
@@ -14,13 +15,27 @@ from backend.app.agents.graph import (
 )
 from backend.app.repositories.file_repo import FileRepository
 from backend.app.repositories.task_repo import TaskRepository
-from backend.app.repositories.quality_repo import QualityRepository
-from backend.app.schemas.workflow import StartWorkflowRequest, parse_resume_request
-from backend.app.services.workflow_context_service import WorkflowContextService
+from backend.app.repositories.agent_run_repo import AgentRunRepository
+from backend.app.db import connect
+from backend.app.services.workflow_runner import WorkflowRunner
 
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 _WORKFLOW_CHECKPOINTER = None
+
+
+class StartWorkflowRequest(BaseModel):
+    file_id: int
+    enable_ai_analysis: bool = False
+    model_provider: str = "ollama"
+    model_name: str = "qwen3:8b"
+    priority_subtree_ids: list[int] = Field(default_factory=list)
+    sample_strategy: Literal["focused", "full_scan", "sampling"] = "focused"
+    focus_issues: list[str] = Field(default_factory=list)
+    ai_candidate_limit: int | None = Field(default=None, ge=1, le=1000)
+    ai_max_model_calls: int | None = Field(default=None, ge=1, le=10000)
+    ai_token_budget: int | None = Field(default=None, ge=1)
+    ai_wall_seconds: int | None = Field(default=None, ge=1, le=86400)
 
 
 class StartWorkflowResponse(BaseModel):
@@ -32,6 +47,17 @@ class StartWorkflowResponse(BaseModel):
     progress: int
 
 
+class ResumeWorkflowRequest(BaseModel):
+    decision: str
+    approved_suggestion_ids: list[int] = []
+    rejected_suggestion_ids: list[int] = []
+    confirmed_without_action_suggestion_ids: list[int] = []
+    uncertain_suggestion_ids: list[int] = []
+    edits: list[dict[str, Any]] = []
+    operator: str = "local_user"
+    reject_reason: str | None = None
+
+
 def _get_workflow_checkpointer():
     global _WORKFLOW_CHECKPOINTER
     if _WORKFLOW_CHECKPOINTER is None:
@@ -41,6 +67,18 @@ def _get_workflow_checkpointer():
     return _WORKFLOW_CHECKPOINTER
 
 
+@router.get("")
+def list_workflows(
+    request: Request,
+    file_id: int | None = Query(default=None),
+    task_status: str | None = Query(default=None, alias="status"),
+) -> list[dict[str, Any]]:
+    rows = TaskRepository(request.app.state.settings).list_tasks(file_id=file_id, status=task_status)
+    for row in rows:
+        row.pop("result_payload", None)
+    return rows
+
+
 @router.post("/taxonomy/start", response_model=StartWorkflowResponse)
 def start_taxonomy_workflow(
     payload: StartWorkflowRequest,
@@ -48,21 +86,19 @@ def start_taxonomy_workflow(
     background_tasks: BackgroundTasks,
 ) -> StartWorkflowResponse:
     settings = request.app.state.settings
-    try:
-        context = WorkflowContextService(settings).resolve(payload)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    if FileRepository(settings).get_file(payload.file_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found.")
 
-    workflow_id = create_workflow_id(context.file_id)
+    workflow_id = create_workflow_id(payload.file_id)
     thread_id = create_thread_id(workflow_id)
     task_repo = TaskRepository(settings)
     task_id = task_repo.create_workflow_task(
-        file_id=context.file_id,
+        file_id=payload.file_id,
         workflow_id=workflow_id,
         thread_id=thread_id,
-        workflow_mode=context.mode,
-        base_version_id=context.base_version_id,
-        result_version_id=context.result_version_id,
+        enable_ai_analysis=payload.enable_ai_analysis,
+        model_provider=payload.model_provider if payload.enable_ai_analysis else None,
+        model_name=payload.model_name if payload.enable_ai_analysis else None,
     )
     task_repo.record_event(
         workflow_id=workflow_id,
@@ -73,23 +109,23 @@ def start_taxonomy_workflow(
         status="running",
         progress=0,
         message="taxonomy workflow started",
-        payload=context.model_dump(),
+        payload={"file_id": payload.file_id},
     )
-    background_tasks.add_task(
+    WorkflowRunner(settings).submit(
+        background_tasks,
         _run_workflow,
         settings,
-        context,
+        payload.file_id,
         task_id,
         workflow_id,
+        payload.model_dump(),
     )
     return StartWorkflowResponse(
         task_id=task_id,
         workflow_id=workflow_id,
         thread_id=thread_id,
         status="running",
-        current_step=(
-            "parse_excel" if context.mode == "import" else "load_version_context"
-        ),
+        current_step="parse_excel",
         progress=0,
     )
 
@@ -100,18 +136,6 @@ def get_workflow_status(task_id: str, request: Request) -> dict[str, Any]:
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
     payload = _loads(task.get("result_payload"))
-    interrupt_payload = _loads(task.get("interrupt_payload"))
-    quality_repo = QualityRepository(request.app.state.settings)
-    evaluation_before = (
-        quality_repo.get(int(payload["evaluation_before_id"]))
-        if payload.get("evaluation_before_id")
-        else None
-    )
-    evaluation_after = (
-        quality_repo.get(int(payload["evaluation_after_id"]))
-        if payload.get("evaluation_after_id")
-        else None
-    )
     return {
         "task_id": task["id"],
         "status": task["status"],
@@ -123,25 +147,123 @@ def get_workflow_status(task_id: str, request: Request) -> dict[str, Any]:
         "node_count": payload.get("node_count", 0),
         "structure_issue_count": payload.get("structure_issue_count", 0),
         "suggestion_count": payload.get("suggestion_count", 0),
+        "review_batch_id": payload.get("review_batch_id"),
         "report_path": payload.get("report_path"),
-        "error_message": task.get("error_message"),
-        "workflow_mode": task.get("workflow_mode") or "import",
-        "base_version_id": task.get("base_version_id") or payload.get("base_version_id"),
-        "result_version_id": payload.get("result_version_id") or task.get("result_version_id"),
-        "evaluation_before_id": payload.get("evaluation_before_id"),
-        "evaluation_after_id": payload.get("evaluation_after_id"),
-        "evaluation_before": evaluation_before.model_dump() if evaluation_before else None,
-        "evaluation_after": evaluation_after.model_dump() if evaluation_after else None,
-        "verification": payload.get("verification_payload"),
-        "interrupt_type": interrupt_payload.get("interrupt_type"),
-        "interrupt_id": interrupt_payload.get("interrupt_id") or task.get("interrupt_id"),
-        "round": payload.get("round") or task.get("round") or 1,
-        "max_rounds": payload.get("max_rounds") or 2,
+        "export_path": payload.get("export_path"),
+        "verification_status": payload.get("verification_status"),
+        "quality_before": payload.get("quality_before"),
+        "quality_after": payload.get("quality_after"),
+        "quality_delta": payload.get("quality_delta"),
+        "remaining_issue_count": payload.get("remaining_issue_count", 0),
+        "report_preview_url": (
+            f"/api/reports/{task['version_id']}/preview?report_type={'draft' if task['status'] == 'waiting_review' else 'final'}"
+            if task.get("version_id") and payload.get("report_path")
+            else None
+        ),
+        "report_download_url": (
+            f"/api/reports/{task['version_id']}/download?report_type={'draft' if task['status'] == 'waiting_review' else 'final'}"
+            if task.get("version_id") and payload.get("report_path")
+            else None
+        ),
+        "error_message": task.get("error_message") or payload.get("error_message"),
+        "enable_ai_analysis": bool(task.get("enable_ai_analysis")),
+        "model_provider": task.get("model_provider"),
+        "model_name": task.get("model_name"),
+        "start_time": task.get("start_time") or task.get("created_time"),
+        "end_time": task.get("end_time"),
+        "analysis_run_id": payload.get("analysis_run_id"),
+        "work_item_counts": payload.get("work_item_counts", {}),
+        "plan_revision": payload.get("plan_revision", 1),
+        "plan_decision": payload.get("plan_decision", "initial"),
+        "stop_reason": payload.get("stop_reason"),
+        "model_calls_used": payload.get("model_calls_used", 0),
+        "tokens_used": payload.get("tokens_used", 0),
+        "wall_seconds_used": payload.get("wall_seconds_used", 0),
+        "triage_count": payload.get("triage_count", 0),
+        "candidate_count": payload.get("candidate_count", 0),
+        "ai_processed_count": payload.get("ai_processed_count", 0),
+        "coverage": payload.get("coverage", {}),
+        "diagnosis_completion_status": payload.get("diagnosis_completion_status", "completed"),
+        "report_type": payload.get("report_type"),
+    }
+
+
+@router.get("/{task_id}/evidence")
+def get_workflow_evidence(task_id: str, request: Request) -> dict[str, Any]:
+    """Return the complete persisted evidence graph for one business run."""
+    settings = request.app.state.settings
+    task = TaskRepository(settings).get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
+    workflow_id = str(task.get("workflow_id") or task_id)
+    runs = AgentRunRepository(settings).list_runs_for_workflow(workflow_id)
+    run_ids = [str(item["id"]) for item in runs]
+    with connect(settings) as connection:
+        if run_ids:
+            marks = ",".join("?" for _ in run_ids)
+            issue_rows = connection.execute(
+                f"""SELECT DISTINCT issue.* FROM diagnosis_issue issue
+                    JOIN run_issue link ON link.issue_id=issue.id
+                    WHERE link.run_id IN ({marks}) ORDER BY issue.id""",
+                run_ids,
+            ).fetchall()
+        else:
+            issue_rows = []
+        batch_rows = connection.execute(
+            "SELECT * FROM review_batch WHERE task_id=? OR workflow_id=? ORDER BY created_time,id",
+            (task_id, workflow_id),
+        ).fetchall()
+        batch_ids = [str(row["id"]) for row in batch_rows]
+        if batch_ids:
+            marks = ",".join("?" for _ in batch_ids)
+            suggestion_rows = connection.execute(
+                f"SELECT * FROM adjustment_suggestion WHERE review_batch_id IN ({marks}) ORDER BY id",
+                batch_ids,
+            ).fetchall()
+            execution_rows = connection.execute(
+                f"SELECT * FROM version_execution_record WHERE review_batch_id IN ({marks}) ORDER BY id",
+                batch_ids,
+            ).fetchall()
+        else:
+            suggestion_rows = []
+            execution_rows = []
+        version_rows = connection.execute(
+            """SELECT * FROM taxonomy_version
+               WHERE id=? OR source_workflow_id=? OR parent_version_id=? ORDER BY id""",
+            (task.get("version_id"), workflow_id, task.get("version_id")),
+        ).fetchall()
+        version_ids = [int(row["id"]) for row in version_rows]
+        if version_ids:
+            marks = ",".join("?" for _ in version_ids)
+            report_rows = connection.execute(
+                f"SELECT * FROM report_artifact WHERE version_id IN ({marks}) OR workflow_id=? ORDER BY id",
+                [*version_ids, workflow_id],
+            ).fetchall()
+        else:
+            report_rows = connection.execute(
+                "SELECT * FROM report_artifact WHERE workflow_id=? ORDER BY id", (workflow_id,)
+            ).fetchall()
+    return {
+        "task": task,
+        "workflow_id": workflow_id,
+        "input_version_id": min(version_ids) if version_ids else task.get("version_id"),
+        "output_version_id": max(version_ids) if len(version_ids) > 1 else None,
+        "runs": runs,
+        "issues": [dict(row) for row in issue_rows],
+        "suggestions": [dict(row) for row in suggestion_rows],
+        "review_batches": [dict(row) for row in batch_rows],
+        "executions": [dict(row) for row in execution_rows],
+        "versions": [dict(row) for row in version_rows],
+        "reports": [dict(row) for row in report_rows],
     }
 
 
 @router.get("/{task_id}/events")
-def workflow_events(task_id: str, request: Request) -> StreamingResponse:
+def workflow_events(
+    task_id: str, request: Request,
+    after_id: int = Query(default=0, ge=0),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+) -> StreamingResponse:
     """Server-Sent Events stream of real workflow progress (M5).
 
     Emits ``workflow_step`` frames as nodes complete, then a terminal
@@ -163,7 +285,11 @@ def workflow_events(task_id: str, request: Request) -> StreamingResponse:
             map_workflow_event,
         )
 
-        last_id = 0
+        try:
+            header_cursor = int(last_event_id) if last_event_id else 0
+        except ValueError:
+            header_cursor = 0
+        last_id = max(after_id, header_cursor)
         seen_terminal = False
         while not seen_terminal:
             if await request.is_disconnected():
@@ -179,24 +305,11 @@ def workflow_events(task_id: str, request: Request) -> StreamingResponse:
             if current is None:
                 return
             task_status = current["status"]
-            if task_status == "waiting_continue":
-                yield format_sse(interrupt_event(current.get("interrupt_payload")))
+            if task_status == "waiting_review":
+                yield format_sse(interrupt_event(current.get("interrupt_payload") or current.get("result_payload")))
                 seen_terminal = True
-            elif task_status == "waiting_manual_intervention":
-                yield format_sse(
-                    {
-                        "event": "workflow_manual_intervention",
-                        "data": {"task_id": task_id, "status": task_status},
-                    }
-                )
-                seen_terminal = True
-            elif task_status == "completed":
+            elif task_status in {"completed", "partial", "completed_degraded"}:
                 yield format_sse(completed_event(task_id, current.get("result_payload")))
-                seen_terminal = True
-            elif task_status == "completed_degraded":
-                event = completed_event(task_id, current.get("result_payload"))
-                event["event"] = "workflow_completed_degraded"
-                yield format_sse(event)
                 seen_terminal = True
             elif task_status == "failed":
                 yield format_sse(
@@ -216,103 +329,71 @@ def workflow_events(task_id: str, request: Request) -> StreamingResponse:
 @router.post("/{task_id}/resume")
 def resume_workflow(
     task_id: str,
-    payload: dict[str, Any],
+    payload: ResumeWorkflowRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
 ) -> dict[str, Any]:
     settings = request.app.state.settings
     task_repo = TaskRepository(settings)
     task = task_repo.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
-    stored_interrupt = _loads(task.get("interrupt_payload"))
-    normalized = dict(payload)
-    normalized.setdefault(
-        "interrupt_type",
-        stored_interrupt.get("interrupt_type") or "continue_optimization",
-    )
-    normalized.setdefault(
-        "interrupt_id",
-        task.get("interrupt_id")
-        or stored_interrupt.get("interrupt_id")
-        or f"legacy:{task_id}",
-    )
-    try:
-        resume_request = parse_resume_request(normalized)
-    except ValidationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=exc.errors(),
-        ) from exc
-    expected_status = "waiting_continue"
-    stored_type = stored_interrupt.get("interrupt_type")
-    if task.get("consumed_interrupt_id") == resume_request.interrupt_id and task.get(
-        "resume_result_payload"
-    ):
-        return _loads(task.get("resume_result_payload"))
-    if task["status"] != expected_status or (
-        stored_type is not None and stored_type != resume_request.interrupt_type
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Resume request does not match the active workflow interrupt.",
-        )
-    claim_status, claimed_result = task_repo.claim_interrupt(
-        task_id,
-        resume_request.interrupt_id,
-    )
-    if claim_status == "consumed":
-        return claimed_result or {}
-    if claim_status != "claimed":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "Resume request interrupt_id does not match the active interrupt."
-                if claim_status == "mismatch"
-                else "The active interrupt is already being resumed."
-            ),
-        )
-    try:
-        graph = build_taxonomy_graph(
-            _get_workflow_checkpointer(),
-            settings=settings,
-        )
-        result = graph.invoke(
-            Command(resume=resume_request.model_dump()),
-            config={"configurable": {"thread_id": task["thread_id"]}},
-        )
-    except Exception as exc:
-        task_repo.release_interrupt_claim(task_id, resume_request.interrupt_id)
-        task_repo.update_task(
-            task_id=task_id,
-            status="failed",
-            current_step="failed",
-            error_message=str(exc),
-        )
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    task_repo.save_resume_result(
-        task_id=task_id,
-        interrupt_id=resume_request.interrupt_id,
-        result=result,
-    )
-    return result
+    if task["status"] != "waiting_review":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Task is not waiting for review.")
+    task_repo.update_task(task_id=task_id, status="running", current_step="resume_queued")
+    WorkflowRunner(settings).submit(background_tasks, _resume_workflow, settings, task, payload.model_dump())
+    return {"task_id": task_id, "status": "running", "current_step": "resume_queued"}
 
 
-def _run_workflow(settings, context, task_id: str, workflow_id: str) -> None:
+@router.post("/{task_id}/cancel")
+def cancel_workflow(task_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return WorkflowRunner(request.app.state.settings).cancel(task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+def _run_workflow(
+    settings,
+    file_id: int,
+    task_id: str,
+    workflow_id: str,
+    options: dict[str, Any] | None = None,
+) -> None:
+    options = options or {}
+    runtime_settings = settings
+    if options.get("enable_ai_analysis"):
+        runtime_settings = settings.model_copy(
+            update={
+                "llm_provider": options.get("model_provider") or settings.llm_provider,
+                "llm_model": options.get("model_name") or settings.llm_model,
+                "llm_fallback_enabled": False,
+                "llm_max_calls": options.get("ai_max_model_calls") or settings.llm_max_calls,
+                "llm_max_tokens": options.get("ai_token_budget") or settings.llm_max_tokens,
+                "diagnosis_ai_wall_seconds": options.get("ai_wall_seconds") or settings.diagnosis_ai_wall_seconds,
+            }
+        )
     state = create_initial_state(
-        file_id=context.file_id,
+        file_id=file_id,
         task_id=task_id,
         workflow_id=workflow_id,
-        workflow_mode=context.mode,
-        base_version_id=context.base_version_id,
-        result_version_id=context.result_version_id,
-        affected_node_ids=context.affected_node_ids,
-        max_rounds=context.max_rounds,
+        enable_ai_analysis=bool(options.get("enable_ai_analysis")),
+        model_provider=(options.get("model_provider") if options.get("enable_ai_analysis") else None),
+        model_name=(options.get("model_name") if options.get("enable_ai_analysis") else None),
+        priority_subtree_ids=options.get("priority_subtree_ids") or [],
+        sample_strategy=options.get("sample_strategy") or "focused",
+        focus_issues=options.get("focus_issues") or [],
+        ai_candidate_limit=options.get("ai_candidate_limit"),
+        ai_max_model_calls=options.get("ai_max_model_calls"),
+        ai_token_budget=options.get("ai_token_budget"),
+        ai_wall_seconds=options.get("ai_wall_seconds"),
     )
     task_repo = TaskRepository(settings)
     try:
         graph = build_taxonomy_graph(
             _get_workflow_checkpointer(),
-            settings=settings,
+            settings=runtime_settings,
+            enable_suggestion_review=False,
         )
         result = graph.invoke(state, config={"configurable": {"thread_id": state.thread_id}})
         if result.get("status") == "failed":
@@ -340,6 +421,26 @@ def _run_workflow(settings, context, task_id: str, workflow_id: str) -> None:
             status="failed",
             message=str(exc),
         )
+
+
+def _resume_workflow(settings, task: dict[str, Any], payload: dict[str, Any]) -> None:
+    task_repo = TaskRepository(settings)
+    try:
+        graph = build_taxonomy_graph(
+            _get_workflow_checkpointer(), settings=settings, enable_suggestion_review=True,
+        )
+        result = graph.invoke(
+            Command(resume=payload),
+            config={"configurable": {"thread_id": task["thread_id"]}},
+        )
+        if result.get("status") == "failed":
+            task_repo.update_task(
+                task_id=task["id"], status="failed", current_step=result.get("current_step"),
+                progress=result.get("progress", 0), error_message=result.get("error_message"),
+                result_payload=result,
+            )
+    except Exception as exc:
+        task_repo.update_task(task_id=task["id"], status="failed", current_step="failed", error_message=str(exc))
 
 
 def _loads(value: str | None) -> dict[str, Any]:

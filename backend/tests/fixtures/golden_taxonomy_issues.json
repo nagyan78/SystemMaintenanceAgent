@@ -1,0 +1,10 @@
+{
+  "dataset_version": "phase5-golden-v1",
+  "approved_by": "local_user",
+  "items": [
+    {"issue_id": "golden-001", "version_fixture": "phase5_golden.xlsx", "node_id": 4, "issue_type": "missing_parent", "expected_action": "add_node", "acceptable_targets": [4, 999], "risk_level": "high"},
+    {"issue_id": "golden-002", "version_fixture": "phase5_golden.xlsx", "node_id": 2, "issue_type": "naming_nonstandard", "expected_action": "review_only", "acceptable_targets": [2], "risk_level": "low"},
+    {"issue_id": "golden-003", "version_fixture": "phase5_golden.xlsx", "node_id": 3, "issue_type": "synonym_format", "expected_action": "update_synonyms", "acceptable_targets": [3], "risk_level": "low"},
+    {"issue_id": "golden-004", "version_fixture": "phase5_golden.xlsx", "node_id": 26, "issue_type": "excessive_depth", "expected_action": "review_only", "acceptable_targets": [26], "risk_level": "medium"}
+  ]
+}

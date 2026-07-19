@@ -27,7 +27,9 @@ def export_excel(version_id: int, settings: Settings | None = None) -> Path:
         raise ValueError("VERSION_HAS_NO_NODES")
 
     runtime_settings.export_dir.mkdir(parents=True, exist_ok=True)
-    export_path = runtime_settings.export_dir / f"{version['version_no']}_taxonomy.xlsx"
+    export_path = runtime_settings.export_dir / (
+        f"file-{version['file_id']}_{version['version_no']}_version-{version_id}_taxonomy.xlsx"
+    )
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "taxonomy"

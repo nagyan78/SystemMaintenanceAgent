@@ -4,7 +4,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
 from backend.app.config import Settings
-from backend.app.db import init_db
+from backend.app.db import connect, init_db
 from backend.app.repositories.taxonomy_repo import TaxonomyRepository
 from backend.app.repositories.version_repo import VersionRepository
 from backend.app.schemas.taxonomy import TaxonomyNodeRecord
@@ -23,6 +23,8 @@ def _settings(tmp_path):
 
 def _insert_version(settings: Settings, nodes: list[TaxonomyNodeRecord]) -> int:
     init_db(settings)
+    with connect(settings) as connection:
+        connection.execute("INSERT OR IGNORE INTO uploaded_file (id, file_name, file_path) VALUES (1, 'test.xlsx', 'test.xlsx')")
     version_id = VersionRepository(settings).create_version(
         file_id=1,
         version_no="v1.0",
@@ -180,13 +182,13 @@ def test_taxonomy_repository_returns_node_detail_path_children_and_candidates(tm
 
 
 def test_tree_tools_use_repository_and_vector_store_runtime(tmp_path):
-    from backend.app.tools.tree_tools import configure_tree_tool_runtime, get_node_detail
+    from backend.app.services.tool_factory import AgentToolFactory
 
     settings = _settings(tmp_path)
     version_id = _insert_version(settings, _sample_nodes())
-    configure_tree_tool_runtime(settings=settings, qdrant_store=None, embeddings=None)
-
-    detail = get_node_detail.invoke({"version_id": version_id, "category_id": 11})
+    tools = AgentToolFactory(settings).content_diagnosis_tools()
+    detail_tool = next(item for item in tools if item.name == "get_node_detail")
+    detail = detail_tool.invoke({"version_id": version_id, "category_id": 11})
 
     assert detail["category_name"] == "苹果"
     assert detail["path_names"] == "水果 > 苹果"
@@ -319,12 +321,5 @@ def test_graph_topology_runs_planning_between_structure_and_content(tmp_path):
     graph = build_taxonomy_graph(settings=_settings(tmp_path))
     edges = {(edge.source, edge.target) for edge in graph.get_graph().edges}
 
-    assert (
-        "structure_diagnosis_node",
-        "baseline_quality_evaluation_node",
-    ) in edges
-    assert (
-        "baseline_quality_evaluation_node",
-        "diagnosis_planning_node",
-    ) in edges
+    assert ("structure_diagnosis_node", "diagnosis_planning_node") in edges
     assert ("diagnosis_planning_node", "content_diagnosis_node") in edges

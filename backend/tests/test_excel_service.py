@@ -7,7 +7,6 @@ from openpyxl import Workbook
 
 from backend.app.config import Settings
 from backend.app.services.excel_service import ExcelService, ExcelValidationError
-from backend.tests.taxonomy_fixture import write_taxonomy_workbook
 
 
 EXPECTED_COLUMNS = [
@@ -46,12 +45,11 @@ def _inspect(service, path, filename=None):
         upload.file.close()
 
 
-def test_service_reads_generated_excel_metadata(tmp_path):
-    sample_path = write_taxonomy_workbook(tmp_path / "taxonomy.xlsx")
-    metadata = _inspect(_service(tmp_path), sample_path, "taxonomy.xlsx")
+def test_service_reads_sample_excel_metadata(tmp_path):
+    metadata = _inspect(_service(tmp_path), "data/sample/产品标准体系.xlsx")
 
-    assert metadata.file_name == "taxonomy.xlsx"
-    assert metadata.row_count == 3
+    assert metadata.file_name == "产品标准体系.xlsx"
+    assert metadata.row_count == 21090
     assert metadata.column_count == 6
     assert metadata.columns == EXPECTED_COLUMNS
     assert metadata.file_path.exists()

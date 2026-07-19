@@ -2,9 +2,9 @@
 
 M1-M3 used an in-memory checkpointer (`InMemorySaver`), which is lost on
 process restart and therefore cannot satisfy M4 §7.9 ("服务重启后同 thread_id
-可恢复"). This module provides a file-persistent `SqliteSaver` so an
-interrupted optimization workflow can be resumed from the SAME thread_id after
-the server restarts.
+可恢复"). This module provides a file-persistent `SqliteSaver` so a workflow
+paused at `human_review` can be resumed from the SAME thread_id after the
+server restarts.
 """
 
 from __future__ import annotations

@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -13,6 +15,7 @@ class TaxonomyNodeRecord(BaseModel):
     category_group_name: str | None = None
     syn_list: str | None = None
     is_leaf: int = 0
+    node_status: Literal["active", "deprecated"] = "active"
 
 
 class BuildTreeResult(BaseModel):

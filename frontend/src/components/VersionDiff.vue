@@ -110,6 +110,9 @@ function kindLabel(key: string): string {
     renamed: 'R',
     moved: 'M',
     synonym_changed: 'S',
+    split: 'P',
+    merged: 'G',
+    deprecated: 'X',
   }
   return map[key] ?? '·'
 }

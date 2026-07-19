@@ -30,6 +30,7 @@ class TaxonomyRepository:
                 node.category_group_name,
                 node.syn_list,
                 node.is_leaf,
+                node.node_status,
             )
             for node in nodes
         ]
@@ -39,29 +40,30 @@ class TaxonomyRepository:
                 INSERT OR REPLACE INTO category_node (
                     version_id, category_id, category_name, parent_id, level,
                     path_ids, path_names, category_group_id, category_pids,
-                    category_group_name, syn_list, is_leaf
+                    category_group_name, syn_list, is_leaf, node_status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 values,
             )
 
-    def list_nodes(self, version_id: int) -> list[dict]:
+    def list_nodes(self, version_id: int, *, include_deprecated: bool = False) -> list[dict]:
+        status_clause = "" if include_deprecated else "AND node_status = 'active'"
         with connect(self.settings) as connection:
             rows = connection.execute(
                 """
                 SELECT id, version_id, category_id, category_name, parent_id,
                        level, path_ids, path_names, category_group_id,
-                       category_pids, category_group_name, syn_list, is_leaf
+                       category_pids, category_group_name, syn_list, is_leaf, node_status
                 FROM category_node
-                WHERE version_id = ?
+                WHERE version_id = ? {status_clause}
                 ORDER BY id
-                """,
+                """.format(status_clause=status_clause),
                 (version_id,),
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def list_node_records(self, version_id: int) -> list[TaxonomyNodeRecord]:
+    def list_node_records(self, version_id: int, *, include_deprecated: bool = False) -> list[TaxonomyNodeRecord]:
         return [
             TaxonomyNodeRecord.model_validate(
                 {
@@ -80,22 +82,24 @@ class TaxonomyRepository:
                         "category_group_name",
                         "syn_list",
                         "is_leaf",
+                        "node_status",
                     }
                 }
             )
-            for row in self.list_nodes(version_id)
+            for row in self.list_nodes(version_id, include_deprecated=include_deprecated)
         ]
 
-    def get_node_detail(self, version_id: int, category_id: int) -> dict | None:
+    def get_node_detail(self, version_id: int, category_id: int, *, include_deprecated: bool = False) -> dict | None:
+        status_clause = "" if include_deprecated else "AND node_status = 'active'"
         with connect(self.settings) as connection:
             row = connection.execute(
                 """
                 SELECT id, version_id, category_id, category_name, parent_id,
                        level, path_ids, path_names, category_group_id,
-                       category_pids, category_group_name, syn_list, is_leaf
+                       category_pids, category_group_name, syn_list, is_leaf, node_status
                 FROM category_node
-                WHERE version_id = ? AND category_id = ?
-                """,
+                WHERE version_id = ? AND category_id = ? {status_clause}
+                """.format(status_clause=status_clause),
                 (version_id, category_id),
             ).fetchone()
         return dict(row) if row else None
@@ -110,7 +114,7 @@ class TaxonomyRepository:
                 """
                 SELECT category_id, category_name, path_names, syn_list, level, is_leaf
                 FROM category_node
-                WHERE version_id = ? AND parent_id = ?
+                WHERE version_id = ? AND parent_id = ? AND node_status = 'active'
                 ORDER BY category_id
                 """,
                 (version_id, parent_id),
@@ -153,6 +157,8 @@ class TaxonomyRepository:
                   ON child.version_id = parent.version_id
                  AND child.parent_id = parent.category_id
                 WHERE parent.version_id = ? AND parent.parent_id IS NULL
+                  AND parent.node_status = 'active'
+                  AND (child.category_id IS NULL OR child.node_status = 'active')
                 GROUP BY parent.category_id, parent.category_name, parent.path_names
                 ORDER BY parent.category_id
                 LIMIT ?
@@ -166,6 +172,9 @@ class TaxonomyRepository:
         version_id: int,
         *,
         priority_subtrees: list[str] | None = None,
+        priority_subtree_ids: list[int] | None = None,
+        focus_issues: list[str] | None = None,
+        sample_strategy: str = "focused",
         limit: int = 200,
     ) -> list[dict]:
         subtree_filter = ""
@@ -176,6 +185,27 @@ class TaxonomyRepository:
                 clauses.append("path_names LIKE ?")
                 params.append(f"%{subtree}%")
             subtree_filter = f" AND ({' OR '.join(clauses)})"
+        if priority_subtree_ids:
+            clauses = []
+            for subtree_id in priority_subtree_ids:
+                clauses.extend(("category_id = ?", "(',' || IFNULL(path_ids,'') || ',') LIKE ?"))
+                params.extend((int(subtree_id), f"%,{int(subtree_id)},%"))
+            id_filter = f"({' OR '.join(clauses)})"
+            subtree_filter += f" AND {id_filter}"
+        synonym_focus = bool(focus_issues) and all(
+            value in {"synonym_format", "synonym_conflict", "synonym_overlap", "synonym_pollution"}
+            for value in focus_issues
+        )
+        content_filter = (
+            "AND syn_list IS NOT NULL AND TRIM(syn_list) NOT IN ('', '[]')"
+            if synonym_focus or not focus_issues else ""
+        )
+        order_by = (
+            "((category_id * 1103515245 + version_id) & 2147483647), category_id"
+            if sample_strategy == "sampling"
+            else "category_id" if sample_strategy == "full_scan"
+            else "LENGTH(IFNULL(syn_list,'')) DESC, level DESC, category_id"
+        )
         params.append(limit)
         with connect(self.settings) as connection:
             rows = connection.execute(
@@ -184,13 +214,10 @@ class TaxonomyRepository:
                        syn_list, is_leaf
                 FROM category_node
                 WHERE version_id = ?
-                  AND syn_list IS NOT NULL
-                  AND TRIM(syn_list) NOT IN ('', '[]')
+                  AND node_status = 'active'
+                  {content_filter}
                   {subtree_filter}
-                ORDER BY
-                  LENGTH(syn_list) DESC,
-                  level DESC,
-                  category_id
+                ORDER BY {order_by}
                 LIMIT ?
                 """,
                 params,
@@ -201,10 +228,17 @@ class TaxonomyRepository:
         with connect(self.settings) as connection:
             return int(
                 connection.execute(
-                    "SELECT COUNT(*) FROM category_node WHERE version_id = ?",
+                    "SELECT COUNT(*) FROM category_node WHERE version_id = ? AND node_status = 'active'",
                     (version_id,),
                 ).fetchone()[0]
             )
+
+    def count_external_references(self, version_id: int, category_id: int) -> int:
+        with connect(self.settings) as connection:
+            return int(connection.execute(
+                "SELECT COUNT(*) FROM category_reference WHERE version_id=? AND category_id=?",
+                (version_id, category_id),
+            ).fetchone()[0])
 
     def get_overview_counts(self, version_id: int) -> dict:
         with connect(self.settings) as connection:

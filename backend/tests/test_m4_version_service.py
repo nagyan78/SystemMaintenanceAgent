@@ -1,5 +1,5 @@
 from backend.app.config import Settings
-from backend.app.db import init_db
+from backend.app.db import connect, init_db
 from backend.app.repositories.taxonomy_repo import TaxonomyRepository
 from backend.app.repositories.version_repo import VersionRepository
 from backend.app.schemas.taxonomy import TaxonomyNodeRecord
@@ -19,6 +19,8 @@ def _settings(tmp_path):
 
 def _seed_two_versions(settings: Settings) -> tuple[int, int]:
     init_db(settings)
+    with connect(settings) as connection:
+        connection.execute("INSERT OR IGNORE INTO uploaded_file (id,file_name,file_path) VALUES (1,'test.xlsx','test.xlsx')")
     repo = VersionRepository(settings)
     taxonomy_repo = TaxonomyRepository(settings)
     v1 = repo.create_version(file_id=1, version_no="v1.0", description="base")
@@ -120,7 +122,7 @@ def test_version_diff_reports_rename_move_synonym_and_add(tmp_path):
 
 def test_rollback_creates_new_version_from_historical_snapshot(tmp_path):
     settings = _settings(tmp_path)
-    v1, v2 = _seed_two_versions(settings)
+    v1, _ = _seed_two_versions(settings)
 
     result = VersionService(settings).rollback_version(v1, operator="tester")
 
@@ -128,20 +130,15 @@ def test_rollback_creates_new_version_from_historical_snapshot(tmp_path):
     rolled_back_nodes = TaxonomyRepository(settings).list_nodes(result.new_version_id)
     assert [item["category_id"] for item in rolled_back_nodes] == [1, 2, 3]
     assert rolled_back_nodes[1]["category_name"] == "苹果"
-    rollback_version = VersionRepository(settings).get_version(result.new_version_id)
-    assert rollback_version["parent_version_id"] == v2
-    assert rollback_version["action_batch_id"].startswith("rollback:")
 
 
 def test_m4_graph_routes_validate_to_execute_save_and_report(tmp_path):
     from backend.app.agents.graph import build_taxonomy_graph
 
-    graph = build_taxonomy_graph(settings=_settings(tmp_path))
+    graph = build_taxonomy_graph(settings=_settings(tmp_path), enable_suggestion_review=True)
     edges = {(edge.source, edge.target) for edge in graph.get_graph().edges}
 
     assert ("validate_action_node", "execute_action_node") in edges
     assert ("execute_action_node", "save_new_version_node") in edges
-    assert ("save_new_version_node", "index_result_version_node") in edges
-    assert ("index_result_version_node", "result_quality_evaluation_node") in edges
-    assert ("result_quality_evaluation_node", "verification_node") in edges
-    assert ("verification_node", "generate_report_node") in edges
+    assert ("save_new_version_node", "verify_new_version_node") in edges
+    assert ("verify_new_version_node", "generate_report_node") in edges

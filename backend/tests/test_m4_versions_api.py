@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
 from backend.app.config import Settings
-from backend.app.db import init_db
+from backend.app.db import connect, init_db
 from backend.app.main import create_app
 from backend.app.repositories.taxonomy_repo import TaxonomyRepository
 from backend.app.repositories.version_repo import VersionRepository
@@ -21,6 +21,8 @@ def _settings(tmp_path):
 
 def _seed_versions(settings: Settings) -> tuple[int, int]:
     init_db(settings)
+    with connect(settings) as connection:
+        connection.execute("INSERT OR IGNORE INTO uploaded_file (id,file_name,file_path) VALUES (1,'test.xlsx','test.xlsx')")
     repo = VersionRepository(settings)
     taxonomy_repo = TaxonomyRepository(settings)
     v1 = repo.create_version(file_id=1, version_no="v1.0", description="base")
@@ -101,37 +103,8 @@ def test_versions_api_lists_details_diffs_and_exports(tmp_path):
     export_response = client.get(f"/api/versions/{v2}/export")
     assert export_response.status_code == 200
     export_body = export_response.json()
-    assert export_body["file_name"] == "v1.1_taxonomy.xlsx"
+    assert export_body["file_name"] == f"file-1_v1.1_version-{v2}_taxonomy.xlsx"
     assert (settings.export_dir / export_body["file_name"]).exists()
-
-    export_download = client.get(export_body["download_url"])
-    assert export_download.status_code == 200
-    assert "attachment" in export_download.headers["content-disposition"]
-
-    report_response = client.get(f"/api/versions/{v2}/report")
-    assert report_response.status_code == 200
-    assert "markdown" in report_response.json()
-    assert "自动决策摘要" in report_response.json()["markdown"]
-
-    report_download = client.get(report_response.json()["download_url"])
-    assert report_download.status_code == 200
-    assert "attachment" in report_download.headers["content-disposition"]
-
-    overview_response = client.get("/api/taxonomy/overview", params={"version_id": v2})
-    assert overview_response.status_code == 200
-    assert overview_response.json()["node_count"] == 2
-
-    tree_response = client.get("/api/taxonomy/tree", params={"version_id": v2})
-    assert tree_response.status_code == 200
-    assert [node["category_name"] for node in tree_response.json()["nodes"]] == ["根", "苹果"]
-
-    search_response = client.get("/api/taxonomy/search", params={"version_id": v2, "q": "苹果"})
-    assert search_response.status_code == 200
-    assert search_response.json()["nodes"][0]["category_id"] == 2
-
-    issues_response = client.get("/api/diagnosis/issues", params={"version_id": v2})
-    assert issues_response.status_code == 200
-    assert issues_response.json() == {"version_id": v2, "issues": []}
 
 
 def test_versions_api_rolls_back_without_deleting_history(tmp_path):

@@ -6,9 +6,9 @@ from backend.app.config import Settings, get_settings
 from backend.app.db import connect
 from backend.app.repositories.taxonomy_repo import TaxonomyRepository
 from backend.app.schemas.suggestion import ActionValidationResult, AdjustmentSuggestion
+from backend.app.schemas.action import DeprecateNodePayload, DeleteLeafPayload, MergeNodePayload, SplitSubtreePayload
 from backend.app.tools.payload_tools import coerce_json_object
 
-_runtime_settings: Settings = get_settings()
 REMOVE_SYNONYM_KEYS = (
     "synonyms_to_remove",
     "remove_synonyms",
@@ -31,25 +31,26 @@ ALLOWED_ACTION_TYPES = {
     "add_node",
     "move_node",
     "rename_node",
+    "merge_node",
     "clean_synonym",
+    "update_synonyms",
+    "review_only",
+    "split_subtree",
+    "deprecate_node",
+    "delete_leaf_node",
     "mark_as_valid",
 }
 
 
-def configure_validation_tool_runtime(settings: Settings) -> None:
-    global _runtime_settings
-    _runtime_settings = settings
-
-
 @tool
 def validate_action(action_json: dict[str, Any] | str) -> dict:
-    """预校验维护建议动作是否合法；action_json 可为对象或 JSON 对象字符串。"""
+    """预校验维护建议动作是否合法。"""
     try:
         payload = coerce_json_object(action_json, field_name="action_json")
         suggestion = AdjustmentSuggestion.model_validate(payload)
     except Exception as exc:
         return ActionValidationResult(valid=False, reason=f"建议 JSON 结构非法：{exc}").model_dump()
-    result = validate_suggestion_action(suggestion, _runtime_settings)
+    result = validate_suggestion_action(suggestion, get_settings())
     return result.model_dump()
 
 
@@ -57,16 +58,21 @@ def validate_suggestion_action(
     suggestion: AdjustmentSuggestion,
     settings: Settings | None = None,
 ) -> ActionValidationResult:
-    runtime_settings = settings or _runtime_settings
+    runtime_settings = settings or get_settings()
     if suggestion.action_type not in ALLOWED_ACTION_TYPES:
         return _invalid("action_type 不在允许枚举中。")
     if suggestion.risk_level not in {"low", "medium", "high"}:
         return _invalid("risk_level 必须是 low、medium 或 high。")
     if not 0 <= suggestion.confidence <= 1:
         return _invalid("confidence 必须在 0 到 1 之间。")
+    if suggestion.need_confirm is False and suggestion.risk_level in {"medium", "high"}:
+        return _invalid("中高风险建议必须 need_confirm=true。")
+    if suggestion.action_type in {"merge_node", "split_subtree", "deprecate_node", "delete_leaf_node"}:
+        if not suggestion.need_confirm or suggestion.risk_level != "high":
+            return _invalid("结构治理动作必须为 high risk 且 need_confirm=true。")
     if not _issue_exists(runtime_settings, suggestion.version_id, suggestion.issue_id):
         return _invalid("issue_id 不存在。")
-    if suggestion.action_type != "add_node" and suggestion.target_node_id is None:
+    if suggestion.action_type not in {"add_node", "mark_as_valid", "review_only"} and suggestion.target_node_id is None:
         return _invalid("非 add_node 建议必须包含 target_node_id。")
     if suggestion.target_node_id is not None:
         taxonomy_repo = TaxonomyRepository(runtime_settings)
@@ -76,7 +82,7 @@ def validate_suggestion_action(
         )
         if node is None:
             return _invalid("target_node_id 不存在。")
-        if suggestion.action_type == "clean_synonym":
+        if suggestion.action_type in {"clean_synonym", "update_synonyms"}:
             try:
                 resolve_clean_synonym_update(node.get("syn_list") or "", suggestion.action_payload)
             except ValueError as exc:
@@ -122,6 +128,27 @@ def validate_suggestion_action(
             int(new_parent_id),
         ):
             return _invalid("move_node 不能移动到自身子树下。")
+    if suggestion.action_type == "merge_node":
+        try:
+            MergeNodePayload.model_validate(suggestion.action_payload)
+        except Exception as exc:
+            return _invalid(f"merge_node payload 非法：{exc}")
+    if suggestion.action_type == "split_subtree":
+        if "groups" in suggestion.action_payload:
+            try:
+                SplitSubtreePayload.model_validate(suggestion.action_payload)
+            except Exception as exc:
+                return _invalid(f"split_subtree payload 非法：{exc}")
+    if suggestion.action_type == "deprecate_node":
+        try:
+            DeprecateNodePayload.model_validate({**suggestion.action_payload, "target_node_id": suggestion.action_payload.get("target_node_id", suggestion.target_node_id)})
+        except Exception as exc:
+            return _invalid(f"deprecate_node payload 非法：{exc}")
+    if suggestion.action_type == "delete_leaf_node":
+        try:
+            DeleteLeafPayload.model_validate({**suggestion.action_payload, "target_node_id": suggestion.action_payload.get("target_node_id", suggestion.target_node_id)})
+        except Exception as exc:
+            return _invalid(f"delete_leaf_node payload 非法：{exc}")
     return ActionValidationResult(valid=True)
 
 
@@ -163,12 +190,9 @@ def resolve_clean_synonym_update(syn_list: str, payload: dict[str, Any]) -> tupl
     current_terms = _split_synonyms(syn_list)
     final_terms = _extract_final_synonyms(payload)
     if final_terms is not None:
-        added_terms = [item for item in final_terms if item not in current_terms]
-        if added_terms:
-            raise ValueError(f"clean_synonym 不能新增当前不存在的同义词：{', '.join(added_terms)}")
         removed_terms = [item for item in current_terms if item not in final_terms]
-        if not removed_terms:
-            raise ValueError("clean_synonym 缺少待移除同义词或目标同义词列表。")
+        if not removed_terms and final_terms == current_terms:
+            raise ValueError("同义词动作没有产生变化。")
         return final_terms, removed_terms
 
     remove_terms = _extract_remove_synonyms(payload)

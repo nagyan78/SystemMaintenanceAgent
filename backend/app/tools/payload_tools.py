@@ -3,8 +3,12 @@ from collections.abc import Mapping
 from typing import Any
 
 
-def coerce_json_object(value: Mapping[str, Any] | str, *, field_name: str) -> dict[str, Any]:
-    """Accept a tool-call object or a JSON-encoded object, never arbitrary JSON."""
+def coerce_json_object(
+    value: Mapping[str, Any] | str,
+    *,
+    field_name: str,
+) -> dict[str, Any]:
+    """Accept a mapping or JSON-encoded object, never a list or scalar."""
     if isinstance(value, Mapping):
         return dict(value)
     if not isinstance(value, str):

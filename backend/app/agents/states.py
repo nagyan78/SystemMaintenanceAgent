@@ -6,19 +6,20 @@ from pydantic import BaseModel, Field, model_validator
 WorkflowStatus = Literal[
     "pending",
     "running",
-    "waiting_continue",
-    "waiting_manual_intervention",
+    "waiting_review",
+    "partial",
     "completed",
-    "completed_degraded",
     "failed",
     "cancelled",
 ]
+
+ReviewDecision = Literal["approve", "reject", "edit", "confirm_no_action", "uncertain"]
+
 
 class TaxonomyGraphState(BaseModel):
     workflow_id: str
     thread_id: str
     task_id: str | None = None
-    workflow_mode: Literal["import", "maintain", "verify"] = "import"
 
     file_id: int | None = None
     file_path: str | None = None
@@ -27,21 +28,12 @@ class TaxonomyGraphState(BaseModel):
     base_version_id: int | None = None
     current_version_id: int | None = None
     new_version_id: int | None = None
-    result_version_id: int | None = None
     version_no: str | None = None
 
     status: WorkflowStatus = "pending"
     current_step: str | None = None
     progress: int = Field(default=0, ge=0, le=100)
     completed_steps: list[str] = Field(default_factory=list)
-    analysis_run_id: str | None = None
-    evaluation_before_id: int | None = None
-    evaluation_after_id: int | None = None
-    verification_payload: dict[str, Any] | None = None
-    round: int = Field(default=1, ge=1)
-    max_rounds: int = Field(default=2, ge=1, le=5)
-    affected_node_ids: list[int] = Field(default_factory=list)
-    budget_summary: dict[str, Any] = Field(default_factory=dict)
 
     row_count: int = 0
     column_count: int = 0
@@ -53,31 +45,55 @@ class TaxonomyGraphState(BaseModel):
     structure_issue_count: int = 0
     structure_issue_summary: dict[str, int] = Field(default_factory=dict)
     content_issue_count: int = 0
+    enable_ai_analysis: bool = False
+    model_provider: str | None = None
+    model_name: str | None = None
+    priority_subtree_ids: list[int] = Field(default_factory=list)
+    sample_strategy: Literal["focused", "full_scan", "sampling"] = "focused"
+    focus_issues: list[str] = Field(default_factory=list)
+    ai_candidate_limit: int | None = None
+    ai_max_model_calls: int | None = None
+    ai_token_budget: int | None = None
+    ai_wall_seconds: int | None = None
     diagnosis_plan: dict[str, Any] | None = None
+    maintenance_plan: dict[str, Any] | None = None
+    plan_revision: int = 1
+    plan_decision: str = "initial"
+    stop_reason: str | None = None
+    model_calls_used: int = 0
+    tokens_used: int = 0
+    wall_seconds_used: float = 0
+    analysis_run_id: str | None = None
+    work_item_counts: dict[str, int] = Field(default_factory=dict)
+    coverage: dict[str, Any] = Field(default_factory=dict)
+    diagnosis_completion_status: Literal["completed", "partial", "failed"] = "completed"
+    triage_count: int = 0
     suggestion_count: int = 0
-    validated_action_count: int = 0
+    approved_action_count: int = 0
     executed_action_count: int = 0
     failed_action_count: int = 0
     action_batch_id: str | None = None
     executed_nodes: list[dict[str, Any]] = Field(default_factory=list)
 
-    interrupt_type: Literal["continue_optimization"] | None = None
-    interrupt_id: str | None = None
-    continuation_payload: dict[str, Any] | None = None
+    review_batch_id: str | None = None
+    review_decision: ReviewDecision | None = None
+    review_payload: dict[str, Any] | None = None
 
     report_id: int | None = None
     report_path: str | None = None
+    report_type: Literal["draft", "partial", "failed", "final"] | None = None
     export_path: str | None = None
+    verification_status: str | None = None
+    quality_before: float | None = None
+    quality_after: float | None = None
+    quality_delta: float | None = None
+    remaining_issue_count: int = 0
 
     error_code: str | None = None
     error_message: str | None = None
 
     @model_validator(mode="after")
-    def validate_waiting_state(self) -> "TaxonomyGraphState":
-        if self.status == "waiting_continue" and (
-            self.interrupt_type != "continue_optimization" or not self.interrupt_id
-        ):
-            raise ValueError(
-                "waiting_continue state requires continue_optimization interrupt."
-            )
+    def validate_waiting_review_state(self) -> "TaxonomyGraphState":
+        if self.status == "waiting_review" and not self.review_batch_id:
+            raise ValueError("waiting_review state requires review_batch_id.")
         return self

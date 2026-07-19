@@ -22,16 +22,21 @@ class VersionRecord(BaseModel):
     snapshot_path: str | None = None
     parent_version_id: int | None = None
     source_workflow_id: str | None = None
-    analysis_run_id: str | None = None
     action_batch_id: str | None = None
-    vector_index_status: str = "unknown"
-    vector_index_generation: int = 0
-    verification_status: str | None = None
+    verification_status: str = "not_verified"
+    export_path: str | None = None
+    supersedes_version_id: int | None = None
+    lifecycle_status: str = "draft"
+    diagnosis_mode: str | None = None
+    diagnosis_model: str | None = None
+    verification_mode: str | None = None
+    verification_model: str | None = None
     created_time: str | None = None
 
 
 class ExecuteActionsResult(BaseModel):
     source_version_id: int
+    review_batch_id: str
     action_batch_id: str
     executed_count: int
     failed_count: int
@@ -47,6 +52,8 @@ class SaveVersionResult(BaseModel):
     executed_count: int = 0
     failed_count: int = 0
     quality_score: float | None = None
+    action_batch_id: str | None = None
+    reused: bool = False
 
 
 class VersionDiff(BaseModel):
@@ -57,6 +64,9 @@ class VersionDiff(BaseModel):
     renamed: list[dict] = Field(default_factory=list)
     moved: list[dict] = Field(default_factory=list)
     synonym_changed: list[dict] = Field(default_factory=list)
+    merged: list[dict] = Field(default_factory=list)
+    split: list[dict] = Field(default_factory=list)
+    deprecated: list[dict] = Field(default_factory=list)
 
 
 class ExportResult(BaseModel):

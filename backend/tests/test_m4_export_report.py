@@ -1,7 +1,7 @@
 from openpyxl import load_workbook
 
 from backend.app.config import Settings
-from backend.app.db import init_db
+from backend.app.db import connect, init_db
 from backend.app.repositories.diagnosis_repo import DiagnosisRepository
 from backend.app.repositories.suggestion_repo import SuggestionRepository
 from backend.app.repositories.taxonomy_repo import TaxonomyRepository
@@ -26,6 +26,8 @@ def _settings(tmp_path):
 
 def _seed_version(settings: Settings) -> int:
     init_db(settings)
+    with connect(settings) as connection:
+        connection.execute("INSERT OR IGNORE INTO uploaded_file (id,file_name,file_path) VALUES (1,'test.xlsx','test.xlsx')")
     version_id = VersionRepository(settings).create_version(
         file_id=1,
         version_no="v1.0",
@@ -76,6 +78,7 @@ def _seed_version(settings: Settings) -> int:
         ),
     )
     SuggestionRepository(settings).create_suggestion(
+        review_batch_id="batch-report",
         suggestion=AdjustmentSuggestion(
             issue_id=issue_id,
             version_id=version_id,
@@ -87,7 +90,8 @@ def _seed_version(settings: Settings) -> int:
             suggestion="删除污染词",
             risk_level="medium",
             confidence=0.9,
-            status="validated",
+            need_confirm=True,
+            status="approved",
         ),
     )
     return version_id
@@ -99,7 +103,7 @@ def test_export_excel_writes_standard_columns(tmp_path):
 
     export_path = export_excel(version_id, settings)
 
-    assert export_path.name == "v1.0_taxonomy.xlsx"
+    assert export_path.name == f"file-1_v1.0_version-{version_id}_taxonomy.xlsx"
     workbook = load_workbook(export_path, read_only=True)
     rows = list(workbook.active.iter_rows(values_only=True))
     assert rows[0] == (
@@ -120,8 +124,8 @@ def test_m4_report_contains_suggestions_execution_and_version_sections(tmp_path)
     result = ReportService(settings).generate_diagnosis_report(version_id)
     report_text = result.report_path.read_text(encoding="utf-8")
 
-    assert "## 6. 自动决策摘要" in report_text
+    assert "## 六、问题处理建议" in report_text
     assert "删除污染词" in report_text
-    assert "## 7. 版本变更记录" in report_text
-    assert "## 8. 质量评分" in report_text
-    assert "95.0/100" in report_text
+    assert "## 七、处理计划" in report_text
+    assert "## 八、最终结论" in report_text
+    assert "综合评分：95.0/100" in report_text

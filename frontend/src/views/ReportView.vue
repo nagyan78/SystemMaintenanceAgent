@@ -2,60 +2,107 @@
   <AppShell>
     <div class="page-stack">
       <section class="card">
-        <div class="card-head">
-          <div>
-            <p class="eyebrow">可追溯的自动维护结果</p>
-            <h2>{{ reportName || `Version ${versionId} 报告` }}</h2>
-            <p class="lead">报告展示诊断结果、智能体自动决策依据和版本变更记录。</p>
-          </div>
-          <span class="badge" :data-tone="error ? 'danger' : markdown ? 'success' : 'warning'">{{ error ? '加载失败' : markdown ? '已生成' : '准备中' }}</span>
+        <div class="card-head"><div><p class="eyebrow">后端报告资源</p><h2>{{ activeVersionId ? `版本 #${activeVersionId}` : '选择报告版本' }}</h2></div><button v-if="activeVersionId" class="button secondary" :disabled="loading" @click="loadReport">刷新</button></div>
+        <div v-if="!activeVersionId" class="action-row">
+          <select v-model.number="selectedFileId" @change="loadSelectableVersions"><option :value="0">选择文件</option><option v-for="item in files" :key="item.id" :value="item.id">{{ item.file_name }}</option></select>
+          <select v-model.number="selectedVersionId" :disabled="!selectedFileId"><option :value="0">选择版本</option><option v-for="item in versions" :key="item.id" :value="item.id">{{ item.version_no }}</option></select>
+          <button class="button primary" :disabled="!selectedVersionId" @click="openSelectedVersion">查询报告</button>
         </div>
-        <div class="action-row">
-          <button class="button secondary" :disabled="loading" @click="loadReport">{{ loading ? '正在加载…' : '刷新预览' }}</button>
-          <a v-if="downloadUrl" :href="apiUrl(downloadUrl)" class="button primary">下载 Markdown</a>
-        </div>
-        <p v-if="error" class="error" role="alert">{{ error }}</p>
+        <p v-if="loading" class="lead">正在查询报告资源…</p>
+        <p v-else-if="pageState === 'not_found'" class="lead">报告不存在：该版本不存在。</p>
+        <div v-else-if="pageState === 'not_generated'" class="empty-state"><h3>报告尚未生成</h3><p>{{ missingReason }}</p></div>
+        <p v-else-if="pageState === 'error'" class="error">接口请求失败：{{ errorMessage }}</p>
+        <template v-else-if="preview">
+          <p class="lead"><span class="badge">{{ reportTypeLabel(preview.report_type) }}</span> {{ preview.report_path }}</p>
+          <div class="action-row"><a :href="downloadUrl" class="button secondary">下载 Markdown</a><a :href="pdfDownloadUrl" class="button primary">下载 PDF 报告</a></div>
+        </template>
       </section>
-      <MarkdownViewer v-if="markdown" title="报告预览" :markdown="markdown" />
-      <section v-else-if="!loading && !error" class="card empty-state">
-        <p class="eyebrow">尚无报告</p>
-        <h2>完成一次工作流后即可查看</h2>
-        <p class="lead">也可直接刷新，系统会为当前版本生成结构诊断报告。</p>
-      </section>
+      <section v-if="resources.length > 1" class="card"><h3>该版本的报告资源</h3><div class="action-row"><button v-for="item in resources" :key="item.report_type" class="button secondary" @click="selectResource(item)">{{ reportTypeLabel(item.report_type) }}</button></div></section>
+      <MarkdownViewer v-if="preview?.markdown" :title="reportTypeLabel(preview.report_type)" :markdown="preview.markdown" />
+      <ReportQualitySummary v-if="activeVersionId" :version-id="activeVersionId" />
     </div>
   </AppShell>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
 import MarkdownViewer from '../components/MarkdownViewer.vue'
-import { apiUrl } from '../api/client'
-import { getReport } from '../api/versions'
+import ReportQualitySummary from '../components/ReportQualitySummary.vue'
+import { ApiError, apiUrl } from '../api/client'
+import { listFiles } from '../api/files'
+import type { FileRecord } from '../api/files'
+import { getVersion, listVersions } from '../api/versions'
+import type { VersionRecord } from '../api/versions'
+import { getReportPreview, listReports } from '../api/reports'
+import type { ReportPreview, ReportResource, ReportType } from '../api/reports'
+import { useWorkspace } from '../state/workspace'
 
-const route = useRoute()
-const versionId = computed(() => String(route.params.versionId))
-const markdown = ref('')
-const reportName = ref('')
-const downloadUrl = ref('')
-const loading = ref(false)
-const error = ref('')
+const route = useRoute(), router = useRouter(), { patch } = useWorkspace()
+const activeVersionId = computed(() => Number(route.params.versionId || 0))
+const files = ref<FileRecord[]>([]), versions = ref<VersionRecord[]>([])
+const selectedFileId = ref(0), selectedVersionId = ref(0)
+const resources = ref<ReportResource[]>([]), preview = ref<ReportPreview | null>(null)
+const loading = ref(false), errorMessage = ref(''), missingReason = ref('')
+const pageState = ref<'idle' | 'ready' | 'not_generated' | 'not_found' | 'error'>('idle')
+const downloadUrl = computed(() => preview.value ? apiUrl(preview.value.download_url) : '')
+const pdfDownloadUrl = computed(() => preview.value ? apiUrl(preview.value.pdf_download_url) : '')
+const reportTypeLabel = (type: ReportType) => ({ draft: '诊断草稿', partial: '部分完成报告', failed: '失败报告', final: '最终报告', historical: '历史诊断报告' }[type])
 
-async function loadReport() {
-  loading.value = true
-  error.value = ''
+async function loadSelectableVersions() {
+  versions.value = selectedFileId.value ? await listVersions(selectedFileId.value) : []
+  selectedVersionId.value = 0
+}
+async function openSelectedVersion() {
+  if (selectedVersionId.value) await router.push(`/report/${selectedVersionId.value}`)
+}
+async function selectResource(resource: ReportResource) {
+  errorMessage.value = ''
   try {
-    const report = await getReport(Number(versionId.value))
-    markdown.value = report.markdown
-    reportName.value = report.report_name
-    downloadUrl.value = report.download_url
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : '报告加载失败'
-  } finally {
-    loading.value = false
+    preview.value = await getReportPreview(resource.version_id, resource.report_type)
+    pageState.value = 'ready'
+  } catch (error) {
+    preview.value = null
+    if (error instanceof ApiError && error.status === 404) pageState.value = 'not_found'
+    else {
+      pageState.value = 'error'
+      errorMessage.value = error instanceof Error ? error.message : '报告接口请求失败'
+    }
   }
+}
+function requestedType(): ReportType | null {
+  return ['draft', 'partial', 'failed', 'final', 'historical'].includes(String(route.query.type)) ? route.query.type as ReportType : null
+}
+async function loadReport() {
+  loading.value = true; errorMessage.value = ''; missingReason.value = ''; preview.value = null; resources.value = []; pageState.value = 'idle'
+  try {
+    if (!files.value.length) files.value = await listFiles()
+    if (!activeVersionId.value) return
+    const version = await getVersion(activeVersionId.value)
+    selectedFileId.value = version.file_id
+    versions.value = await listVersions(version.file_id)
+    selectedVersionId.value = version.id
+    resources.value = await listReports(version.id)
+    const requested = requestedType()
+    const selected = requested
+      ? resources.value.find(item => item.report_type === requested)
+      : resources.value.find(item => item.report_type === 'final') || resources.value.find(item => item.report_type === 'partial') || resources.value.find(item => item.report_type === 'draft') || resources.value.find(item => item.report_type === 'failed') || resources.value.find(item => item.report_type === 'historical')
+    if (!selected) {
+      pageState.value = 'not_generated'
+      if (requested === 'final' || (!requested && !version.parent_version_id)) missingReason.value = '最终报告将在 AI 自动审核、动作执行、新版本保存和结果复诊完成后生成。'
+      else if (requested === 'draft') missingReason.value = '该版本尚未生成诊断草稿，请先完成诊断。'
+      else missingReason.value = '后端没有找到该版本对应的报告资源。'
+      return
+    }
+    await selectResource(selected)
+    patch({ fileId: version.file_id, currentVersionId: version.id, versionNo: version.version_no, reportPath: selected.report_path })
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) pageState.value = 'not_found'
+    else { pageState.value = 'error'; errorMessage.value = error instanceof Error ? error.message : '报告接口请求失败' }
+  } finally { loading.value = false }
 }
 
 onMounted(loadReport)
+watch(() => [route.params.versionId, route.query.type], loadReport)
 </script>

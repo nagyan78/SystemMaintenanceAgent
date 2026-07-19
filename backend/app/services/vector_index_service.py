@@ -22,65 +22,46 @@ class VectorIndexService:
         self.embeddings = embeddings
         self.store = store
 
-    def index_version(
-        self,
-        version_id: int,
-        changed_category_ids: list[int] | None = None,
-    ) -> IndexResult:
-        version_repo = VersionRepository(self.settings)
-        if version_repo.get_version(version_id) is None:
+    def index_version(self, version_id: int) -> IndexResult:
+        if VersionRepository(self.settings).get_version(version_id) is None:
             raise ValueError(f"Taxonomy version {version_id} was not found.")
         embeddings = self.embeddings or self._create_embeddings()
         if embeddings is None:
-            version_repo.update_vector_index_status(version_id, "skipped")
             return IndexResult(version_id=version_id, status="skipped", indexed_count=0)
-        try:
-            store = self.store or QdrantStore(self.settings, embeddings=embeddings)
-            if store.version_indexed(version_id):
-                version_repo.update_vector_index_status(version_id, "ready")
-                return IndexResult(version_id=version_id, status="ready", indexed_count=0)
-            # Phase one intentionally performs a full rebuild. The argument is
-            # reserved for the later outbox-backed incremental implementation.
-            _ = changed_category_ids
-            nodes = TaxonomyRepository(self.settings).list_nodes(version_id)
-            texts = [_node_text(node) for node in nodes]
-            vectors = self._embed_documents(embeddings, texts)
-            vector_size = len(vectors[0]) if vectors else 1536
-            store.create_collection(vector_size=vector_size)
-            indexed_count = store.index_nodes(
-                [
-                    {
-                        "id": f"{version_id}_{node['category_id']}",
-                        "vector": vector,
-                        "payload": {
-                            "version_id": version_id,
-                            "category_id": int(node["category_id"]),
-                            "category_name": node["category_name"],
-                            "parent_id": node["parent_id"],
-                            "level": node["level"],
-                            "path_names": node["path_names"],
-                            "syn_list": node["syn_list"],
-                            "is_leaf": node["is_leaf"],
-                            "node_text": text,
-                        },
-                    }
-                    for node, text, vector in zip(nodes, texts, vectors, strict=True)
-                ]
-            )
-        except Exception as exc:
-            version_repo.update_vector_index_status(version_id, "failed")
-            return IndexResult(
-                version_id=version_id,
-                status="failed",
-                indexed_count=0,
-                error_message=str(exc),
-            )
-        version_repo.update_vector_index_status(
-            version_id,
-            "ready",
-            increment_generation=True,
+        store = self.store or QdrantStore(self.settings, embeddings=embeddings)
+        if store.version_indexed(version_id):
+            return IndexResult(version_id=version_id, status="skipped", indexed_count=0)
+        nodes = TaxonomyRepository(self.settings).list_nodes(version_id)
+        texts = [_node_text(node) for node in nodes]
+        vectors = self._embed_documents(embeddings, texts)
+        vector_size = len(vectors[0]) if vectors else 1536
+        store.create_collection(vector_size=vector_size)
+        indexed_count = store.index_nodes(
+            [
+                {
+                    "id": f"{version_id}_{node['category_id']}",
+                    "vector": vector,
+                    "payload": {
+                        "version_id": version_id,
+                        "category_id": int(node["category_id"]),
+                        "category_name": node["category_name"],
+                        "parent_id": node["parent_id"],
+                        "level": node["level"],
+                        "path_names": node["path_names"],
+                        "syn_list": node["syn_list"],
+                        "is_leaf": node["is_leaf"],
+                        "node_text": text,
+                    },
+                }
+                for node, text, vector in zip(nodes, texts, vectors, strict=True)
+            ]
         )
-        return IndexResult(version_id=version_id, status="ready", indexed_count=indexed_count)
+        VersionRepository(self.settings).increment_vector_index_generation(version_id)
+        return IndexResult(
+            version_id=version_id,
+            status="completed",
+            indexed_count=indexed_count,
+        )
 
     def _create_embeddings(self) -> OpenAIEmbeddings | None:
         if not self.settings.dashscope_api_key:
