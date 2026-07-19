@@ -2,6 +2,7 @@
   color-scheme: light;
   --canvas: #f6f7f9;
   --surface: #fff;
+  --surface-solid: #fff;
   --surface-subtle: #fafbfc;
   --ink: #141b2a;
   --text: var(--ink);

@@ -23,6 +23,7 @@ from backend.app.tools.tree_tools import (
     search_similar_nodes,
     submit_diagnosis,
 )
+from backend.app.tools.payload_tools import coerce_json_object
 
 
 logger = logging.getLogger(__name__)
@@ -144,34 +145,88 @@ class ContentDiagnosisAgent:
             response = llm_with_tools.invoke(messages)
             self._trace(f"Thought: {response.content}")
             tool_calls = getattr(response, "tool_calls", []) or []
-            if not tool_calls:
+            invalid_tool_calls = getattr(response, "invalid_tool_calls", []) or []
+            if not tool_calls and not invalid_tool_calls:
                 messages.append(response)
                 messages.append(HumanMessage(content="请继续分析，或调用 submit_diagnosis 提交问题。"))
                 continue
             messages.append(response)
+            for invalid_tool_call in invalid_tool_calls:
+                self._record_tool_error(
+                    str(invalid_tool_call.get("name") or "unknown_tool"),
+                    invalid_tool_call,
+                    messages,
+                    str(invalid_tool_call.get("error") or "工具参数不是合法 JSON，请使用 JSON 对象重试。"),
+                )
+            submitted_issue: ContentIssue | None = None
             for tool_call in tool_calls:
+                if (
+                    str(tool_call.get("name") or "") == "submit_diagnosis"
+                    and submitted_issue is not None
+                ):
+                    self._record_tool_error(
+                        "submit_diagnosis",
+                        tool_call,
+                        messages,
+                        "同一轮只能提交一个诊断问题，请在下一轮继续。",
+                    )
+                    continue
                 issue = self._execute_tool_call(tool_call, messages)
-                if issue:
-                    return issue
+                if issue and submitted_issue is None:
+                    submitted_issue = issue
+            # Do not return from inside the loop: all tool_call_id values in
+            # this response need a ToolMessage before the conversation ends or
+            # the model is invoked again.
+            if submitted_issue:
+                return submitted_issue
         logger.warning("Content diagnosis max_iter exhausted for candidate %s", candidate)
         return None
 
     def _execute_tool_call(self, tool_call: dict[str, Any], messages: list[Any]) -> ContentIssue | None:
-        name = tool_call["name"]
-        args = tool_call.get("args") or {}
-        tool_obj = self.tool_map[name]
+        name = str(tool_call.get("name") or "")
+        try:
+            args = coerce_json_object(tool_call.get("args") or {}, field_name=f"{name} 参数")
+            if name == "submit_diagnosis":
+                args["issue"] = coerce_json_object(args.get("issue", {}), field_name="issue")
+            tool_obj = self.tool_map[name]
+        except (KeyError, ValueError) as exc:
+            self._record_tool_error(name, tool_call, messages, str(exc))
+            return None
         self._trace(f"Action: {name} {json.dumps(args, ensure_ascii=False)}")
-        observation = tool_obj.invoke(args)
+        try:
+            observation = tool_obj.invoke(args)
+        except Exception as exc:
+            self._record_tool_error(name, tool_call, messages, str(exc))
+            return None
         self._trace(f"Observation: {observation}")
         messages.append(
             ToolMessage(
                 content=json.dumps(observation, ensure_ascii=False),
-                tool_call_id=tool_call.get("id", name),
+                tool_call_id=str(tool_call.get("id") or name),
             )
         )
         if name == "submit_diagnosis":
-            return _issue_from_tool_args(args, str(observation))
+            try:
+                return _issue_from_tool_args(args, str(observation))
+            except (KeyError, TypeError, ValueError) as exc:
+                self._trace(f"Observation: submit_diagnosis response could not be parsed: {exc}")
+                return None
         return None
+
+    def _record_tool_error(
+        self,
+        name: str,
+        tool_call: dict[str, Any],
+        messages: list[Any],
+        reason: str,
+    ) -> None:
+        self._trace(f"Observation: tool error for {name}: {reason}")
+        messages.append(
+            ToolMessage(
+                content=json.dumps({"valid": False, "reason": reason}, ensure_ascii=False),
+                tool_call_id=str(tool_call.get("id") or name),
+            )
+        )
 
     def _create_llm(self) -> ChatOpenAI | None:
         if not self.settings.deepseek_api_key:

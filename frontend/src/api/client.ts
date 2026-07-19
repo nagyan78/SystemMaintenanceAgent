@@ -2,7 +2,21 @@ export const API_BASE_URL = localStorage.getItem('apiBaseUrl') || 'http://127.0.
 
 export function apiUrl(path: string): string {
   const baseUrl = (localStorage.getItem('apiBaseUrl') || API_BASE_URL).replace(/\/$/, '')
-  return `${baseUrl}${path}`
+  if (/^https?:\/\//i.test(path)) return path
+
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+  try {
+    const basePath = new URL(baseUrl).pathname.replace(/\/$/, '')
+    // Backend download links are API-rooted (for example `/api/versions/2/...`),
+    // while the configurable base URL already normally ends in `/api`.
+    // Strip that shared prefix so callers never produce `/api/api/...`.
+    if (basePath && (normalizedPath === basePath || normalizedPath.startsWith(`${basePath}/`))) {
+      return `${baseUrl}${normalizedPath.slice(basePath.length) || '/'}`
+    }
+  } catch {
+    // Keep the normal concatenation behavior for an invalid user-provided base.
+  }
+  return `${baseUrl}${normalizedPath}`
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

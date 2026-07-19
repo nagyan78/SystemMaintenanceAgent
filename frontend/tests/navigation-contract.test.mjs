@@ -17,7 +17,12 @@ assert.ok(workflowSource.includes('QualityComparison'), 'workflow page must rend
 assert.ok(workflowSource.includes('continue_optimization'), 'workflow page must handle continue interrupts')
 assert.ok(workflowSource.includes('继续优化'), 'workflow page must expose continue action')
 assert.ok(workflowSource.includes('结束并生成报告'), 'workflow page must expose finish action')
-assert.ok(workflowSource.includes('workflow-launch-backdrop'), 'workflow page must present an animated launch sheet')
+assert.ok(workflowSource.includes('workflow-progress-backdrop'), 'workflow page must present a progress modal')
+assert.ok(workflowSource.includes('workflow-progress-modal'), 'workflow page must use a dedicated progress surface')
+assert.ok(workflowSource.includes("display: flex; align-items: flex-start; min-width: max-content"), 'workflow progress stages must flow horizontally')
+for (const token of ['isProgressModalDismissed', 'closeProgressModal', 'reopenProgressModal', 'workflow-modal-close', 'workflow-spinner', '智能体加载中']) {
+  assert.ok(workflowSource.includes(token), `workflow progress modal missing ${token}`)
+}
 assert.ok(workflowSource.includes('clearExpiredTask'), 'workflow page must clear an expired persisted task')
 assert.ok(workflowSource.includes("router.replace('/upload')"), 'expired workflow must return to upload instead of polling forever')
 
@@ -29,6 +34,7 @@ assert.ok(uploadViewSource.includes('selectExistingFile'), 'upload page must all
 
 const clientSource = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
 assert.ok(clientSource.includes("localStorage.getItem('apiBaseUrl') || 'http://127.0.0.1:8000/api'"), 'missing api base url default')
+assert.ok(clientSource.includes('normalizedPath.slice(basePath.length)'), 'api url builder must avoid duplicate API prefixes for download links')
 
 const workspaceSource = readFileSync(new URL('../src/state/workspace.ts', import.meta.url), 'utf8')
 assert.ok(workspaceSource.includes("import { reactive } from 'vue'"), 'workspace must import reactive for runtime mount')

@@ -176,8 +176,6 @@ def init_db(settings: Settings) -> None:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_category_node_version_category
             ON category_node(version_id, category_id);
 
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_unique_rule
-            ON diagnosis_issue(version_id, issue_type, node_id, description);
             """
         )
         _ensure_columns(
@@ -234,7 +232,11 @@ def init_db(settings: Settings) -> None:
                 "verification_status": "TEXT",
             },
         )
+        # The first M1 schema used this version-scoped index.  Some existing
+        # local databases contain duplicate legacy issues, so creating it
+        # during bootstrap prevents the migration below from ever running.
         connection.execute("DROP INDEX IF EXISTS idx_issue_unique_rule")
+        _deduplicate_issues_for_run_index(connection)
         connection.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_unique_run_rule
@@ -301,4 +303,25 @@ def _create_unique_index_if_clean(
     connection.execute(
         f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} "
         f"ON {table_name}({column_sql}) {where_sql}"
+    )
+
+
+def _deduplicate_issues_for_run_index(connection: sqlite3.Connection) -> None:
+    """Keep the earliest copy of duplicated issues before adding the run index.
+
+    This only affects issues that belong to an analysis run, which is the scope
+    of ``idx_issue_unique_run_rule``.  Legacy issues without an analysis run
+    remain untouched because SQLite's unique index permits their NULL values.
+    """
+    connection.execute(
+        """
+        DELETE FROM diagnosis_issue
+        WHERE analysis_run_id IS NOT NULL
+          AND id NOT IN (
+              SELECT MIN(id)
+              FROM diagnosis_issue
+              WHERE analysis_run_id IS NOT NULL
+              GROUP BY analysis_run_id, detector_version, issue_type, node_id, description
+          )
+        """
     )

@@ -7,6 +7,7 @@ from backend.app.config import Settings, get_settings
 from backend.app.repositories.diagnosis_repo import DiagnosisRepository
 from backend.app.repositories.taxonomy_repo import TaxonomyRepository
 from backend.app.schemas.issue import DiagnosisIssueRecord
+from backend.app.tools.payload_tools import coerce_json_object
 from backend.app.vectorstores.qdrant_store import QdrantStore
 
 
@@ -67,8 +68,9 @@ def search_similar_nodes(
 
 
 @tool
-def submit_diagnosis(issue: dict) -> str:
-    """提交一条诊断结果，返回 issue_id"""
+def submit_diagnosis(issue: dict[str, Any] | str) -> str:
+    """提交一条诊断结果，返回 issue_id；issue 可为对象或 JSON 对象字符串。"""
+    issue = coerce_json_object(issue, field_name="issue")
     version_id = int(issue["version_id"])
     record = DiagnosisIssueRecord(
         issue_type=issue["issue_type"],
