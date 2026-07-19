@@ -56,7 +56,10 @@ SUGGESTION_GENERATION_SYSTEM_PROMPT = """
 4. 校验通过后调用 submit_suggestion 提交建议。
 5. 校验失败时按失败原因修正建议后重试。
 
-建议 JSON 字段必须包含：issue_id、version_id、action_type、target_node_id、target_node_name、old_parent_id、new_parent_id、old_name、new_name、action_payload、reason、suggestion、risk_level、confidence、need_confirm。
+建议对象字段必须包含：issue_id、version_id、action_type、target_node_id、target_node_name、old_parent_id、new_parent_id、old_name、new_name、action_payload、reason、suggestion、risk_level、confidence、need_confirm。
+
+调用 validate_action 时，传入 {"action_json": {建议对象}}；调用 submit_suggestion 时，传入 {"suggestion": {建议对象}}。
+建议对象必须是工具参数中的 JSON 对象，不能是带引号的 JSON 字符串，不能使用 json.dumps，不能包裹 Markdown 代码块。
 
 允许 action_type：add_node、move_node、rename_node、merge_node、clean_synonym、split_subtree、mark_as_valid。
 风险等级只能是 low、medium、high。M3 只生成和审核建议，禁止执行动作、禁止修改分类树、禁止生成新版本。

@@ -110,11 +110,11 @@ def test_m1_workflow_api_runs_upload_to_report_with_real_data(tmp_path):
     status_response = client.get(f"/api/workflows/{start_body['task_id']}")
     assert status_response.status_code == 200
     status_body = status_response.json()
-    assert status_body["status"] == "waiting_review"
-    assert status_body["current_step"] == "review_pending"
-    assert status_body["progress"] == 80
+    assert status_body["status"] == "completed"
+    assert status_body["current_step"] == "completed"
+    assert status_body["progress"] == 100
     assert status_body["file_id"] == file_id
-    assert status_body["version_no"] == "v1.0"
+    assert status_body["version_no"].startswith("v1.")
     assert status_body["node_count"] == 21090
     assert status_body["structure_issue_count"] >= 44
     assert Path(status_body["report_path"]).exists()

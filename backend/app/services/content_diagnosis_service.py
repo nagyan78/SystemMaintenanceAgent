@@ -19,6 +19,7 @@ from backend.app.repositories.taxonomy_repo import TaxonomyRepository
 from backend.app.schemas.issue import ContentIssue, DiagnosisPlan
 from backend.app.services.tool_factory import AgentResourceLimits, AgentToolFactory
 from backend.app.domain.issue_types import normalize_issue_type_code
+from backend.app.tools.payload_tools import coerce_json_object
 
 
 logger = logging.getLogger(__name__)
@@ -141,15 +142,34 @@ class ContentDiagnosisAgent:
                 })
             self._trace(f"Thought: {response.content}")
             tool_calls = getattr(response, "tool_calls", []) or []
-            if not tool_calls:
+            invalid_tool_calls = getattr(response, "invalid_tool_calls", []) or []
+            if not tool_calls and not invalid_tool_calls:
                 messages.append(response)
                 messages.append(HumanMessage(content="请继续分析，或调用 submit_diagnosis 提交问题。"))
                 continue
             messages.append(response)
+            for invalid_tool_call in invalid_tool_calls:
+                self._record_tool_error(
+                    str(invalid_tool_call.get("name") or "unknown_tool"),
+                    invalid_tool_call,
+                    messages,
+                    str(invalid_tool_call.get("error") or "工具参数不是合法 JSON，请使用 JSON 对象重试。"),
+                )
+            submitted_issue: ContentIssue | None = None
             for tool_call in tool_calls:
+                if str(tool_call.get("name") or "") == "submit_diagnosis" and submitted_issue is not None:
+                    self._record_tool_error(
+                        "submit_diagnosis",
+                        tool_call,
+                        messages,
+                        "同一轮只能提交一个诊断问题，请在下一轮继续。",
+                    )
+                    continue
                 issue = self._execute_tool_call(tool_call, messages, plan.focus_issues)
-                if issue:
-                    return issue
+                if issue and submitted_issue is None:
+                    submitted_issue = issue
+            if submitted_issue:
+                return submitted_issue
         logger.warning("Content diagnosis max_iter exhausted for candidate %s", candidate)
         return None
 
@@ -161,9 +181,15 @@ class ContentDiagnosisAgent:
     def _execute_tool_call(
         self, tool_call: dict[str, Any], messages: list[Any], focus_issues: list[str] | None = None,
     ) -> ContentIssue | None:
-        name = tool_call["name"]
-        args = tool_call.get("args") or {}
-        tool_obj = self.tool_map[name]
+        name = str(tool_call.get("name") or "")
+        try:
+            args = coerce_json_object(tool_call.get("args") or {}, field_name=f"{name} 参数")
+            if name == "submit_diagnosis":
+                args["issue"] = coerce_json_object(args.get("issue", {}), field_name="issue")
+            tool_obj = self.tool_map[name]
+        except (KeyError, ValueError) as exc:
+            self._record_tool_error(name, tool_call, messages, str(exc))
+            return None
         self._trace(f"Action: {name} {json.dumps(args, ensure_ascii=False)}")
         if self.event_sink:
             self.event_sink({"event_type": "agent_step", "tool_name": name, "status": "running", "summary": {"action": "tool_started"}})
@@ -174,19 +200,49 @@ class ContentDiagnosisAgent:
                 observation = {"accepted": False, "reason": "issue_type is outside DiagnosisPlan.focus_issues"}
                 messages.append(ToolMessage(content=json.dumps(observation, ensure_ascii=False), tool_call_id=tool_call.get("id", name)))
                 return None
-        observation = tool_obj.invoke(args)
+        try:
+            observation = tool_obj.invoke(args)
+        except Exception as exc:
+            self._record_tool_error(name, tool_call, messages, str(exc))
+            return None
         self._trace(f"Observation: {observation}")
         if self.event_sink:
             self.event_sink({"event_type": "agent_tool_completed", "tool_name": name, "status": "completed", "summary": {"result_type": type(observation).__name__}})
         messages.append(
             ToolMessage(
                 content=json.dumps(observation, ensure_ascii=False),
-                tool_call_id=tool_call.get("id", name),
+                tool_call_id=str(tool_call.get("id") or name),
             )
         )
         if name == "submit_diagnosis":
-            return _issue_from_tool_args(args, str(observation))
+            try:
+                return _issue_from_tool_args(args, str(observation))
+            except (KeyError, TypeError, ValueError) as exc:
+                self._trace(f"Observation: submit_diagnosis response could not be parsed: {exc}")
+                return None
         return None
+
+    def _record_tool_error(
+        self,
+        name: str,
+        tool_call: dict[str, Any],
+        messages: list[Any],
+        reason: str,
+    ) -> None:
+        self._trace(f"Observation: tool error for {name}: {reason}")
+        if self.event_sink:
+            self.event_sink({
+                "event_type": "agent_tool_completed",
+                "tool_name": name,
+                "status": "failed",
+                "summary": {"reason": reason},
+            })
+        messages.append(
+            ToolMessage(
+                content=json.dumps({"valid": False, "reason": reason}, ensure_ascii=False),
+                tool_call_id=str(tool_call.get("id") or name),
+            )
+        )
 
     def _create_llm(self) -> Any:
         return ModelService(self.settings).get_chat_model(temperature=0.1)

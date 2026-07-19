@@ -306,11 +306,17 @@ def test_graph_topology_routes_content_to_suggestion_and_m4_execution_after_vali
     assert ("verify_new_version_node", "generate_report_node") in edges
 
 
-def test_default_diagnosis_graph_does_not_contain_human_review_nodes(tmp_path):
+def test_default_diagnosis_graph_uses_ai_review_and_automatic_execution(tmp_path):
     from backend.app.agents.graph import build_taxonomy_graph
 
-    nodes = set(build_taxonomy_graph(settings=_settings(tmp_path)).get_graph().nodes)
+    graph = build_taxonomy_graph(settings=_settings(tmp_path))
+    nodes = set(graph.get_graph().nodes)
+    edges = {(edge.source, edge.target) for edge in graph.get_graph().edges}
 
     assert "wait_human_review_node" not in nodes
-    assert "execute_action_node" not in nodes
+    assert "ai_review_action_node" in nodes
+    assert "execute_action_node" in nodes
     assert "generate_report_node" in nodes
+    assert ("generate_suggestion_node", "ai_review_action_node") in edges
+    assert ("ai_review_action_node", "validate_action_node") in edges
+    assert ("validate_action_node", "execute_action_node") in edges

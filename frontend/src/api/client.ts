@@ -45,15 +45,29 @@ export function getApiOrigin(): string {
   return getApiBaseUrl().replace(/\/api$/, '')
 }
 
+export function apiUrl(path: string): string {
+  if (/^https?:\/\//i.test(path)) return path
+
+  const baseUrl = getApiBaseUrl()
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+  try {
+    const basePath = new URL(baseUrl).pathname.replace(/\/$/, '')
+    if (basePath && (normalizedPath === basePath || normalizedPath.startsWith(`${basePath}/`))) {
+      return `${baseUrl}${normalizedPath.slice(basePath.length) || '/'}`
+    }
+  } catch {
+    // normalizeApiBase normally prevents this; retain deterministic fallback.
+  }
+  return `${baseUrl}${normalizedPath}`
+}
+
 export function describeApiError(error: unknown): string {
   if (error instanceof ApiError) return error.message
   return error instanceof Error ? error.message : '未知接口错误'
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const baseUrl = getApiBaseUrl()
-  const normalizedPath = `/${String(path || '').replace(/^\/+/, '')}`
-  const url = `${baseUrl}${normalizedPath}`
+  const url = apiUrl(`/${String(path || '').replace(/^\/+/, '')}`)
   let response: Response
   try {
     response = await fetch(url, init)

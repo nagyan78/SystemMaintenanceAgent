@@ -381,6 +381,36 @@ def wait_human_review_node(state: TaxonomyGraphState) -> StateUpdate:
     )
 
 
+def ai_review_action_node(state: TaxonomyGraphState) -> StateUpdate:
+    """Let the AI proposal pipeline review itself, then retain only safe executable actions.
+
+    Suggestion generation has already used the action validation tool. This node performs
+    a second deterministic consistency pass over persisted suggestions before execution.
+    """
+    review_batch_id = _require_review_batch_id(state)
+    result = ReviewService(_current_settings()).auto_complete_review(
+        review_batch_id,
+        operator="ai_reviewer",
+        complete_if_empty=False,
+    )
+    approved_ids = [int(item) for item in result.get("approved_ids", [])]
+    ignored_ids = [int(item) for item in result.get("ignored_ids", [])]
+    return _complete_step(
+        state,
+        "ai_review_action_node",
+        current_step="ai_review",
+        progress=82,
+        status="running",
+        review_decision="approve",
+        review_payload={
+            "mode": "ai_auto_review",
+            "approved_suggestion_ids": approved_ids,
+            "ignored_suggestion_ids": ignored_ids,
+        },
+        approved_action_count=len(approved_ids),
+    )
+
+
 def validate_action_node(state: TaxonomyGraphState) -> StateUpdate:
     review_batch_id = _require_review_batch_id(state)
     results = ActionService(_current_settings()).validate_approved_actions(review_batch_id)
@@ -468,7 +498,11 @@ def generate_report_node(state: TaxonomyGraphState) -> StateUpdate:
     version_id = state.current_version_id or state.base_version_id
     if version_id is None:
         raise WorkflowNodeError("MISSING_VERSION_ID", "Workflow requires version_id.")
-    is_draft = state.review_batch_id is not None and state.new_version_id is None
+    is_draft = (
+        state.review_batch_id is not None
+        and state.new_version_id is None
+        and state.review_decision is None
+    )
     report_type = (
         "final" if state.new_version_id is not None
         else "partial" if state.diagnosis_completion_status == "partial"

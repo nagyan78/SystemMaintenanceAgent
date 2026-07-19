@@ -5,6 +5,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from backend.app.agents.nodes import (
+    ai_review_action_node,
     build_tree_node,
     bind_workflow_node,
     content_diagnosis_node,
@@ -76,11 +77,9 @@ def create_memory_checkpointer() -> InMemorySaver:
 def route_after_suggestion(state: TaxonomyGraphState, *, enable_suggestion_review: bool = True) -> str:
     if state.status in {"failed", "cancelled"}:
         return "end"
-    if not enable_suggestion_review:
-        return "generate_report_node"
     if state.suggestion_count == 0 or state.review_batch_id is None:
         return "generate_report_node"
-    return "wait_human_review_node"
+    return "wait_human_review_node" if enable_suggestion_review else "ai_review_action_node"
 
 
 def route_after_review(state: TaxonomyGraphState) -> str:
@@ -122,10 +121,12 @@ def build_taxonomy_graph(
     builder.add_node("generate_suggestion_node", bind_workflow_node(generate_suggestion_node, runtime_settings))
     if enable_suggestion_review:
         builder.add_node("wait_human_review_node", bind_workflow_node(wait_human_review_node, runtime_settings))
-        builder.add_node("validate_action_node", bind_workflow_node(validate_action_node, runtime_settings))
-        builder.add_node("execute_action_node", bind_workflow_node(execute_action_node, runtime_settings))
-        builder.add_node("save_new_version_node", bind_workflow_node(save_new_version_node, runtime_settings))
-        builder.add_node("verify_new_version_node", bind_workflow_node(verify_new_version_node, runtime_settings))
+    else:
+        builder.add_node("ai_review_action_node", bind_workflow_node(ai_review_action_node, runtime_settings))
+    builder.add_node("validate_action_node", bind_workflow_node(validate_action_node, runtime_settings))
+    builder.add_node("execute_action_node", bind_workflow_node(execute_action_node, runtime_settings))
+    builder.add_node("save_new_version_node", bind_workflow_node(save_new_version_node, runtime_settings))
+    builder.add_node("verify_new_version_node", bind_workflow_node(verify_new_version_node, runtime_settings))
     builder.add_node("generate_report_node", bind_workflow_node(generate_report_node, runtime_settings))
 
     builder.add_edge(START, "parse_excel_node")
@@ -143,38 +144,37 @@ def build_taxonomy_graph(
             lambda state, target=target: route_if_success(state, target),
             {target: target, "end": END},
         )
-    if not enable_suggestion_review:
+    builder.add_conditional_edges(
+        "generate_suggestion_node",
+        lambda state: route_after_suggestion(state, enable_suggestion_review=enable_suggestion_review),
+        {
+            "wait_human_review_node": "wait_human_review_node" if enable_suggestion_review else "ai_review_action_node",
+            "ai_review_action_node": "ai_review_action_node" if not enable_suggestion_review else "wait_human_review_node",
+            "generate_report_node": "generate_report_node",
+            "end": END,
+        },
+    )
+    review_node = "wait_human_review_node" if enable_suggestion_review else "ai_review_action_node"
+    builder.add_conditional_edges(
+        review_node,
+        route_after_review,
+        {"validate_action_node": "validate_action_node", "generate_report_node": "generate_report_node", "end": END},
+    )
+    builder.add_conditional_edges(
+        "validate_action_node",
+        route_after_validate,
+        {"execute_action_node": "execute_action_node", "end": END},
+    )
+    for source, target in (
+        ("execute_action_node", "save_new_version_node"),
+        ("save_new_version_node", "verify_new_version_node"),
+        ("verify_new_version_node", "generate_report_node"),
+    ):
         builder.add_conditional_edges(
-            "generate_suggestion_node",
-            lambda state: route_if_success(state, "generate_report_node"),
-            {"generate_report_node": "generate_report_node", "end": END},
+            source,
+            lambda state, target=target: route_if_success(state, target),
+            {target: target, "end": END},
         )
-    else:
-        builder.add_conditional_edges(
-            "generate_suggestion_node",
-            lambda state: route_after_suggestion(state, enable_suggestion_review=True),
-            {"wait_human_review_node": "wait_human_review_node", "generate_report_node": "generate_report_node", "end": END},
-        )
-        builder.add_conditional_edges(
-            "wait_human_review_node",
-            route_after_review,
-            {"validate_action_node": "validate_action_node", "generate_report_node": "generate_report_node", "end": END},
-        )
-        builder.add_conditional_edges(
-            "validate_action_node",
-            route_after_validate,
-            {"execute_action_node": "execute_action_node", "end": END},
-        )
-        for source, target in (
-            ("execute_action_node", "save_new_version_node"),
-            ("save_new_version_node", "verify_new_version_node"),
-            ("verify_new_version_node", "generate_report_node"),
-        ):
-            builder.add_conditional_edges(
-                source,
-                lambda state, target=target: route_if_success(state, target),
-                {target: target, "end": END},
-            )
     builder.add_edge("generate_report_node", END)
 
     return builder.compile(checkpointer=checkpointer)

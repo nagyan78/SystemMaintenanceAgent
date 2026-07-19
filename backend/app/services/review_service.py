@@ -18,6 +18,7 @@ from backend.app.tools.validation_tools import validate_suggestion_action
 from backend.app.services.agent_memory_service import AgentMemoryService
 from backend.app.services.suggestion_consistency_service import SuggestionConsistencyService
 from backend.app.services.execution_preview_service import ExecutionPreviewService
+from backend.app.services.action_simulation_service import ActionSimulationService
 from backend.app.db import connect
 
 
@@ -162,7 +163,13 @@ class ReviewService:
                     self.reject_suggestion(suggestion.id, operator, decision.get("reject_reason"))
         return len(approved_ids)
 
-    def auto_complete_review(self, review_batch_id: str, operator: str = "local_user") -> dict[str, Any]:
+    def auto_complete_review(
+        self,
+        review_batch_id: str,
+        operator: str = "local_user",
+        *,
+        complete_if_empty: bool = True,
+    ) -> dict[str, Any]:
         """Approve complete executable proposals and ignore every non-executable proposal."""
         suggestions = self.list_review_batch(review_batch_id)
         if not suggestions:
@@ -188,13 +195,59 @@ class ReviewService:
                     reason=result.reason or "无法生成可靠的可执行修改，已自动忽略",
                 )
             ignored_ids.append(suggestion.id)
+        approved_ids, batch_ignored_ids = self._remove_batch_conflicts(
+            review_batch_id,
+            operator=operator,
+        )
+        ignored_ids.extend(item for item in batch_ignored_ids if item not in ignored_ids)
         batch = ReviewBatchRepository(self.settings).refresh_status(review_batch_id)
-        completion = self.complete_without_execution(review_batch_id, operator=operator) if not approved_ids and not any(
+        completion = self.complete_without_execution(review_batch_id, operator=operator) if complete_if_empty and not approved_ids and not any(
             item.status == "approved" for item in self.list_review_batch(review_batch_id)
         ) else None
         return {"review_batch_id": review_batch_id, "approved_ids": approved_ids,
                 "ignored_ids": ignored_ids, "unchanged_ids": unchanged_ids, "batch": batch,
                 "completion": completion}
+
+    def _remove_batch_conflicts(
+        self,
+        review_batch_id: str,
+        *,
+        operator: str,
+    ) -> tuple[list[int], list[int]]:
+        """Keep only an action set that is safe when simulated as one batch."""
+        ignored_ids: list[int] = []
+        while True:
+            approved = [
+                item for item in self.list_review_batch(review_batch_id)
+                if item.status == "approved"
+            ]
+            if not approved:
+                return [], ignored_ids
+            preview = ActionSimulationService(self.settings).simulate(
+                approved[0].version_id,
+                approved,
+            )
+            if preview.valid:
+                return [item.id for item in approved], ignored_ids
+            failing_ids = {
+                int(error["suggestion_id"])
+                for error in preview.errors
+                if error.get("suggestion_id") is not None
+            }
+            if not failing_ids:
+                failing_ids = {item.id for item in approved}
+            for suggestion in approved:
+                if suggestion.id not in failing_ids:
+                    continue
+                self.suggestion_repo.update_status(suggestion.id, "deferred")
+                DiagnosisRepository(self.settings).update_status(suggestion.issue_id, "deferred")
+                self._log(
+                    suggestion,
+                    operator,
+                    "ai_batch_conflict_skip",
+                    {"reason": "组合动作快照预演未通过，已自动跳过"},
+                )
+                ignored_ids.append(suggestion.id)
 
     def complete_without_execution(self, review_batch_id: str, *, operator: str = "local_user") -> dict[str, Any]:
         suggestions = self.list_review_batch(review_batch_id)

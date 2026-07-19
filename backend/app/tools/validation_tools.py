@@ -1,4 +1,3 @@
-import json
 from typing import Any
 
 from langchain_core.tools import tool
@@ -8,6 +7,7 @@ from backend.app.db import connect
 from backend.app.repositories.taxonomy_repo import TaxonomyRepository
 from backend.app.schemas.suggestion import ActionValidationResult, AdjustmentSuggestion
 from backend.app.schemas.action import DeprecateNodePayload, DeleteLeafPayload, MergeNodePayload, SplitSubtreePayload
+from backend.app.tools.payload_tools import coerce_json_object
 
 REMOVE_SYNONYM_KEYS = (
     "synonyms_to_remove",
@@ -43,10 +43,10 @@ ALLOWED_ACTION_TYPES = {
 
 
 @tool
-def validate_action(action_json: str) -> dict:
+def validate_action(action_json: dict[str, Any] | str) -> dict:
     """预校验维护建议动作是否合法。"""
     try:
-        payload = json.loads(action_json) if isinstance(action_json, str) else action_json
+        payload = coerce_json_object(action_json, field_name="action_json")
         suggestion = AdjustmentSuggestion.model_validate(payload)
     except Exception as exc:
         return ActionValidationResult(valid=False, reason=f"建议 JSON 结构非法：{exc}").model_dump()

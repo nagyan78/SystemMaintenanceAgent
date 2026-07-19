@@ -2,21 +2,19 @@ import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
 import UploadView from '../views/UploadView.vue'
 import WorkflowView from '../views/WorkflowView.vue'
-import ReviewView from '../views/ReviewView.vue'
 import VersionsView from '../views/VersionsView.vue'
 import ReportView from '../views/ReportView.vue'
 import OverviewView from '../views/OverviewView.vue'
 import TreeView from '../views/TreeView.vue'
 import DiagnosisView from '../views/DiagnosisView.vue'
-import ReviewsView from '../views/ReviewsView.vue'
 
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/upload' },
   { path: '/upload', component: UploadView },
   { path: '/workflow/:taskId', component: WorkflowView, props: true },
   { path: '/workflows', redirect: '/upload' },
-  { path: '/reviews', component: ReviewsView },
-  { path: '/review/:reviewBatchId', component: ReviewView },
+  { path: '/reviews', redirect: '/versions' },
+  { path: '/review/:reviewBatchId', redirect: '/versions' },
   { path: '/versions', component: VersionsView },
   { path: '/report', component: ReportView },
   { path: '/report/:versionId', component: ReportView },

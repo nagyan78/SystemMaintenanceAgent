@@ -1,6 +1,5 @@
 """Instance-scoped LangChain tools for agent workers."""
 
-import json
 from dataclasses import dataclass
 import threading
 from typing import Any
@@ -16,6 +15,7 @@ from backend.app.repositories.taxonomy_repo import TaxonomyRepository
 from backend.app.schemas.issue import DiagnosisIssueRecord
 from backend.app.schemas.suggestion import AdjustmentSuggestion
 from backend.app.tools.validation_tools import validate_suggestion_action
+from backend.app.tools.payload_tools import coerce_json_object
 from backend.app.vectorstores.qdrant_store import QdrantStore
 from backend.app.repositories.triage_repo import TriageRepository
 from backend.app.services.tool_registry import ToolRegistry, ToolSpec
@@ -95,8 +95,9 @@ class AgentToolFactory:
                 return resolved_store.search_similar(version_id, node_text, min(max(top_k, 1), 20))
 
         @tool
-        def submit_diagnosis(issue: dict) -> str:
+        def submit_diagnosis(issue: dict[str, Any] | str) -> str:
             """提交当前作用域的一条诊断结果。"""
+            issue = coerce_json_object(issue, field_name="issue")
             version_id = int(issue["version_id"])
             _enforce_scope(scope, version_id)
             confidence = _coerce_confidence(issue.get("confidence", 0.0))
@@ -125,10 +126,10 @@ class AgentToolFactory:
         settings = self.settings
 
         @tool
-        def validate_action(action_json: str) -> dict:
+        def validate_action(action_json: dict[str, Any] | str) -> dict:
             """预校验维护建议动作是否合法。"""
             try:
-                payload = json.loads(action_json) if isinstance(action_json, str) else action_json
+                payload = coerce_json_object(action_json, field_name="action_json")
                 suggestion = AdjustmentSuggestion.model_validate(payload)
                 _enforce_scope(scope, suggestion.version_id)
             except Exception as exc:

@@ -41,7 +41,7 @@
         <div><span>本次诊断模式</span><strong>{{ summary.enable_ai_analysis ? 'AI 增强模式' : '快速规则模式' }}</strong></div>
         <div><span>模型</span><strong>{{ summary.enable_ai_analysis ? summary.model_name : '未启用' }}</strong></div>
         <RouterLink class="button secondary" to="/upload">返回上传分析</RouterLink>
-        <RouterLink v-if="summary.review_batch_id" class="button primary" :to="`/review/${summary.review_batch_id}`">审核问题并修改</RouterLink>
+        <RouterLink v-if="summary.version_id" class="button primary" :to="`/tree/${summary.version_id}`">预览分类树</RouterLink>
       </section>
       <section v-if="summary?.coverage" class="card coverage-card">
         <div class="card-head"><div><p class="eyebrow">可信诊断覆盖漏斗</p><h2>{{ summary.coverage.coverage_complete ? '覆盖完成' : '部分完成' }}</h2></div><span class="badge" :data-tone="summary.coverage.coverage_complete ? 'success' : 'warning'">Run {{ summary.run_id || '-' }}</span></div>
@@ -127,7 +127,7 @@ const summary = ref<DiagnosisSummary | null>(null), issues = ref<DiagnosisIssue[
 const files = ref<FileRecord[]>([]), selectableVersions = ref<VersionRecord[]>([])
 const selectedFileId = ref(0), selectedVersionId = ref(0)
 const categoryFilter = ref<'all' | 'structure' | 'content'>('all'), typeFilter = ref('all'), riskFilter = ref('all'), sourceFilter = ref('all')
-const sourceLabels: Record<string, string> = { structure_rule: '结构规则', content_rule: '内容规则', model_analysis: '模型分析', human_triage: '人工复核' }
+const sourceLabels: Record<string, string> = { structure_rule: '结构规则', content_rule: '内容规则', model_analysis: '模型分析', human_triage: '历史复核记录' }
 const actionLabels: Record<string, string> = { add_node: '新增节点', move_node: '移动节点', rename_node: '重命名节点', merge_node: '合并节点', clean_synonym: '清理同义词', split_subtree: '拆分子树', deprecate_node: '停用节点', delete_leaf_node: '删除叶子节点', mark_as_valid: '标记为有效' }
 const riskLabel = (value: string) => ({ high: '高', medium: '中', low: '低' }[value] || value)
 const sourceLabel = (value: string) => sourceLabels[value] || value?.replaceAll('_', ' ') || '-'
@@ -163,7 +163,7 @@ async function loadAll() {
     selectedVersionId.value = version.id
     ;[summary.value, issues.value] = await Promise.all([getDiagnosisSummary(version.id), listDiagnosisIssues(version.id)])
     patch({ fileId: version.file_id, currentVersionId: version.id, versionNo: version.version_no,
-      taskId: summary.value.task_id || null, reviewBatchId: summary.value.review_batch_id || null })
+      taskId: summary.value.task_id || null, reviewBatchId: null })
     if (issues.value.length) await selectIssue(issues.value[0].id)
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) statusMessage.value = '该版本不存在'

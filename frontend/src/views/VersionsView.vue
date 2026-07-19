@@ -39,11 +39,10 @@
           <button class="button danger" :disabled="!selectedIds[0]" @click="doRollback">回滚版本</button>
         </div>
         <p v-if="message" class="lead">{{ message }}</p>
-        <p v-if="downloadUrl" class="lead">下载地址：{{ downloadUrl }}</p>
+        <p v-if="downloadUrl" class="lead">下载地址：<a :href="downloadUrl">下载导出文件</a></p>
         <p v-if="error" class="error">{{ error }}</p>
       </section>
 
-      <VersionOptimizationPanel v-if="optimizationVersionId" :version-id="optimizationVersionId" />
       <section v-if="quality" class="card quality-summary">
         <div class="card-head"><div><p class="eyebrow">复诊摘要</p><h2>版本质量摘要</h2></div><RouterLink class="button primary" :to="`/report/${quality.version_id}`">查看完整报告</RouterLink></div>
         <div class="metric-grid"><div><span>当前质量分</span><strong>{{ quality.quality_after ?? '-' }}</strong></div><div><span>问题数量</span><strong>{{ quality.before_issue_count }} → {{ quality.after_issue_count }}</strong></div><div><span>已解决</span><strong>{{ quality.resolved_issues.length }}</strong></div><div><span>新增</span><strong>{{ quality.new_issues.length }}</strong></div><div><span>改善率</span><strong>{{ quality.improvement_rate }}%</strong></div><div><span>复诊状态</span><strong>{{ quality.verification_status || '-' }}</strong></div></div>
@@ -117,9 +116,9 @@ import { useRoute, useRouter } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
 import VersionTable from '../components/VersionTable.vue'
 import Modal from '../components/Modal.vue'
-import VersionOptimizationPanel from '../components/VersionOptimizationPanel.vue'
 import { listFiles } from '../api/files'
 import type { FileRecord } from '../api/files'
+import { apiUrl } from '../api/client'
 import { exportVersion, getVersionDiff, getVersionQuality, listVersions, rollbackVersion } from '../api/versions'
 import type { VersionQuality } from '../api/versions'
 import { useWorkspace } from '../state/workspace'
@@ -191,7 +190,7 @@ async function doExport() {
   try {
     const result = await exportVersion(selectedIds.value[0])
     message.value = `导出成功：${result.export_path}`
-    downloadUrl.value = result.download_url
+    downloadUrl.value = apiUrl(result.download_url)
   } catch (err) {
     error.value = err instanceof Error ? err.message : '导出失败'
   }

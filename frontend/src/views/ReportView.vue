@@ -20,7 +20,6 @@
       <section v-if="resources.length > 1" class="card"><h3>该版本的报告资源</h3><div class="action-row"><button v-for="item in resources" :key="item.report_type" class="button secondary" @click="selectResource(item)">{{ reportTypeLabel(item.report_type) }}</button></div></section>
       <MarkdownViewer v-if="preview?.markdown" :title="reportTypeLabel(preview.report_type)" :markdown="preview.markdown" />
       <ReportQualitySummary v-if="activeVersionId" :version-id="activeVersionId" />
-      <VersionOptimizationPanel v-if="activeVersionId" :version-id="activeVersionId" />
     </div>
   </AppShell>
 </template>
@@ -30,9 +29,8 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
 import MarkdownViewer from '../components/MarkdownViewer.vue'
-import VersionOptimizationPanel from '../components/VersionOptimizationPanel.vue'
 import ReportQualitySummary from '../components/ReportQualitySummary.vue'
-import { ApiError, getApiOrigin } from '../api/client'
+import { ApiError, apiUrl } from '../api/client'
 import { listFiles } from '../api/files'
 import type { FileRecord } from '../api/files'
 import { getVersion, listVersions } from '../api/versions'
@@ -48,8 +46,8 @@ const selectedFileId = ref(0), selectedVersionId = ref(0)
 const resources = ref<ReportResource[]>([]), preview = ref<ReportPreview | null>(null)
 const loading = ref(false), errorMessage = ref(''), missingReason = ref('')
 const pageState = ref<'idle' | 'ready' | 'not_generated' | 'not_found' | 'error'>('idle')
-const downloadUrl = computed(() => preview.value ? `${getApiOrigin()}${preview.value.download_url}` : '')
-const pdfDownloadUrl = computed(() => preview.value ? `${getApiOrigin()}${preview.value.pdf_download_url}` : '')
+const downloadUrl = computed(() => preview.value ? apiUrl(preview.value.download_url) : '')
+const pdfDownloadUrl = computed(() => preview.value ? apiUrl(preview.value.pdf_download_url) : '')
 const reportTypeLabel = (type: ReportType) => ({ draft: '诊断草稿', partial: '部分完成报告', failed: '失败报告', final: '最终报告', historical: '历史诊断报告' }[type])
 
 async function loadSelectableVersions() {
@@ -92,7 +90,7 @@ async function loadReport() {
       : resources.value.find(item => item.report_type === 'final') || resources.value.find(item => item.report_type === 'partial') || resources.value.find(item => item.report_type === 'draft') || resources.value.find(item => item.report_type === 'failed') || resources.value.find(item => item.report_type === 'historical')
     if (!selected) {
       pageState.value = 'not_generated'
-      if (requested === 'final' || (!requested && !version.parent_version_id)) missingReason.value = '最终报告需要先完成建议审核、执行修改、创建新版本并完成复诊。'
+      if (requested === 'final' || (!requested && !version.parent_version_id)) missingReason.value = '最终报告将在 AI 自动审核、动作执行、新版本保存和结果复诊完成后生成。'
       else if (requested === 'draft') missingReason.value = '该版本尚未生成诊断草稿，请先完成诊断。'
       else missingReason.value = '后端没有找到该版本对应的报告资源。'
       return
