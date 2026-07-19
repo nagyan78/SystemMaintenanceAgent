@@ -67,7 +67,7 @@ def test_graph_runs_m1_deterministic_workflow_to_report(tmp_path):
 
     result = graph.invoke(state, config={"configurable": {"thread_id": state.thread_id}})
 
-    assert result["status"] == "completed", (
+    assert result["status"] == "partial", (
         result.get("current_step"),
         result.get("error_code"),
         result.get("error_message"),
@@ -104,9 +104,11 @@ def test_graph_m2_runs_content_diagnosis_without_human_review(tmp_path):
     assert "diagnosis_planning_node" in result["completed_steps"]
     assert "content_diagnosis_node" in result["completed_steps"]
     assert result["diagnosis_plan"]["sample_strategy"] == "focused"
-    assert "generate_suggestion_node" in result["completed_steps"]
+    assert "generate_suggestion_node" not in result["completed_steps"]
     assert "wait_human_review_node" not in result["completed_steps"]
-    assert "ai_review_action_node" in result["completed_steps"]
+    assert "ai_review_action_node" not in result["completed_steps"]
+    assert result["coverage"]["ai_complete"] is False
+    assert result["progress"] == 100
 
 
 def test_route_after_validate_ignores_stale_upstream_error_after_successful_validation():

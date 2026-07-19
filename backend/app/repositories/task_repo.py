@@ -167,6 +167,17 @@ class TaskRepository:
             ).fetchone()
         return dict(row) if row else None
 
+    def get_by_workflow(self, workflow_id: str) -> dict[str, Any] | None:
+        with connect(self.settings) as connection:
+            row = connection.execute(
+                """SELECT id,file_id,task_type,status,current_step,progress,version_id,
+                          error_message,result_payload,enable_ai_analysis,model_provider,model_name,
+                          created_time,updated_time,start_time,end_time,workflow_id,thread_id,primary_run_id
+                   FROM task_record WHERE workflow_id=? ORDER BY created_time DESC,id DESC LIMIT 1""",
+                (workflow_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
     def update_task(
         self,
         *,
@@ -189,6 +200,8 @@ class TaskRepository:
             requested_status = current["status"]
             current_step = current["current_step"]
             progress = current["progress"]
+        if requested_status in {"completed", "partial", "completed_degraded"}:
+            progress = 100
         payload = _loads(current.get("result_payload"))
         if result_payload:
             payload.update(_json_ready(result_payload))

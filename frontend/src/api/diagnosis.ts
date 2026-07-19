@@ -8,6 +8,8 @@ export type DiagnosisSummary = {
   content_issue_count: number
   high_risk_count: number
   quality_score: number
+  quality_verdict?: string
+  weighted_error_rate?: number
   task_id?: string | null
   task_status?: string | null
   review_batch_id?: string | null
@@ -67,12 +69,27 @@ export function runDiagnosis(fileId: number, config: DiagnosisRunConfig) {
   return apiPost<{ task_id: string; version_id: number; status: string; review_batch_id?: string | null; ai_analysis_status?: string; ai_warning?: string | null; report_path?: string | null }>('/diagnosis/run', { file_id: fileId, ...config })
 }
 
-export function getDiagnosisSummary(versionId: number) {
-  return apiGet<DiagnosisSummary>(`/diagnosis/summary?version_id=${versionId}`)
+export type DiagnosisRun = {
+  id: string
+  workflow_id: string
+  version_id: number
+  status: string
+  coverage?: DiagnosisCoverage
+  created_time?: string
 }
 
-export function listDiagnosisIssues(versionId: number) {
-  return apiGet<DiagnosisIssue[]>(`/diagnosis/issues?version_id=${versionId}`)
+export function listDiagnosisRuns(versionId: number) {
+  return apiGet<DiagnosisRun[]>(`/diagnosis/runs?version_id=${versionId}`)
+}
+
+export function getDiagnosisSummary(versionId: number, runId?: string) {
+  const run = runId ? `&run_id=${encodeURIComponent(runId)}` : ''
+  return apiGet<DiagnosisSummary>(`/diagnosis/summary?version_id=${versionId}${run}`)
+}
+
+export function listDiagnosisIssues(versionId: number, runId?: string) {
+  const run = runId ? `&run_id=${encodeURIComponent(runId)}` : ''
+  return apiGet<DiagnosisIssue[]>(`/diagnosis/issues?version_id=${versionId}${run}`)
 }
 
 export function getDiagnosisIssue(issueId: number) {

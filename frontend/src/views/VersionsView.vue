@@ -22,7 +22,7 @@
         <p v-else-if="!error && !files.length" class="muted">后端当前确实没有文件。</p>
       </section>
 
-      <VersionTable title="版本列表" name="version-picker" :versions="versions" :selected-ids="selectedIds" @select="selectVersion" />
+      <VersionTable title="版本列表" name="version-picker" :versions="versions" :focused-id="focusedVersionId" :comparison-ids="comparisonIds" @focus="focusVersion" @toggle-compare="toggleComparison" />
 
       <section class="card actions-card">
         <div class="card-head">
@@ -33,10 +33,10 @@
           <span class="badge">file {{ selectedFileId || '-' }}</span>
         </div>
         <div class="action-row">
-          <button class="button primary" :disabled="selectedIds.length !== 2" @click="loadDiff">查看 Diff</button>
+          <button class="button primary" :disabled="comparisonIds.length !== 2" @click="loadDiff">查看 Diff</button>
           <RouterLink v-if="selectedReportRoute" class="button secondary" :to="selectedReportRoute">查看报告</RouterLink>
-          <button class="button secondary" :disabled="!selectedIds[0]" @click="doExport">导出版本</button>
-          <button class="button danger" :disabled="!selectedIds[0]" @click="doRollback">回滚版本</button>
+          <button class="button secondary" :disabled="!focusedVersionId" @click="doExport">导出当前查看版本</button>
+          <button class="button danger" :disabled="!focusedVersionId" @click="doRollback">回滚当前查看版本</button>
         </div>
         <p v-if="message" class="lead">{{ message }}</p>
         <p v-if="downloadUrl" class="lead">下载地址：<a :href="downloadUrl">下载导出文件</a></p>
@@ -128,7 +128,8 @@ const router = useRouter()
 const { state, patch } = useWorkspace()
 const files = ref<FileRecord[]>([])
 const versions = ref<any[]>([])
-const selectedIds = ref<number[]>([])
+const comparisonIds = ref<number[]>([])
+const focusedVersionId = ref(0)
 const diff = ref<any>(null)
 const message = ref('')
 const error = ref('')
@@ -137,10 +138,9 @@ const downloadUrl = ref('')
 const quality = ref<VersionQuality | null>(null)
 const selectedFileId = ref(Number(route.query.file_id || state.fileId) || 0)
 const showDiffModal = ref(false)
-const orderedSelectedIds = computed(() => [...selectedIds.value].sort((left, right) => left - right))
-const optimizationVersionId = computed(() => orderedSelectedIds.value.at(-1) || 0)
+const orderedSelectedIds = computed(() => [...comparisonIds.value].sort((left, right) => left - right))
 const selectedReportRoute = computed(() => {
-  const selectedVersionId = orderedSelectedIds.value[orderedSelectedIds.value.length - 1]
+  const selectedVersionId = focusedVersionId.value
   const version = versions.value.find(item => item.id === selectedVersionId)
   if (!version) return ''
   const isFinal = Boolean(
@@ -160,23 +160,25 @@ const diffGroups = computed(() => diff.value ? [
   { key: 'synonym_changed', label: '同义词变更', items: diff.value.synonym_changed || [] },
 ] : [])
 
-function selectVersion(id: number) {
-  if (selectedIds.value.includes(id)) {
-    selectedIds.value = selectedIds.value.filter(value => value !== id)
-    void loadQualitySummary()
-    return
-  }
-  selectedIds.value = selectedIds.value.length >= 2 ? [selectedIds.value[1], id] : [...selectedIds.value, id]
-  void loadQualitySummary()
+async function focusVersion(id: number) {
+  focusedVersionId.value = id
+  const version = versions.value.find(item => item.id === id)
+  patch({ currentVersionId: id, newVersionId: version?.parent_version_id ? id : null, versionNo: version?.version_no || null })
+  await router.replace({ path: '/versions', query: { file_id: selectedFileId.value, version_id: id } })
+  await loadQualitySummary()
 }
-async function loadQualitySummary(){quality.value=optimizationVersionId.value?await getVersionQuality(optimizationVersionId.value):null}
+function toggleComparison(id: number) {
+  if (comparisonIds.value.includes(id)) comparisonIds.value = comparisonIds.value.filter(value => value !== id)
+  else comparisonIds.value = comparisonIds.value.length >= 2 ? [comparisonIds.value[1], id] : [...comparisonIds.value, id]
+}
+async function loadQualitySummary(){quality.value=focusedVersionId.value?await getVersionQuality(focusedVersionId.value):null}
 
 async function loadDiff() {
-  if (selectedIds.value.length !== 2) return
+  if (comparisonIds.value.length !== 2) return
   error.value = ''
   try {
     const [fromId, toId] = orderedSelectedIds.value
-    selectedIds.value = [fromId, toId]
+    comparisonIds.value = [fromId, toId]
     diff.value = await getVersionDiff(fromId, toId)
     showDiffModal.value = true
   } catch (err) {
@@ -188,7 +190,7 @@ async function doExport() {
   error.value = ''
   downloadUrl.value = ''
   try {
-    const result = await exportVersion(selectedIds.value[0])
+    const result = await exportVersion(focusedVersionId.value)
     message.value = `导出成功：${result.export_path}`
     downloadUrl.value = apiUrl(result.download_url)
   } catch (err) {
@@ -200,7 +202,7 @@ async function doRollback() {
   if (!confirm('确认回滚该版本？')) return
   error.value = ''
   try {
-    const result = await rollbackVersion(selectedIds.value[0])
+    const result = await rollbackVersion(focusedVersionId.value)
     message.value = `回滚完成：${JSON.stringify(result)}`
     await loadVersions()
   } catch (err) {
@@ -241,14 +243,17 @@ async function loadVersions() {
   try {
     if (!selectedFileId.value) {
       versions.value = []
-      selectedIds.value = []
+      comparisonIds.value = []
+      focusedVersionId.value = 0
       diff.value = null
       return
     }
     versions.value = await listVersions(selectedFileId.value || undefined)
     const newest = versions.value[versions.value.length - 1]
     const prev = versions.value[versions.value.length - 2]
-    selectedIds.value = prev ? [prev.id, newest.id] : newest ? [newest.id] : []
+    comparisonIds.value = prev ? [prev.id, newest.id] : newest ? [newest.id] : []
+    const requested = Number(route.query.version_id || state.currentVersionId || 0)
+    focusedVersionId.value = versions.value.some(item => item.id === requested) ? requested : newest?.id || 0
     await loadQualitySummary()
   } catch (err) {
     error.value = err instanceof Error ? err.message : '版本列表加载失败'

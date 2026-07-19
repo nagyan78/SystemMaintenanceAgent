@@ -7,6 +7,7 @@ from backend.app.repositories.version_repo import VersionRepository
 from backend.app.services.diagnosis_service import DiagnosisService
 from backend.app.services.vector_index_service import VectorIndexService
 from backend.app.tools.export_tools import export_excel
+from backend.app.services.quality_score_service import calculate_quality_score
 
 
 @dataclass(frozen=True)
@@ -65,16 +66,12 @@ class VersionVerificationService:
         export_path = export_excel(new_version_id, self.settings)
         vector_status = "not_requested"
         base_keys = {identity(item) for item in base_issues}
-        active_new_issues = [item for item in new_issues if item.get("status") not in {"deferred", "false_positive", "resolved"}]
+        active_new_issues = [item for item in new_issues if item.get("status") not in {"false_positive", "resolved"}]
         added = [item for item in active_new_issues if identity(item) not in base_keys]
         added_medium_high = [item for item in added if item.get("risk_level") in {"medium", "high"}]
         severe_structure = [item for item in added if item.get("issue_type_code") in {"missing_parent", "duplicate_sibling"}]
         unresolved = [item for item in active_new_issues if identity(item) in base_keys]
         status = "failed" if added_medium_high or severe_structure else ("partial" if unresolved else "passed")
-        if status == "failed":
-            # A failed re-diagnosis must never surface as an excellent version merely because
-            # the taxonomy is large relative to the number of newly introduced severe issues.
-            quality_after = min(quality_after, 59.0)
         if build_vector_index:
             try:
                 vector_status = VectorIndexService(self.settings).index_version(new_version_id).status
@@ -112,12 +109,5 @@ class VersionVerificationService:
 
     def _quality_score(self, version_id: int) -> float:
         nodes = TaxonomyRepository(self.settings).list_nodes(version_id)
-        issues = [item for item in DiagnosisRepository(self.settings).list_issues(version_id)
-                  if item.get("status") not in {"false_positive", "deferred", "resolved"}]
-        if not nodes:
-            return 0.0
-        weights = {"high": 5.0, "medium": 2.0, "low": 0.5}
-        weighted_issues = sum(weights.get(str(item.get("risk_level")), 1.0) for item in issues)
-        # Normalize by taxonomy size so large files are not penalized merely for being large.
-        deduction = min(100.0, weighted_issues * 100.0 / len(nodes))
-        return round(max(0.0, 100.0 - deduction), 1)
+        issues = DiagnosisRepository(self.settings).list_issues(version_id)
+        return calculate_quality_score(len(nodes), issues).score

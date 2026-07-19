@@ -12,17 +12,17 @@ ALLOWED_BY_ISSUE = {
     "missing_parent": {"move_node", "add_node", "review_only"},
     "excessive_depth": {"move_node", "review_only"},
     "excessive_width": {"split_subtree", "move_node", "add_node", "review_only"},
-    "duplicate_sibling": {"merge_node", "review_only"},
-    "parent_child_redundancy": {"rename_node", "merge_node", "review_only"},
+    "duplicate_sibling": {"merge_node", "rename_node", "deprecate_node", "delete_leaf_node", "review_only"},
+    "parent_child_redundancy": {"rename_node", "merge_node", "move_node", "deprecate_node", "delete_leaf_node", "review_only"},
     "synonym_format": {"update_synonyms", "review_only"},
     "synonym_typo": {"update_synonyms", "review_only"},
     "synonym_conflict": {"update_synonyms", "review_only"},
     "synonym_overlap": {"update_synonyms", "review_only"},
     "naming_nonstandard": {"rename_node", "review_only"},
-    "semantic_duplicate": {"merge_node", "review_only"},
+    "semantic_duplicate": {"merge_node", "rename_node", "deprecate_node", "delete_leaf_node", "review_only"},
     "semantic_misplacement": {"move_node", "review_only"},
-    "inconsistent_dimension": {"review_only"},
-    "unknown": {"review_only"},
+    "inconsistent_dimension": {"split_subtree", "move_node", "rename_node", "add_node", "review_only"},
+    "unknown": {"add_node", "move_node", "rename_node", "merge_node", "update_synonyms", "split_subtree", "deprecate_node", "delete_leaf_node", "review_only"},
 }
 
 
@@ -58,7 +58,7 @@ class SuggestionConsistencyService:
             if candidate.target_node_id != int(subject_node_id):
                 return self._invalid(candidate, f"动作目标节点必须是问题主体节点 {subject_node_id}，不能修改其父节点或其他节点。", normalize_new)
         if effective_action == "review_only":
-            reason = str(candidate.action_payload.get("no_change_reason") or candidate.reason or "需要人工确认")
+            reason = str(candidate.action_payload.get("no_change_reason") or candidate.reason or "需要 AI 深度分析")
             payload = candidate.action_payload
             preview = {"action_type": "review_only",
                        "before": {"当前节点 ID": payload.get("subject_node_id") or subject_node_id,
@@ -66,12 +66,12 @@ class SuggestionConsistencyService:
                                   "缺失父节点 ID": payload.get("missing_parent_id"),
                                   "当前完整路径": payload.get("current_path") or issue.get("subject_path") or issue.get("path"),
                                   "最近有效祖先": payload.get("nearest_valid_ancestor_name")},
-                       "after": {"处理状态": "需要人工补充修改方案" if payload.get("needs_manual_edit") else "不自动修改"},
-                       "action": payload.get("action") or {"type": "needs_manual_edit" if payload.get("needs_manual_edit") else "review_only"},
+                       "after": {"处理状态": "需要 AI 补充修改方案"},
+                       "action": payload.get("action") or {"type": "requires_ai_resolution"},
                        "impact_scope": payload.get("impact_scope") or {},
                        "impact": payload.get("impact_scope") or {},
-                       "details": {"不修改原因": reason, "需要人工确认的内容": candidate.suggestion,
-                                   "needs_manual_edit": bool(payload.get("needs_manual_edit"))}}
+                       "details": {"不修改原因": reason, "AI 待补全内容": candidate.suggestion,
+                                   "requires_ai_resolution": True}}
             return ConsistencyResult(candidate, True, False, None, preview)
         if effective_action == "rename_node":
             old_name = str(candidate.old_name or issue.get("node_name") or "").strip()
@@ -107,7 +107,7 @@ class SuggestionConsistencyService:
             if any(value is None or value == "" for value in required):
                 return self._invalid(candidate, "移动节点必须包含原/新父节点、原/新路径、修改后层级和可核验的目标选择依据。", normalize_new)
             if str(payload.get("selection_basis")).strip() == "层级规则与名称语义候选共同命中":
-                return self._invalid(candidate, "名称相似度和笼统的层级规则不能证明父子语义关系，该移动建议必须重新人工确认。", normalize_new)
+                return self._invalid(candidate, "名称相似度和笼统的层级规则不能证明父子语义关系，AI 必须补充可核验的产品语义依据。", normalize_new)
             node = self.taxonomy.get_node_detail(candidate.version_id, int(candidate.target_node_id)) if candidate.target_node_id is not None else None
             old_parent = self.taxonomy.get_node_detail(candidate.version_id, int(candidate.old_parent_id)) if candidate.old_parent_id is not None else None
             new_parent = self.taxonomy.get_node_detail(candidate.version_id, int(candidate.new_parent_id)) if candidate.new_parent_id is not None else None
@@ -178,7 +178,7 @@ class SuggestionConsistencyService:
         if candidate.risk_level == "high" and (
             not preview.get("before") or not preview.get("after") or not preview.get("impact")
         ):
-            return self._invalid(candidate, "高风险动作缺少修改前后或影响范围，不能进入正式审核。", normalize_new)
+            return self._invalid(candidate, "高风险动作缺少修改前后或影响范围，不能进入自动执行。", normalize_new)
         return ConsistencyResult(candidate, True, True, None, preview)
 
     def require_executable(self, suggestion: AdjustmentSuggestion) -> ConsistencyResult:
@@ -190,13 +190,13 @@ class SuggestionConsistencyService:
     def _invalid(self, suggestion: AdjustmentSuggestion, reason: str, downgrade: bool) -> ConsistencyResult:
         if not downgrade:
             return ConsistencyResult(suggestion, False, False, reason, {})
-        payload = {"no_change_reason": reason, "confirmation_required": suggestion.suggestion}
+        payload = {"no_change_reason": reason, "requires_ai_resolution": True, "required_resolution": suggestion.suggestion}
         downgraded = suggestion.model_copy(update={"action_type": "review_only", "action_payload": payload,
                                                     "suggestion": f"暂不执行修改：{reason}"})
         preview = {"action_type": "review_only", "before": {}, "after": {},
-                   "details": {"不修改原因": reason, "需要人工确认的内容": suggestion.suggestion}}
-        preview.update({"action": {"type": "needs_manual_edit"}, "impact_scope": {}, "impact": {}})
-        preview["details"]["needs_manual_edit"] = True
+                   "details": {"不修改原因": reason, "AI 待补全内容": suggestion.suggestion}}
+        preview.update({"action": {"type": "requires_ai_resolution"}, "impact_scope": {}, "impact": {}})
+        preview["details"]["requires_ai_resolution"] = True
         return ConsistencyResult(downgraded, True, False, reason, preview, True)
 
     @staticmethod

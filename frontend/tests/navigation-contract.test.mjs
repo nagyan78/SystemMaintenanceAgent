@@ -23,7 +23,7 @@ for (const label of ['上传与启动', '执行进度', '版本管理', '体系�
   assert.ok(shell.includes(label), `missing navigation item ${label}`)
 }
 assert.ok(!shell.includes("label: '建议审核'"), 'manual review must not remain in primary navigation')
-assert.ok(shell.includes('AI 自动审核'), 'workflow description must expose automatic AI review')
+assert.ok(shell.includes('规则或 AI 增强诊断'), 'workflow description must expose both analysis modes')
 
 for (const sample of ['http://127.0.0.1:8000', "url.pathname = '/api'", "toLowerCase() === 'api'"]) {
   assert.ok(client.includes(sample), `API base normalization missing ${sample}`)
@@ -33,16 +33,21 @@ assert.ok(client.includes('normalizedPath.slice(basePath.length)'), 'API URL bui
 assert.ok(reports.includes('apiUrl(preview.value.download_url)'), 'report downloads must use normalized API URLs')
 assert.ok(versions.includes('apiUrl(result.download_url)'), 'version exports must use normalized API URLs')
 
-for (const token of ['AI 自动审核', '无需人工审批', '开始 AI 自动维护', 'enable_ai_analysis: true', '预览分类树', 'listWorkflows']) {
-  assert.ok(upload.includes(token), `automatic upload workflow missing ${token}`)
+for (const token of ['规则模式（不接入 AI）', 'AI 增强模式（DeepSeek）', '无需人工审批', 'enable_ai_analysis: useAi', '预览分类树', 'listWorkflows']) {
+  assert.ok(upload.includes(token), `selectable upload workflow missing ${token}`)
 }
+assert.ok(upload.includes("const enableAiAnalysis = ref(state.enableAiAnalysis)"), 'AI mode selection must be restored from workspace state')
+assert.ok(upload.includes("...(useAi ? { model_provider: modelProvider, model_name: modelName } : {})"), 'non-AI mode must omit model configuration')
 assert.ok(!upload.includes('进入建议审核'), 'upload page must not route users into manual review')
 assert.ok(upload.includes('router.push(`/workflow/${workflow.task_id}`)'), 'new automatic task must open live workflow progress')
 
 for (const stage of ['规则诊断', 'AI 分析', 'AI 审核', '校验执行', '保存复诊', '最终报告']) {
   assert.ok(workflow.includes(stage), `automatic workflow stage missing ${stage}`)
 }
-for (const token of ['workflow-modal-backdrop', 'isProgressModalDismissed', '预览分类树', "value.includes('review')"]) {
+for (const stage of ['规则维护进度', '规则建议', '安全校验']) {
+  assert.ok(workflow.includes(stage), `rule-only workflow stage missing ${stage}`)
+}
+for (const token of ['workflow-modal-backdrop', 'isProgressModalDismissed', '浏览分类结果', "value.includes('review')"]) {
   assert.ok(workflow.includes(token), `workflow progress experience missing ${token}`)
 }
 assert.ok(!workflow.includes("status === 'waiting_review' ? 'draft'"), 'workflow must not treat review as the normal report path')

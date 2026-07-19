@@ -98,7 +98,7 @@ def test_suggestion_subgraph_does_not_duplicate_saved_suggestions(tmp_path):
     graph.invoke(first, config={"max_concurrency": 1})
     suggestions = SuggestionRepository(settings).list_suggestions(version_id=version_id)
     assert len(suggestions) == 3
-    assert len({item.work_item_id for item in suggestions}) == 3
+    assert len({item.work_item_id for item in suggestions}) == 1
 
 
 def test_candidate_48_failure_preserves_other_49_and_retries_only_it(tmp_path):

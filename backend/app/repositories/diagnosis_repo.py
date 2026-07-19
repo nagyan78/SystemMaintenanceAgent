@@ -52,6 +52,11 @@ class DiagnosisRepository:
                           FROM adjustment_suggestion
                           WHERE adjustment_suggestion.issue_id = diagnosis_issue.id
                       )
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM run_issue
+                          WHERE run_issue.issue_id = diagnosis_issue.id
+                      )
                     """,
                     (version_id, *managed_types),
                 )
@@ -189,6 +194,7 @@ class DiagnosisRepository:
         *,
         issue_type: str | None = None,
         risk_level: str | None = None,
+        run_id: str | None = None,
     ) -> list[dict]:
         clauses = ["issue.version_id = ?"]
         params: list[object] = [version_id]
@@ -199,6 +205,9 @@ class DiagnosisRepository:
         if risk_level:
             clauses.append("issue.risk_level = ?")
             params.append(risk_level)
+        if run_id:
+            clauses.append("EXISTS (SELECT 1 FROM run_issue ri WHERE ri.issue_id = issue.id AND ri.run_id = ?)")
+            params.append(run_id)
         with connect(self.settings) as connection:
             rows = connection.execute(
                 f"""

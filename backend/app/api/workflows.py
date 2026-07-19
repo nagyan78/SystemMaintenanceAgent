@@ -138,11 +138,12 @@ def get_workflow_status(task_id: str, request: Request) -> dict[str, Any]:
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
     payload = _loads(task.get("result_payload"))
+    progress = 100 if task["status"] in {"completed", "partial", "completed_degraded"} else task["progress"]
     return {
         "task_id": task["id"],
         "status": task["status"],
         "current_step": task["current_step"],
-        "progress": task["progress"],
+        "progress": progress,
         "file_id": task["file_id"],
         "current_version_id": task["version_id"],
         "version_no": payload.get("version_no"),

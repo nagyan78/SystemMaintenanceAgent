@@ -132,7 +132,7 @@ class ReportService:
         markdown = self.render_markdown_report(data)
         markdown += self._governance_appendix(version_id, review_batch_id)
         if report_type == "draft":
-            markdown = "> 诊断草稿：本报告尚未经人工审核和修改执行，不是最终交付结论。\n\n" + markdown
+            markdown = "> 诊断草稿：本报告尚未完成 AI 修改方案执行和复诊，不是最终交付结论。\n\n" + markdown
         elif report_type == "partial":
             markdown = "> 部分完成报告：规则诊断和已完成的 AI 结果已保留；未完成范围及原因见覆盖说明。\n\n" + markdown
         elif report_type == "failed":
@@ -167,14 +167,15 @@ class ReportService:
         raw_issues = DiagnosisRepository(self.settings).list_issues(version_id)
         raw_suggestions = SuggestionRepository(self.settings).list_suggestions(version_id=version_id)
         issues = _enrich_issues(self.settings, version_id, raw_issues)
-        structure_issues = [item for item in issues if item["issue_type"] in STRUCTURE_TYPES]
-        content_issues = [item for item in issues if item["issue_type"] not in STRUCTURE_TYPES]
+        active_issues = [item for item in issues if item.get("status") not in {"resolved", "false_positive"}]
+        structure_issues = [item for item in active_issues if item["issue_type"] in STRUCTURE_TYPES]
+        content_issues = [item for item in active_issues if item["issue_type"] not in STRUCTURE_TYPES]
         issue_summary = build_issue_summary(structure_issues, content_issues)
-        issue_groups = analyze_common_root_causes(issues)
-        representative_cases = select_representative_cases(issues, issue_groups)
+        issue_groups = analyze_common_root_causes(active_issues)
+        representative_cases = select_representative_cases(active_issues, issue_groups)
         persisted = [_suggestion_to_dict(item) for item in raw_suggestions]
-        guidance = build_guidance_suggestions(issues)
-        quality = build_quality_explanation(version.get("quality_score"), issues)
+        guidance = build_guidance_suggestions(active_issues)
+        quality = build_quality_explanation(version.get("quality_score"), active_issues)
         stats = {
             "node_count": overview.node_count,
             "root_count": overview.root_count,
@@ -188,7 +189,7 @@ class ReportService:
         runtime_info = _build_runtime_info(task, task_result, overview.node_count, issues)
         changes = _build_version_changes(self.settings, version)
         conclusion = build_conclusion(stats, issue_summary, self.settings)
-        next_actions = build_next_actions(issues)
+        next_actions = build_next_actions(active_issues)
         return DiagnosisReportData(
             basic_info=basic_info,
             runtime_info=runtime_info,
@@ -204,7 +205,7 @@ class ReportService:
             version_changes=changes,
             conclusion=conclusion,
             next_actions=next_actions,
-            all_issues=sorted(issues, key=_issue_sort_key),
+            all_issues=sorted(active_issues, key=_issue_sort_key),
         )
 
     def render_markdown_report(self, data: DiagnosisReportData) -> str:
@@ -247,7 +248,7 @@ class ReportService:
 - 是否允许发布：{'是' if release_allowed else '否'}
 - 相邻版本质量：{(VersionRepository(self.settings).get_version(int(parent_id)) or {}).get('quality_score') if parent_id else '-'} → {version.get('quality_score')}
 - 初始诊断模式/模型：{version.get('diagnosis_mode') or '历史数据未记录'} / {version.get('diagnosis_model') or '历史数据未记录'}
-- AI 建议模式/模型：{'AI/规则混合' if any(item.analysis_run_id for item in suggestions) else '规则或人工'} / {version.get('diagnosis_model') or '历史数据未记录'}
+- AI 建议模式/模型：{'AI/规则混合' if any(item.analysis_run_id for item in suggestions) else '规则诊断'} / {version.get('diagnosis_model') or '历史数据未记录'}
 - 复诊模式/模型：{version.get('verification_mode') or '确定性规则'} / {version.get('verification_model') or '未使用模型'}
 
 ### 新增问题与关联动作
@@ -375,11 +376,11 @@ def build_guidance_suggestions(issues: list[dict]) -> list[dict[str, Any]]:
         "missing_parent": [
             "检查缺失父节点是否存在于原始数据或被导入过程遗漏。",
             "优先恢复遗漏父节点或修正错误的父节点引用。",
-            "无法恢复时，结合完整路径进入人工挂载审核。",
+            "无法恢复时，由 AI 结合完整路径生成新的挂载节点或迁移方案。",
             "多个节点引用同一缺失父节点时，优先恢复共同父节点。",
         ],
         "bad_parent_child_relation": [
-            "结合父节点、兄弟节点和完整路径进行人工复核。",
+            "由 AI 结合父节点、兄弟节点和完整路径决定重命名、合并或移动方案。",
             "判断属于错误挂载，还是节点混合了多个概念。",
             "根据复核结果选择移动、拆分或重命名，并提交审核。",
         ],
@@ -417,7 +418,7 @@ def build_guidance_suggestions(issues: list[dict]) -> list[dict[str, Any]]:
 
 
 def build_quality_explanation(score: float | None, issues: list[dict]) -> dict[str, Any]:
-    base_score = round(float(score), 1) if score is not None else None
+    base_score = round(float(score), 2) if score is not None else None
     if base_score is None:
         base_level = "暂无法评价"
     elif base_score >= 90:
@@ -428,30 +429,8 @@ def build_quality_explanation(score: float | None, issues: list[dict]) -> dict[s
         base_level = "一般"
     else:
         base_level = "较差"
-    cycle_count = sum(item["issue_type"] in {"cycle_reference", "circular_reference"} for item in issues)
-    high_missing = sum(
-        item["issue_type"] == "missing_parent" and item.get("risk_level") == "high" for item in issues
-    )
-    high_relation = sum(
-        item["issue_type"] == "bad_parent_child_relation" and item.get("risk_level") == "high"
-        for item in issues
-    )
-    high_count = sum(item.get("risk_level") == "high" for item in issues)
-    if cycle_count:
-        adjusted = "较差"
-        reason = f"存在 {cycle_count} 项循环引用或严重结构不可用问题"
-    elif high_missing:
-        adjusted = "需要整改"
-        reason = f"存在 {high_missing} 项高风险父节点缺失问题"
-    elif high_relation:
-        adjusted = "需要整改"
-        reason = f"存在 {high_relation} 项高风险父子关系异常"
-    elif high_count:
-        adjusted = "需要关注"
-        reason = f"存在 {high_count} 项高风险问题"
-    else:
-        adjusted = base_level
-        reason = "未发现高风险问题，风险评价沿用基础评分等级"
+    adjusted = "质量通过" if not issues else "需要整改"
+    reason = "当前没有未解决问题" if not issues else f"当前仍有 {len(issues)} 项未解决问题"
     return {
         "base_score": base_score,
         "base_level": base_level,
@@ -490,7 +469,7 @@ def build_next_actions(issues: list[dict]) -> dict[str, list[str]]:
     for risk in result:
         grouped = Counter(item["issue_type"] for item in issues if item.get("risk_level") == risk)
         result[risk] = [
-            f"处理 {count} 项{_issue_label(issue_type)}，逐项核对证据并提交人工审核。"
+            f"处理 {count} 项{_issue_label(issue_type)}，由 AI 逐项核对证据、补全动作并提交安全预演。"
             for issue_type, count in sorted(grouped.items(), key=lambda pair: (-pair[1], pair[0]))
         ]
     return result
@@ -582,7 +561,7 @@ def render_markdown_report(data: DiagnosisReportData, settings: Settings) -> str
 
 主要问题集中在{main_names}。建议首先处理{priority_name}，再逐步完成结构优化和内容规范化。
 
-所有修改应经过人工审核。修改完成后生成新版本，并使用相同诊断标准重新检查，以确认问题是否得到解决。
+所有修改均在不可变副本上由 AI 生成方案，并经确定性校验和完整预演后执行；原版本保留，修改后使用相同诊断标准重新检查。
 
 ---
 
@@ -595,8 +574,8 @@ def render_markdown_report(data: DiagnosisReportData, settings: Settings) -> str
 def _display_score(data: DiagnosisReportData) -> str:
     score = data.quality_result["base_score"]
     if not data.runtime_info["coverage_complete"] and data.runtime_info["ai_enabled"]:
-        return f"暂不评级（当前暂存分数：{score:.1f}）" if score is not None else "暂不评级"
-    return f"{score:.1f}/100（{data.quality_result['risk_adjusted_level']}）" if score is not None else "当前未记录"
+        return f"暂不评级（当前暂存分数：{score:.2f}）" if score is not None else "暂不评级"
+    return f"{score:.2f}/100（{data.quality_result['risk_adjusted_level']}）" if score is not None else "当前未记录"
 
 
 def _risk_counts(issues: list[dict]) -> tuple[int, int, int]:
@@ -641,7 +620,7 @@ def _render_focus_issues(data: DiagnosisReportData, groups: list[dict]) -> str:
                 str(item.get("node_name") or item.get("node_id") or "未关联节点"),
                 str(item.get("path_names") or "路径信息不足"),
                 _shorten(item.get("reason") or item.get("evidence") or "需进一步确认", 150),
-                _shorten(item.get("suggested_action") or "人工复核后处理", 150),
+                _shorten(item.get("suggested_action") or "由 AI 补全可执行修改方案", 150),
             ]
             rows.append("| " + " | ".join(_escape_table(value) for value in values) + " |")
         blocks.append(
@@ -658,7 +637,7 @@ def _render_focus_issues(data: DiagnosisReportData, groups: list[dict]) -> str:
 
 def _focus_principle(issue_type: str) -> str:
     guidance = build_guidance_suggestions([{"issue_type": issue_type}])
-    return guidance[0]["actions"][0] if guidance else "结合完整路径和业务资料人工复核，确认后再修改。"
+    return guidance[0]["actions"][0] if guidance else "由 AI 结合完整路径和产品语义生成可执行修改方案。"
 
 
 def _metric(value: int | None) -> str:
@@ -691,7 +670,7 @@ def _render_ai_analysis(data: DiagnosisReportData) -> str:
         "",
         f"本次AI分析发现：{discovery}",
         "",
-        "需要说明的是，AI分析结果仅作为辅助判断依据，最终修改方案仍需经过人工审核。",
+        "AI 分析必须为每项有效问题给出产品语义判断和可执行修改方案；校验或预演失败的方案会保留原因并计入未解决问题。",
     ])
 
 
@@ -733,7 +712,7 @@ def _render_treatment_plan(data: DiagnosisReportData) -> str:
         "| 优先级 | 处理内容 | 问题数量 | 处理方式 | 当前状态 |",
         "|---|---|---:|---|---|",
     ]
-    configs = [("high", "高", "人工审核后修复"), ("medium", "中", "结合建议调整"), ("low", "低", "批量规范化处理")]
+    configs = [("high", "高", "AI 二次复核并预演"), ("medium", "中", "AI 复核并预演"), ("low", "低", "批量规范化处理")]
     for risk, label, method in configs:
         items = [item for item in data.all_issues if item.get("risk_level") == risk]
         if not items:
@@ -767,7 +746,7 @@ def _render_business_appendix(issues: list[dict]) -> str:
             str(item.get("node_name") or item.get("node_id") or "未关联节点"),
             str(item.get("path_names") or "路径信息不足"),
             _shorten(item.get("reason") or item.get("evidence") or "需进一步确认", 160),
-            _shorten(item.get("suggested_action") or "人工复核后处理", 160),
+            _shorten(item.get("suggested_action") or "由 AI 补全可执行修改方案", 160),
             STATUS_LABELS.get(item.get("status"), str(item.get("status") or "待处理")),
         ]
         rows.append("| " + " | ".join(_escape_table(value) for value in values) + " |")
@@ -957,7 +936,7 @@ def _issue_description(issue_type: str) -> str:
     if issue_type in ISSUE_DESCRIPTIONS:
         return ISSUE_DESCRIPTIONS[issue_type]
     definition = get_issue_type(issue_type)
-    return definition.description if definition.code != "unknown" else "当前问题类型尚未配置中文说明，需结合保存的判断依据人工确认。"
+    return definition.description if definition.code != "unknown" else "当前问题类型尚未配置中文说明，由 AI 结合保存的判断依据完成产品语义判断。"
 
 
 def _json_ready(value: Any) -> Any:
@@ -1152,9 +1131,9 @@ def _suggestion_to_dict(item: Any) -> dict[str, Any]:
 
 
 def _render_suggestions(persisted: list[dict], guidance: list[dict], issue_count: int) -> str:
-    blocks = ["### 8.1 已持久化、可审核的正式建议"]
+    blocks = ["### 8.1 已持久化的正式修改方案"]
     if persisted:
-        blocks.append(f"当前共有 **{len(persisted)} 条**正式建议，可进入人工审核。")
+        blocks.append(f"当前共有 **{len(persisted)} 条**正式修改方案，执行前均经过确定性校验和完整预演。")
         rows = ["| 序号 | 建议内容 | 风险 | 状态 |", "|---:|---|---|---|"]
         for index, item in enumerate(persisted, 1):
             rows.append(
@@ -1170,16 +1149,16 @@ def _render_suggestions(persisted: list[dict], guidance: list[dict], issue_count
         blocks.append("本次未发现问题，因此不生成与诊断结果无关的处理方向。")
     elif guidance:
         if not persisted:
-            blocks.append("以下内容为根据诊断结果生成的处理方向，仅用于展示和审核准备，不是正式建议，不能自动执行。")
+            blocks.append("以下内容为根据诊断结果生成的候选处理方向；AI 必须补全具体动作并通过校验后才能执行。")
         for index, item in enumerate(guidance, 1):
             blocks.append(f"#### 8.2.{index} {item['label']}\n\n" + "\n".join(f"- {action}" for action in item["actions"]))
     else:
-        blocks.append("当前问题类型尚无确定性处理模板，需结合业务资料人工制定处理方向。")
+        blocks.append("当前问题类型尚无完整方案，必须进入 AI 深度分析并补全具体动作。")
     return "\n\n".join(blocks)
 
 
 def _render_quality(result: dict[str, Any]) -> str:
-    score = "当前版本未保存基础评分" if result["base_score"] is None else f"{result['base_score']:.1f}/100"
+    score = "当前版本未保存基础评分" if result["base_score"] is None else f"{result['base_score']:.2f}/100"
     return (
         f"- 基础质量评分：**{score}**\n"
         f"- 当前评价等级：**{result['base_level']}**\n"

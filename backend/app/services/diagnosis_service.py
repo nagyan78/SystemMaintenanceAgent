@@ -68,7 +68,7 @@ class DiagnosisService:
                 issues.append(DiagnosisIssueRecord(
                     issue_type="naming_nonstandard", node_id=int(node["category_id"]),
                     node_name=name, description=f"节点名称「{name}」无法明确表达分类边界",
-                    reason="名称过于宽泛，需要结合业务上下文人工确认",
+                    reason="名称过于宽泛，需要由 AI 结合父级范围、同级节点和子节点明确产品分类边界",
                     risk_level="low", confidence=1.0, path=path,
                     evidence=f"名称命中确定性模糊词规则：{name}", source="content_rule",
                 ))
@@ -110,14 +110,14 @@ class DiagnosisService:
             if name == "窑炉、熔炉及电炉用零件" and synonyms:
                 issues.append(DiagnosisIssueRecord(
                     issue_type="synonym_overlap", node_id=int(node["category_id"]), node_name=name,
-                    description="同义词可能与父子层级或相近分类语义重叠", reason="需根据明确同义词证据清理，证据不足时仅人工确认",
+                    description="同义词可能与父子层级或相近分类语义重叠", reason="需要由 AI 根据节点定义、上下级关系和相近分类确定同义词归属",
                     risk_level="medium", confidence=.8, path=path, evidence=f"原始同义词：{raw_synonyms}", source="content_rule",
                 ))
             if name == "气动元件":
                 issues.append(DiagnosisIssueRecord(
                     issue_type="parent_child_redundancy", node_id=int(node["category_id"]), node_name=name,
                     description="父子节点命名存在包含关系", reason="缺少完整结构调整方案，不能自动移动节点",
-                    risk_level="medium", confidence=.8, path=path, evidence="名称包含关系需要人工核对分类边界", source="content_rule",
+                    risk_level="medium", confidence=.8, path=path, evidence="父子名称存在包含或重复关系，需要结合产品语义判断保留、重命名、合并或移动", source="content_rule",
                 ))
             if name == "隧道电推板窑":
                 issues.append(DiagnosisIssueRecord(

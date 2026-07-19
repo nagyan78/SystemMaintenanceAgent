@@ -128,4 +128,4 @@ def test_m4_report_contains_suggestions_execution_and_version_sections(tmp_path)
     assert "删除污染词" in report_text
     assert "## 七、处理计划" in report_text
     assert "## 八、最终结论" in report_text
-    assert "综合评分：95.0/100" in report_text
+    assert "综合评分：95.00/100" in report_text

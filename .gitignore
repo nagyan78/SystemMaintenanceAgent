@@ -33,6 +33,11 @@ outputs/
 *.log
 data/app.db
 data/workflow_checkpoints.sqlite
+data/*.db-shm
+data/*.db-wal
+data/*.sqlite-shm
+data/*.sqlite-wal
+data/checkpoint_corrupt_backup_*/
 data/uploads/
 data/exports/
 data/reports/

@@ -69,6 +69,7 @@ class TaxonomyGraphState(BaseModel):
     diagnosis_completion_status: Literal["completed", "partial", "failed"] = "completed"
     triage_count: int = 0
     suggestion_count: int = 0
+    suggestion_work_item_counts: dict[str, int] = Field(default_factory=dict)
     approved_action_count: int = 0
     executed_action_count: int = 0
     failed_action_count: int = 0

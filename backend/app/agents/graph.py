@@ -82,6 +82,12 @@ def route_after_suggestion(state: TaxonomyGraphState, *, enable_suggestion_revie
     return "wait_human_review_node" if enable_suggestion_review else "ai_review_action_node"
 
 
+def route_after_diagnosis(state: TaxonomyGraphState) -> str:
+    if state.status in {"failed", "cancelled"}:
+        return "end"
+    return "generate_suggestion_node" if state.enable_ai_analysis else "generate_report_node"
+
+
 def route_after_review(state: TaxonomyGraphState) -> str:
     if state.status in {"failed", "cancelled"}:
         return "end"
@@ -137,13 +143,17 @@ def build_taxonomy_graph(
         ("index_vector_node", "structure_diagnosis_node"),
         ("structure_diagnosis_node", "diagnosis_planning_node"),
         ("diagnosis_planning_node", "content_diagnosis_node"),
-        ("content_diagnosis_node", "generate_suggestion_node"),
     ):
         builder.add_conditional_edges(
             source,
             lambda state, target=target: route_if_success(state, target),
             {target: target, "end": END},
         )
+    builder.add_conditional_edges(
+        "content_diagnosis_node",
+        route_after_diagnosis,
+        {"generate_suggestion_node": "generate_suggestion_node", "generate_report_node": "generate_report_node", "end": END},
+    )
     builder.add_conditional_edges(
         "generate_suggestion_node",
         lambda state: route_after_suggestion(state, enable_suggestion_review=enable_suggestion_review),

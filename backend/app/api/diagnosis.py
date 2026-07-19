@@ -16,6 +16,7 @@ from backend.app.services.content_diagnosis_service import ContentDiagnosisAgent
 from backend.app.services.diagnosis_service import DiagnosisService
 from backend.app.services.model_router import ModelBudgetExceededError, ModelUnavailableError
 from backend.app.services.report_service import ReportService
+from backend.app.services.quality_score_service import calculate_quality_score
 from backend.app.services.suggestion_service import SuggestionAgent
 from backend.app.services.taxonomy_service import TaxonomyService
 from backend.app.services.version_service import VersionService
@@ -261,7 +262,7 @@ def run_diagnosis(payload: RunDiagnosisRequest, request: Request) -> dict[str, A
         structure_count = sum(1 for item in all_issues if item["issue_category"] == "structure")
         final_content_count = len(all_issues) - structure_count
         high_risk_count = sum(1 for item in all_issues if item["risk_level"] == "high")
-        quality_score = max(0.0, round(100 - structure_count * 0.2 - final_content_count * 0.5 - high_risk_count * 0.8, 1))
+        quality_score = calculate_quality_score(total_nodes, all_issues).score
         VersionRepository(settings).update_quality_score(version_id, quality_score)
         result["quality_score"] = quality_score
         if suggestions.review_batch_id:
@@ -298,24 +299,41 @@ def run_diagnosis(payload: RunDiagnosisRequest, request: Request) -> dict[str, A
         raise HTTPException(status_code=502, detail=f"Diagnosis failed: {exc}") from exc
 
 
+@router.get("/runs")
+def list_diagnosis_runs(version_id: int, request: Request) -> list[dict[str, Any]]:
+    settings = request.app.state.settings
+    version = VersionRepository(settings).get_version(version_id)
+    if version is None:
+        raise HTTPException(status_code=404, detail="Version not found.")
+    run_repo = AgentRunRepository(settings)
+    workflow_id = version.get("source_workflow_id")
+    runs = run_repo.list_runs_for_workflow(str(workflow_id)) if workflow_id else run_repo.list_runs_for_version(version_id)
+    return [item for item in runs if item.get("agent_type") == "content_diagnosis"]
+
+
 @router.get("/summary")
-def get_diagnosis_summary(version_id: int, request: Request) -> dict[str, Any]:
+def get_diagnosis_summary(version_id: int, request: Request, run_id: str | None = None) -> dict[str, Any]:
     if VersionRepository(request.app.state.settings).get_version(version_id) is None:
         raise HTTPException(status_code=404, detail="Version not found.")
     repo = DiagnosisRepository(request.app.state.settings)
-    issues = repo.list_issues(version_id)
+    issues = repo.list_issues(version_id, run_id=run_id)
     overview = TaxonomyRepository(request.app.state.settings).get_overview_counts(version_id)
     structure_count = sum(1 for item in issues if item["issue_category"] == "structure")
     content_count = len(issues) - structure_count
     high_risk = sum(1 for item in issues if item["risk_level"] == "high")
-    score = max(0.0, round(100 - structure_count * 0.2 - content_count * 0.5 - high_risk * 0.8, 1))
+    quality = calculate_quality_score(int(overview["node_count"]), issues)
+    score = quality.score
     task_repo = TaskRepository(request.app.state.settings)
-    task = task_repo.get_latest_for_version(version_id)
+    selected_run = AgentRunRepository(request.app.state.settings).get_run(run_id) if run_id else None
+    if run_id and selected_run is None:
+        raise HTTPException(status_code=404, detail="Diagnosis run not found.")
+    task = task_repo.get_by_workflow(str(selected_run["workflow_id"])) if selected_run else task_repo.get_latest_for_version(version_id)
     if task and task.get("status") in {"pending", "running"}:
         raise HTTPException(status_code=409, detail="Diagnosis is not completed yet.")
     batch = ReviewBatchRepository(request.app.state.settings).get_for_task(str(task["id"])) if task else None
     task_result = json.loads(task.get("result_payload") or "{}") if task else {}
     return {"version_id": version_id, "total_nodes": overview["node_count"], "structure_issue_count": structure_count, "content_issue_count": content_count, "high_risk_count": high_risk, "quality_score": score,
+            "quality_verdict": quality.verdict, "weighted_error_rate": quality.weighted_error_rate,
             "task_id": task["id"] if task else None,
             "task_status": task.get("status") if task else None,
             "review_batch_id": batch.get("id") if batch else None,
@@ -324,16 +342,18 @@ def get_diagnosis_summary(version_id: int, request: Request) -> dict[str, Any]:
             "model_name": task.get("model_name") if task else None,
             "ai_analysis_status": task_result.get("ai_analysis_status"),
             "ai_warning": task_result.get("ai_warning"),
-            "coverage": task_result.get("coverage") or {},
-            "run_id": task_result.get("run_id") or (task.get("primary_run_id") if task else None),
-            "workflow_id": task_result.get("workflow_id"),
+            "coverage": (selected_run or {}).get("coverage") or task_result.get("coverage") or {},
+            "run_id": (selected_run or {}).get("id") or task_result.get("run_id") or (task.get("primary_run_id") if task else None),
+            "workflow_id": (selected_run or {}).get("workflow_id") or task_result.get("workflow_id"),
             "report_type": task_result.get("report_type"),
             "report_path": task_result.get("report_path")}
 
 
 @router.get("/issues")
-def list_diagnosis_issues(version_id: int, request: Request, issue_type: str | None = None, risk_level: str | None = None) -> list[dict]:
-    return DiagnosisRepository(request.app.state.settings).list_issues(version_id, issue_type=issue_type, risk_level=risk_level)
+def list_diagnosis_issues(version_id: int, request: Request, issue_type: str | None = None, risk_level: str | None = None, run_id: str | None = None) -> list[dict]:
+    return DiagnosisRepository(request.app.state.settings).list_issues(
+        version_id, issue_type=issue_type, risk_level=risk_level, run_id=run_id,
+    )
 
 
 @router.get("/issues/{issue_id}")

@@ -15,6 +15,7 @@ export type WorkspaceState = {
   versionNo: string | null
   reviewBatchId: string | null
   reportPath: string | null
+  diagnosisRunId: string | null
   enableAiAnalysis: boolean
   modelProvider: 'deepseek'
   modelName: string
@@ -37,6 +38,7 @@ const defaultState = (): WorkspaceState => ({
   versionNo: null,
   reviewBatchId: null,
   reportPath: null,
+  diagnosisRunId: null,
   enableAiAnalysis: false,
   modelProvider: 'deepseek',
   modelName: 'deepseek-chat',

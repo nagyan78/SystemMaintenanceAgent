@@ -5,11 +5,11 @@
         <div>
           <p class="eyebrow">全自动维护闭环</p>
           <h2>导入产品标准体系</h2>
-          <p>上传 Excel 后，智能体将完成诊断、AI 审核、动作校验、自动执行与结果复诊，无需人工逐条审批。</p>
+          <p>上传 Excel 后，可选择纯规则维护或接入 DeepSeek 增强分析；两种模式都会自动完成校验、执行与结果复诊。</p>
         </div>
         <ol class="flow-steps" aria-label="工作流步骤">
           <li class="current"><b>01</b>导入文件</li>
-          <li><b>02</b>AI 自动审核</li>
+          <li><b>02</b>选择分析模式</li>
           <li><b>03</b>预览结果</li>
         </ol>
       </section>
@@ -38,7 +38,7 @@
             <div class="file-readiness"><span class="readiness-dot" :class="{ ready: !!uploadedFileId }"></span><div><small>当前状态</small><strong>{{ actionStatus }}</strong></div></div>
             <p>{{ actionHint }}</p>
             <button v-if="file && !uploadedFileId" class="button primary action-button" :disabled="loading" @click="submit">{{ loading ? '正在上传…' : '上传并识别字段' }}</button>
-            <button v-else-if="uploadedFileId" class="button primary action-button" :disabled="loading" @click="startAnalysis">{{ loading ? '正在启动…' : '开始 AI 自动维护' }}</button>
+            <button v-else-if="uploadedFileId" class="button primary action-button" :disabled="loading" @click="startAnalysis">{{ loading ? '正在启动…' : enableAiAnalysis ? '开始 AI 增强维护' : '开始规则维护' }}</button>
             <button v-else class="button secondary action-button" @click="fileInput?.click()">选择 Excel 文件</button>
             <RouterLink v-if="currentVersionId" class="button secondary action-button" :to="`/tree/${currentVersionId}`">预览当前分类树</RouterLink>
             <button v-if="existingFiles.length" type="button" class="history-button" @click="showFileModal = true">从历史文件中选择 <span>{{ existingFiles.length }}</span></button>
@@ -56,11 +56,18 @@
       </section>
 
       <section v-if="uploadedFileId" class="card automation-card">
-        <div class="card-head"><div><p class="eyebrow">AI 执行配置</p><h2>自动审核与执行</h2></div><span class="badge" data-tone="success">无需人工审批</span></div>
+        <div class="card-head"><div><p class="eyebrow">执行配置</p><h2>选择分析模式</h2></div><span class="badge" data-tone="success">无需人工审批</span></div>
         <div class="automation-grid">
-          <div class="model-option selected"><span><strong>DeepSeek API</strong><small>使用云端模型完成候选问题分析与动作审核。</small></span></div>
+          <label class="model-option" :class="{ selected: !enableAiAnalysis }">
+            <input v-model="enableAiAnalysis" class="mode-radio" type="radio" :value="false" @change="saveAiMode" />
+            <span><strong>规则模式（不接入 AI）</strong><small>仅运行确定性规则诊断，不调用 DeepSeek，适合离线或未配置 API Key 时使用。</small></span>
+          </label>
+          <label class="model-option" :class="{ selected: enableAiAnalysis }">
+            <input v-model="enableAiAnalysis" class="mode-radio" type="radio" :value="true" @change="saveAiMode" />
+            <span><strong>AI 增强模式（DeepSeek）</strong><small>在规则诊断基础上，调用云端模型完成语义分析与自动审核。</small></span>
+          </label>
         </div>
-        <p class="automation-note">AI 通过建议后，系统仍会执行确定性规则校验和内存快照预演；不安全或不完整的动作将自动跳过。</p>
+        <p class="automation-note">{{ enableAiAnalysis ? 'AI 生成的建议仍会经过确定性规则校验和内存快照预演；不安全或不完整的动作将自动跳过。' : '当前不会发起任何 DeepSeek 请求；系统只处理规则能够确定的问题和安全动作。' }}</p>
       </section>
 
       <section class="card task-center">
@@ -89,7 +96,7 @@
 
       <Modal :show="showFileModal" title="选择历史文件" @close="showFileModal = false">
         <div v-if="existingFiles.length" class="table-wrap">
-          <p class="modal-hint">选择已上传文件，可直接启动新一轮 AI 自动维护。</p>
+          <p class="modal-hint">选择已上传文件后，可按当前选择的分析模式启动新一轮自动维护。</p>
           <table class="data-table selectable file-table"><thead><tr><th>文件</th><th>数据规模</th><th>上传时间</th></tr></thead><tbody>
             <tr v-for="item in existingFiles" :key="item.id" :class="{ selected: item.id === uploadedFileId }" @click="selectExistingFile(item)"><td><strong>{{ item.file_name }}</strong><span class="muted">文件 #{{ item.id }}</span></td><td class="muted">{{ item.row_count }} 行 · {{ item.column_count }} 列</td><td class="muted">{{ fmtTime(item.upload_time) }}</td></tr>
           </tbody></table>
@@ -122,15 +129,21 @@ const rowCount = ref(state.fileRowCount || 0), columnCount = ref(state.fileColum
 const columns = ref<string[]>(state.fileColumns || [])
 const existingFiles = ref<FileRecord[]>([]), tasks = ref<WorkflowListItem[]>([])
 const showFileModal = ref(false), tasksLoading = ref(false), tasksError = ref('')
+const enableAiAnalysis = ref(state.enableAiAnalysis)
 const expectedFields = ['category_id', 'category_name', 'category_group_id', 'category_pids', 'category_group_name', 'syn_list']
 const displayFileName = computed(() => file.value?.name || fileName.value)
 const schemaMatch = computed(() => expectedFields.every(field => columns.value.includes(field)))
 const currentVersionId = computed(() => state.newVersionId || state.currentVersionId)
 const actionStatus = computed(() => uploadedFileId.value ? '可以开始自动维护' : file.value ? '可以上传文件' : '等待选择文件')
-const actionHint = computed(() => uploadedFileId.value ? '系统将自动完成分析、AI 审核、执行和复诊。' : file.value ? '先上传并检查字段，再启动智能体。' : '支持标准产品分类体系 .xlsx 文件。')
+const actionHint = computed(() => uploadedFileId.value
+  ? enableAiAnalysis.value
+    ? '将使用规则诊断与 DeepSeek 增强分析，并自动完成审核、执行和复诊。'
+    : '将仅使用确定性规则完成诊断、执行和复诊，不调用任何 AI 模型。'
+  : file.value ? '先上传并检查字段，再选择分析模式。' : '支持标准产品分类体系 .xlsx 文件。')
 
 function onPick(event: Event) { file.value = (event.target as HTMLInputElement).files?.[0] || null; uploadedFileId.value = null; error.value = '' }
 function onDrop(event: DragEvent) { dragging.value = false; file.value = event.dataTransfer?.files?.[0] || null; uploadedFileId.value = null; error.value = '' }
+function saveAiMode() { patch({ enableAiAnalysis: enableAiAnalysis.value }) }
 function applyFileContext(record: FileRecord) {
   file.value = null; fileName.value = record.file_name; rowCount.value = record.row_count; columnCount.value = record.column_count; columns.value = record.columns || []; uploadedFileId.value = record.id
   patch({ fileId: record.id, fileName: record.file_name, fileRowCount: record.row_count, fileColumnCount: record.column_count, fileColumns: record.columns || [], taskId: null, workflowId: null, threadId: null, currentVersionId: null, newVersionId: null, versionNo: null, reviewBatchId: null, reportPath: null })
@@ -155,11 +168,15 @@ async function submit() {
 async function startAnalysis() {
   if (!uploadedFileId.value) return
   loading.value = true; error.value = ''
+  const useAi = enableAiAnalysis.value
   const modelProvider = 'deepseek' as const
-  const modelName = 'deepseek-chat'
+  const modelName = useAi ? 'deepseek-chat' : ''
   try {
-    const workflow = await startWorkflow(uploadedFileId.value, { enable_ai_analysis: true, model_provider: modelProvider, model_name: modelName })
-    patch({ taskId: workflow.task_id, workflowId: workflow.workflow_id, threadId: workflow.thread_id, enableAiAnalysis: true, modelProvider, modelName })
+    const workflow = await startWorkflow(uploadedFileId.value, {
+      enable_ai_analysis: useAi,
+      ...(useAi ? { model_provider: modelProvider, model_name: modelName } : {})
+    })
+    patch({ taskId: workflow.task_id, workflowId: workflow.workflow_id, threadId: workflow.thread_id, enableAiAnalysis: useAi, modelProvider, modelName })
     await router.push(`/workflow/${workflow.task_id}`)
   } catch (cause) { error.value = cause instanceof Error ? cause.message : '自动维护启动失败' }
   finally { loading.value = false }
@@ -171,6 +188,6 @@ onMounted(async () => { await Promise.all([loadExistingFiles(), loadTasks()]); i
 <style scoped>
 .upload-page{gap:26px}.upload-intro{display:flex;align-items:end;justify-content:space-between;gap:32px;padding:6px 0 2px}.upload-intro h2{margin:5px 0 9px;font-size:clamp(1.55rem,3vw,2.15rem);letter-spacing:-.035em}.upload-intro p{max-width:660px;margin:0;color:var(--muted)}.flow-steps{display:flex;gap:20px;padding:0;margin:0;list-style:none;color:var(--muted);font-size:12px;white-space:nowrap}.flow-steps li{display:grid;gap:4px}.flow-steps b{color:#9ca3af;font-size:11px}.flow-steps .current,.flow-steps .current b{color:var(--primary)}
 .upload-workspace{overflow:hidden;border:1px solid var(--line);border-radius:18px;background:var(--surface);box-shadow:var(--shadow)}.upload-workspace-head{display:flex;justify-content:space-between;align-items:start;padding:22px 26px;border-bottom:1px solid var(--line)}.upload-workspace-head h2,.schema-card h2{margin:3px 0 0;font-size:1.05rem}.section-kicker{color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}.file-format{padding:5px 8px;border:1px solid var(--line);border-radius:6px;color:var(--muted);font-size:11px;font-weight:700}.upload-layout{display:grid;grid-template-columns:minmax(0,1fr) 300px}.dropzone{min-height:286px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:32px;border-right:1px solid var(--line);background:#fbfcfe;color:var(--muted);cursor:pointer;transition:.2s}.dropzone:hover,.dropzone.is-dragging{background:#f2f7ff;color:var(--primary)}.dropzone.has-file{background:#f7fbf8;color:var(--text)}.upload-glyph{width:42px;height:42px;fill:none;stroke:var(--primary);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.upload-glyph.success{stroke:var(--success)}.dropzone strong{color:var(--text);font-size:15px}.dropzone span{font-size:13px}.replace-file{border:0;padding:0;background:transparent;color:var(--primary);cursor:pointer}.upload-actions-panel{display:flex;flex-direction:column;justify-content:center;gap:15px;padding:26px}.file-readiness{display:flex;align-items:center;gap:10px}.readiness-dot{width:9px;height:9px;border-radius:50%;background:#aeb7c3}.readiness-dot.ready{background:var(--success);box-shadow:0 0 0 4px rgba(39,122,75,.12)}.file-readiness small,.file-readiness strong{display:block}.file-readiness small{color:var(--muted);font-size:11px}.upload-actions-panel>p{margin:0;color:var(--muted);font-size:13px}.action-button{width:100%}.history-button{border:0;padding:10px 0 0;border-top:1px solid var(--line);background:none;color:var(--muted);cursor:pointer;text-align:left;font-size:12px}.history-button span{display:inline-grid;place-items:center;min-width:18px;height:18px;margin-left:4px;border-radius:50%;background:#edf1f7}.error-bar{margin:0;padding:11px 26px;border-top:1px solid rgba(200,62,58,.15);background:#fff5f4;color:var(--danger);font-size:13px}
-.schema-card{display:grid;grid-template-columns:220px 1fr;gap:28px;padding:22px 26px;border:1px solid var(--line);border-radius:16px;background:var(--surface)}.schema-card p{margin:7px 0 0;color:var(--muted);font-size:13px}.schema-content{display:grid;gap:14px}.schema-summary{display:flex;align-items:baseline;gap:8px}.schema-summary span{color:var(--muted);font-size:12px}.chip{border:1px solid var(--line);border-radius:7px;background:#fbfcfe}.chip[data-found='true']{border-color:rgba(39,122,75,.28);background:#f3faf5;color:#176638}.automation-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.model-option{display:flex;gap:12px;padding:16px;border:1px solid var(--line);border-radius:12px;cursor:pointer}.model-option.selected{border-color:#9bb8f1;background:#f5f8ff}.model-option span,.model-option small{display:block}.model-option small{margin-top:4px;color:var(--muted);line-height:1.45}.automation-note{margin:14px 0 0;color:var(--muted);font-size:12px}.task-table td strong,.task-table td small{display:block}.compact-progress{width:100px;height:5px;overflow:hidden;border-radius:999px;background:#edf0f5}.compact-progress span{display:block;height:100%;border-radius:inherit;background:var(--primary)}.task-actions{display:flex;flex-wrap:wrap;gap:8px}.link-sm{color:var(--primary);font-size:12px;font-weight:650}.file-table td strong,.file-table td .muted{display:block}.modal-hint{color:var(--muted);font-size:13px}
+.schema-card{display:grid;grid-template-columns:220px 1fr;gap:28px;padding:22px 26px;border:1px solid var(--line);border-radius:16px;background:var(--surface)}.schema-card p{margin:7px 0 0;color:var(--muted);font-size:13px}.schema-content{display:grid;gap:14px}.schema-summary{display:flex;align-items:baseline;gap:8px}.schema-summary span{color:var(--muted);font-size:12px}.chip{border:1px solid var(--line);border-radius:7px;background:#fbfcfe}.chip[data-found='true']{border-color:rgba(39,122,75,.28);background:#f3faf5;color:#176638}.automation-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.model-option{display:flex;align-items:flex-start;gap:12px;padding:16px;border:1px solid var(--line);border-radius:12px;cursor:pointer}.model-option.selected{border-color:#9bb8f1;background:#f5f8ff}.mode-radio{margin:3px 0 0;accent-color:var(--primary)}.model-option span,.model-option small{display:block}.model-option small{margin-top:4px;color:var(--muted);line-height:1.45}.automation-note{margin:14px 0 0;color:var(--muted);font-size:12px}.task-table td strong,.task-table td small{display:block}.compact-progress{width:100px;height:5px;overflow:hidden;border-radius:999px;background:#edf0f5}.compact-progress span{display:block;height:100%;border-radius:inherit;background:var(--primary)}.task-actions{display:flex;flex-wrap:wrap;gap:8px}.link-sm{color:var(--primary);font-size:12px;font-weight:650}.file-table td strong,.file-table td .muted{display:block}.modal-hint{color:var(--muted);font-size:13px}
 @media(max-width:760px){.upload-intro{align-items:start;flex-direction:column}.upload-layout,.schema-card,.automation-grid{grid-template-columns:1fr}.dropzone{min-height:220px;border-right:0;border-bottom:1px solid var(--line)}.flow-steps{width:100%;justify-content:space-between;gap:8px}}
 </style>

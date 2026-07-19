@@ -51,6 +51,14 @@ class AgentRunRepository:
             ).fetchall()
         return [_decode(dict(row), "budget", "coverage") for row in rows]
 
+    def list_runs_for_version(self, version_id: int) -> list[dict[str, Any]]:
+        with connect(self.settings) as connection:
+            rows = connection.execute(
+                "SELECT * FROM agent_run WHERE version_id=? ORDER BY created_time,id",
+                (version_id,),
+            ).fetchall()
+        return [_decode(dict(row), "budget", "coverage") for row in rows]
+
     def upsert_work_item(
         self, run_id: str, subject_type: str, subject_id: str, input_payload: dict,
         *, max_attempts: int | None = None,

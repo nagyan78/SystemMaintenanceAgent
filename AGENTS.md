@@ -41,7 +41,7 @@
 - Excel 解析、树构建、SQL、Qdrant、prompt 和动作执行逻辑不得直接堆在 node 中；
 - 规则诊断不使用 LLM；
 - LLM 不直接修改 Excel、SQLite 或 Qdrant；
-- 高风险动作必须先人工审核；
+- 高风险动作必须由 AI 独立二次复核，并通过确定性校验与完整快照预演后执行；不设置人工审核环节；
 - 原始 Excel 不覆盖，新版本和导出物单独保存；
 - 副作用必须具备 workflow/run、版本、审核和幂等证据；
 - 前端不展示原始 chain-of-thought，只展示决策摘要、工具和证据；

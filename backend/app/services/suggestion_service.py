@@ -62,12 +62,20 @@ class SuggestionAgent:
             allowed = set(issue_ids)
             issues = [issue for issue in issues if int(issue["id"]) in allowed]
         records: list[SuggestionRecord] = []
+        completed_issue_ids: set[int] = set()
+        if self.llm is not None and len(issues) > 1:
+            batch_records = self._generate_llm_batch_suggestion_records(version_id, issues)
+            records.extend(batch_records)
+            completed_issue_ids = {item.issue_id for item in batch_records}
         for issue in issues:
-            # Explicitly injected tools/LLM are used for agent-loop tests and custom
-            # deployments; the built-in runtime prefers reproducible rule plans.
-            record = None if self.llm is not None and not self.uses_internal_submit_tool else self._rule_based_suggestion_record(version_id, issue)
-            if record is None and self.llm is not None:
-                record = self._generate_llm_suggestion_record(version_id, issue)
+            if int(issue["id"]) in completed_issue_ids:
+                continue
+            # AI-enhanced maintenance must reason about every detected issue.
+            # Deterministic planning remains a fallback and a validation source,
+            # never a reason to skip model analysis.
+            record = self._generate_llm_suggestion_record(version_id, issue) if self.llm is not None else None
+            if record is None and self.llm is None:
+                record = self._rule_based_suggestion_record(version_id, issue)
             if record is None:
                 continue
             records.append(record)
@@ -76,6 +84,82 @@ class SuggestionAgent:
             review_batch_id=self.review_batch_id,
             generated_count=len(records),
             suggestions=records,
+        )
+
+    def _generate_llm_batch_suggestion_records(
+        self, version_id: int, issues: list[dict[str, Any]],
+    ) -> list[SuggestionRecord]:
+        planner = RemediationPlanningService(self.settings)
+        items = []
+        for issue in issues:
+            baseline = planner.plan(version_id, issue)
+            items.append({
+                "issue": issue,
+                "deterministic_baseline": baseline.model_dump(mode="json") if baseline else None,
+            })
+        prompt = {
+            "version_id": version_id,
+            "items": items,
+            "instruction": (
+                "逐条返回修改方案，输出 JSON 对象 {\"suggestions\": [...]}。每条必须对应输入 issue_id，"
+                "包含 AdjustmentSuggestion 的全部字段；不得返回 review_only，不得要求人工核对。"
+                "高风险删除、合并或移动也必须给出完整动作，但删除仅限无子节点且无外部引用的叶子节点。"
+            ),
+        }
+        try:
+            response = self.llm.invoke([
+                SystemMessage(content=SUGGESTION_GENERATION_SYSTEM_PROMPT),
+                HumanMessage(content=json.dumps(prompt, ensure_ascii=False)),
+            ])
+            payload = _extract_json_object(str(response.content))
+        except Exception as exc:
+            logger.warning("Batch suggestion generation failed; retrying individually: %s", exc)
+            return []
+        issue_ids = {int(item["id"]) for item in issues}
+        records: list[SuggestionRecord] = []
+        for raw in payload.get("suggestions", []):
+            try:
+                suggestion = AdjustmentSuggestion.model_validate(raw)
+                if suggestion.risk_level in {"medium", "high"}:
+                    suggestion = suggestion.model_copy(update={"need_confirm": True})
+                if suggestion.issue_id not in issue_ids or suggestion.version_id != version_id or suggestion.action_type == "review_only":
+                    continue
+                record = self._persist_ai_suggestion(suggestion)
+                if record is not None:
+                    records.append(record)
+            except Exception as exc:
+                logger.warning("Invalid batch suggestion item: %s", exc)
+        return records
+
+    def _persist_ai_suggestion(self, suggestion: AdjustmentSuggestion) -> SuggestionRecord | None:
+        checked = SuggestionConsistencyService(self.settings).check(suggestion, normalize_new=True)
+        suggestion = checked.suggestion
+        if suggestion.risk_level in {"medium", "high"}:
+            suggestion = suggestion.model_copy(update={"need_confirm": True})
+        validation = validate_suggestion_action(suggestion, self.settings)
+        if not validation.valid:
+            return None
+        suggestion_id = self.suggestion_repo.create_suggestion(
+            review_batch_id=self.review_batch_id,
+            suggestion=suggestion,
+            work_item_id=self.work_item_id,
+            analysis_run_id=self.analysis_run_id,
+            workflow_id=self.workflow_id,
+        )
+        self.suggestion_repo.update_consistency(
+            suggestion_id,
+            suggestion=suggestion,
+            change_preview=checked.change_preview,
+            status="invalid" if checked.downgraded else "valid",
+            reason=checked.reason,
+        )
+        return SuggestionRecord(
+            id=suggestion_id,
+            review_batch_id=self.review_batch_id,
+            change_preview=checked.change_preview,
+            consistency_status="invalid" if checked.downgraded else "valid",
+            consistency_reason=checked.reason,
+            **suggestion.model_dump(),
         )
 
     def _generate_llm_suggestion_record(self, version_id: int, issue: dict[str, Any]) -> SuggestionRecord | None:
@@ -88,7 +172,7 @@ class SuggestionAgent:
         )
         messages: list[Any] = [
             SystemMessage(content=SUGGESTION_GENERATION_SYSTEM_PROMPT),
-            HumanMessage(content=_issue_prompt(version_id, issue) + "\n历史用户反馈（仅供参考，不得跳过本轮校验和人工审核）：\n" + json.dumps(memory_context, ensure_ascii=False)),
+            HumanMessage(content=_issue_prompt(version_id, issue) + "\n历史用户反馈（仅供参考，不得跳过本轮确定性校验和快照预演）：\n" + json.dumps(memory_context, ensure_ascii=False)),
         ]
         for _ in range(self.max_retry):
             for _ in range(self.max_iter):
@@ -332,3 +416,15 @@ def _load_observation(observation: Any) -> dict[str, Any]:
         if isinstance(loaded, dict):
             return loaded
     raise ValueError("submit_suggestion observation must be a JSON object.")
+
+
+def _extract_json_object(content: str) -> dict[str, Any]:
+    import re
+
+    match = re.search(r"\{.*\}", content, flags=re.S)
+    if not match:
+        raise ValueError("model response did not contain a JSON object")
+    loaded = json.loads(match.group(0))
+    if not isinstance(loaded, dict):
+        raise ValueError("model response must be a JSON object")
+    return loaded

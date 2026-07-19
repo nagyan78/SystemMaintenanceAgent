@@ -13,7 +13,7 @@
       </section>
 
       <section class="card">
-        <div class="card-head"><div><p class="eyebrow">自动执行链路</p><h2>AI 审核与维护进度</h2></div><span class="badge" data-tone="success">无需人工审批</span></div>
+        <div class="card-head"><div><p class="eyebrow">自动执行链路</p><h2>{{ enableAi ? 'AI 增强维护进度' : '规则维护进度' }}</h2></div><span class="badge" data-tone="success">无需人工审批</span></div>
         <div class="stage-grid">
           <div v-for="step in steps" :key="step.key" class="stage-card" :data-state="step.state">
             <span class="stage-index">{{ step.state === 'completed' ? '✓' : String(step.index).padStart(2, '0') }}</span>
@@ -21,8 +21,9 @@
           </div>
         </div>
         <div class="action-row workflow-actions">
-          <RouterLink v-if="currentVersionId" class="button primary" :to="`/tree/${currentVersionId}`">预览分类树</RouterLink>
-          <RouterLink v-if="currentVersionId" class="button secondary" :to="`/diagnosis/${currentVersionId}`">查看诊断结果</RouterLink>
+          <RouterLink v-if="currentVersionId && isTerminal" class="button primary" :to="`/overview/${currentVersionId}${runQuery}`">查看体系概览</RouterLink>
+          <RouterLink v-if="currentVersionId" class="button secondary" :to="`/tree/${currentVersionId}`">浏览分类结果</RouterLink>
+          <RouterLink v-if="currentVersionId" class="button secondary" :to="`/diagnosis/${currentVersionId}${runQuery}`">查看诊断问题</RouterLink>
           <RouterLink v-if="fileId" class="button secondary" :to="`/versions?file_id=${fileId}`">版本管理</RouterLink>
           <RouterLink v-if="currentVersionId && isTerminal" class="button secondary" :to="`/report/${currentVersionId}?type=final`">查看最终报告</RouterLink>
           <button v-if="status === 'running'" class="button danger" @click="cancel">安全停止</button>
@@ -67,10 +68,11 @@ import { useWorkspace } from '../state/workspace'
 const props = defineProps<{ taskId?: string }>()
 const route = useRoute(), taskId = String(route.params.taskId || props.taskId), { state, patch } = useWorkspace()
 const status = ref('pending'), progress = ref(0), currentStep = ref(''), currentVersionId = ref<number | null>(null), fileId = ref<number | null>(state.fileId)
-const errorMessage = ref(''), enableAi = ref(false), modelName = ref(''), timer = ref<number | null>(null)
+const errorMessage = ref(''), enableAi = ref(state.enableAiAnalysis), modelName = ref(state.modelName), timer = ref<number | null>(null)
 const eventSource = ref<EventSource | null>(null), agentEvents = ref<AgentEvent[]>([]), seenEventIds = new Set<number>()
 const rawCounts = ref<Record<string, number>>({})
 const planRevision = ref(1), stopReason = ref(''), modelCallsUsed = ref(0), tokensUsed = ref(0), wallSecondsUsed = ref(0), candidateCount = ref(0), aiProcessedCount = ref(0)
+const analysisRunId = ref(state.diagnosisRunId || '')
 const isProgressModalDismissed = ref(false)
 
 const statusLabel = computed(() => ({ pending: '正在准备', running: '正在自动维护', partial: '部分完成', completed_degraded: '降级完成', completed: '维护完成', failed: '执行失败', cancelled: '已停止', waiting_review: '旧任务已暂停' } as Record<string, string>)[status.value] || status.value)
@@ -78,6 +80,7 @@ const tone = computed(() => ['completed', 'completed_degraded', 'partial'].inclu
 const isWorkflowRunning = computed(() => ['pending', 'running'].includes(status.value))
 const isTerminal = computed(() => ['partial', 'completed_degraded', 'completed'].includes(status.value))
 const isProgressModalVisible = computed(() => isWorkflowRunning.value && !isProgressModalDismissed.value)
+const runQuery = computed(() => analysisRunId.value ? `?run_id=${encodeURIComponent(analysisRunId.value)}` : '')
 const currentStepLabel = computed(() => stepLabel(currentStep.value))
 const agentCounts = computed(() => { const c = rawCounts.value, total = c.total || 0, clean = c.clean || 0, issues = c.succeeded || 0, inconclusive = c.inconclusive || 0, failed = c.permanent_failed || 0, processed = clean + issues + inconclusive + failed; return { total, processed, issues, clean, inconclusive, failed, remaining: Math.max(total - processed, 0) } })
 const activeIndex = computed(() => {
@@ -93,21 +96,21 @@ const activeIndex = computed(() => {
 const steps = computed(() => [
   { key: 'import', label: '解析建树', description: '读取 Excel 并创建初始版本' },
   { key: 'diagnosis', label: '规则诊断', description: '全量筛查结构与内容问题' },
-  { key: 'suggestion', label: 'AI 分析', description: '生成有证据的维护建议' },
-  { key: 'review', label: 'AI 审核', description: '自动筛除不完整或不可靠建议' },
+  { key: 'suggestion', label: enableAi.value ? 'AI 分析' : '规则建议', description: enableAi.value ? '生成有证据的语义维护建议' : '根据确定性问题生成维护建议' },
+  { key: 'review', label: enableAi.value ? 'AI 审核' : '安全校验', description: enableAi.value ? '自动筛除不完整或不可靠建议' : '仅保留规则可验证的安全建议' },
   { key: 'execute', label: '校验执行', description: '规则校验、快照预演并应用动作' },
   { key: 'verify', label: '保存复诊', description: '生成新版本并验证维护结果' },
   { key: 'report', label: '最终报告', description: '汇总覆盖、证据与版本变化' },
 ].map((step, index) => ({ ...step, index: index + 1, state: isTerminal.value || index < activeIndex.value ? 'completed' : index === activeIndex.value && isWorkflowRunning.value ? 'running' : 'pending' })))
 const completedStepCount = computed(() => steps.value.filter(step => step.state === 'completed').length)
 
-function stepLabel(value: string) { return ({ uploaded: '文件已上传', parse_excel: '正在解析 Excel', build_tree: '正在构建分类树', save_initial_version: '正在保存初始版本', index_vector: '正在建立向量索引', structure_diagnosis: '正在执行结构诊断', diagnosis_planning: '正在规划诊断范围', content_diagnosis: '正在执行内容诊断', generate_suggestion: '正在生成维护建议', ai_review: 'AI 正在自动审核建议', validate_action: '正在校验维护动作', execute_action: '正在执行维护动作', save_new_version: '正在保存新版本', verify_new_version: '正在复诊新版本', completed: '最终报告已生成', failed: '工作流执行失败' } as Record<string, string>)[value] || value || '正在建立执行上下文' }
+function stepLabel(value: string) { return ({ uploaded: '文件已上传', parse_excel: '正在解析 Excel', build_tree: '正在构建分类树', save_initial_version: '正在保存初始版本', index_vector: enableAi.value ? '正在建立向量索引' : '规则模式跳过向量索引', structure_diagnosis: '正在执行结构诊断', diagnosis_planning: '正在规划诊断范围', content_diagnosis: '正在执行内容诊断', generate_suggestion: '正在生成维护建议', ai_review: enableAi.value ? 'AI 正在自动审核建议' : '正在执行确定性安全校验', validate_action: '正在校验维护动作', execute_action: '正在执行维护动作', save_new_version: '正在保存新版本', verify_new_version: '正在复诊新版本', completed: '最终报告已生成', failed: '工作流执行失败' } as Record<string, string>)[value] || value || '正在建立执行上下文' }
 
 async function refresh() {
   try {
     const data = await getWorkflowStatus(taskId)
-    status.value = data.status; progress.value = data.progress; currentStep.value = data.current_step; currentVersionId.value = data.current_version_id || null; fileId.value = data.file_id; errorMessage.value = data.error_message || ''; enableAi.value = Boolean(data.enable_ai_analysis); modelName.value = data.model_name || ''; rawCounts.value = data.work_item_counts || {}; planRevision.value = Number(data.coverage?.plan_revision || 1); stopReason.value = String(data.coverage?.stop_reason || ''); modelCallsUsed.value = Number(data.coverage?.model_calls || 0); tokensUsed.value = Number(data.coverage?.tokens_used || 0); wallSecondsUsed.value = Number(data.coverage?.wall_seconds || 0); candidateCount.value = Number(data.coverage?.candidate_count || data.candidate_count || 0); aiProcessedCount.value = Number(data.coverage?.deep_diagnosed_count || data.ai_processed_count || 0)
-    patch({ taskId, fileId: data.file_id, currentVersionId: data.current_version_id || null, newVersionId: data.executed_action_count ? data.current_version_id || null : state.newVersionId, enableAiAnalysis: enableAi.value, modelName: modelName.value })
+    status.value = data.status; progress.value = ['completed', 'completed_degraded', 'partial'].includes(data.status) ? 100 : data.progress; currentStep.value = data.current_step; currentVersionId.value = data.current_version_id || null; fileId.value = data.file_id; errorMessage.value = data.error_message || ''; enableAi.value = Boolean(data.enable_ai_analysis); modelName.value = data.model_name || ''; analysisRunId.value = data.analysis_run_id || ''; rawCounts.value = data.work_item_counts || {}; planRevision.value = Number(data.coverage?.plan_revision || 1); stopReason.value = String(data.coverage?.stop_reason || ''); modelCallsUsed.value = Number(data.coverage?.model_calls || 0); tokensUsed.value = Number(data.coverage?.tokens_used || 0); wallSecondsUsed.value = Number(data.coverage?.wall_seconds || 0); candidateCount.value = Number(data.coverage?.candidate_count || data.candidate_count || 0); aiProcessedCount.value = Number(data.coverage?.deep_diagnosed_count || data.ai_processed_count || 0)
+    patch({ taskId, fileId: data.file_id, currentVersionId: data.current_version_id || null, newVersionId: data.executed_action_count ? data.current_version_id || null : state.newVersionId, diagnosisRunId: analysisRunId.value || null, enableAiAnalysis: enableAi.value, modelName: modelName.value })
     if (['completed', 'completed_degraded', 'partial', 'failed', 'cancelled'].includes(data.status)) stop()
   } catch (cause) { errorMessage.value = cause instanceof Error ? cause.message : '状态查询失败'; stop() }
 }

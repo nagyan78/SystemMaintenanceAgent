@@ -29,7 +29,7 @@ ISSUE_TYPES: dict[str, IssueTypeDefinition] = {
         IssueTypeDefinition("synonym_overlap", "父子同义词重叠", "content", "父子节点的同义词范围发生重叠。"),
         IssueTypeDefinition("naming_nonstandard", "节点命名不规范", "content", "节点名称不符合命名规范或无法清晰表达分类边界。"),
         IssueTypeDefinition("semantic_duplicate", "语义重复", "content", "不同节点表达了高度相似或等价的分类语义。"),
-        IssueTypeDefinition("unknown", "待确认问题", "content", "历史类型或来源不足以可靠映射，需人工确认问题类型。"),
+        IssueTypeDefinition("unknown", "待确认问题", "content", "历史类型或来源不足以可靠映射，必须由 AI 重新分类并生成对应方案。"),
     )
 }
 

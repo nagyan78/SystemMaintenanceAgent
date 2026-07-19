@@ -204,7 +204,17 @@ class AgentRunService:
                         issue_ids.append(int(raw_id.removeprefix("issue_")))
         if not issue_ids:
             issue_ids = [int(issue["id"]) for issue in DiagnosisRepository(self.settings).list_pending_issues(version_id)]
-        ids = [self.repo.upsert_work_item(run_id, "issue", str(issue_id), {"issue_id": issue_id}) for issue_id in issue_ids]
+        batch_size = 10
+        batches = [issue_ids[index:index + batch_size] for index in range(0, len(issue_ids), batch_size)]
+        ids = [
+            self.repo.upsert_work_item(
+                run_id,
+                "issue_batch",
+                f"batch-{index + 1}",
+                {"issue_ids": batch},
+            )
+            for index, batch in enumerate(batches)
+        ]
         self.repo.update_run(run_id, status="running", coverage={"total": len(ids)})
         return {"run_id": run_id, "work_item_ids": ids, "review_batch_id": review_batch_id}
 
@@ -229,7 +239,10 @@ class AgentRunService:
                         agent_name="suggestion_generation", phase="suggestion", attempt=item.attempt,
                         **event,
                     ),
-                ).run(int(run["version_id"]), issue_ids=[int(item.subject_id)])
+                ).run(
+                    int(run["version_id"]),
+                    issue_ids=[int(value) for value in item.input_payload.get("issue_ids", [])],
+                )
             status = "succeeded" if result.generated_count else "inconclusive"
             self.repo.complete_work_item(item_id, status=status, result_payload={"suggestion_ids": [record.id for record in result.suggestions]})
             self.repo.record_event(
@@ -237,7 +250,7 @@ class AgentRunService:
                 agent_name="suggestion_generation", event_type="issue_completed", phase="suggestion",
                 status=status, attempt=item.attempt, latency_ms=int((time.perf_counter()-started)*1000),
                 model=self.settings.deepseek_model,
-                summary={"issue_id": item.subject_id, "suggestion_count": result.generated_count},
+                summary={"issue_ids": item.input_payload.get("issue_ids", []), "suggestion_count": result.generated_count},
             )
             return {"processed_count": 1, "suggestion_count": result.generated_count, "failed_count": 0}
         except Exception as exc:

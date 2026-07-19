@@ -92,7 +92,7 @@
               <div><dt>父节点</dt><dd>{{ nodeName(selected.parent) }}</dd></div><div><dt>子节点</dt><dd>{{ nodeNames(selected.children) }}</dd></div>
               <div><dt>兄弟节点</dt><dd>{{ nodeNames(selected.siblings) }}</dd></div>
             </dl>
-            <div class="explanation"><h3>问题原因</h3><p>{{ selected.reason }}</p><h3>检测依据</h3><p>{{ selected.evidence }}</p><h3>模型分析</h3><p>{{ selected.source?.includes('model') ? selected.description : '该问题由确定性规则发现，无需模型参与判断。' }}</p></div>
+            <div class="explanation"><h3>问题原因</h3><p>{{ selected.reason }}</p><h3>检测依据</h3><p>{{ selected.evidence }}</p><h3>模型分析</h3><p>{{ modelAnalysis(selected) }}</p></div>
             <div class="suggestion-box"><h3>建议动作</h3>
               <template v-if="selected.suggestions?.length"><div v-for="item in selected.suggestions" :key="String(item.id)"><strong>{{ actionLabel(item.action_type) }}</strong><p>{{ item.suggestion || item.reason }}</p><p v-if="item.new_name || item.new_parent_id" class="muted">建议值：{{ item.new_name || `父节点 ${item.new_parent_id}` }}</p></div></template>
               <p v-else class="muted">暂无可执行建议，可重新运行建议生成。</p>
@@ -135,6 +135,7 @@ const actionLabel = (value: unknown) => actionLabels[String(value)] || String(va
 const categoryLabel = (issue: DiagnosisIssue) => issue.issue_category === 'structure' ? '结构问题' : '内容问题'
 const nodeName = (node?: Record<string, unknown> | null) => String(node?.category_name || '-')
 const nodeNames = (nodes?: Array<Record<string, unknown>>) => nodes?.slice(0, 8).map(nodeName).join('、') || '-'
+const modelAnalysis = (issue: DiagnosisIssue) => String(issue.suggestions?.[0]?.reason || (issue.source?.includes('model') ? issue.description : 'AI 修改方案尚未生成；该问题仍计入未解决问题，不会被自动忽略。'))
 const availableIssueTypes = computed(() => {
   const result = new Map<string, string>()
   issues.value.filter(issue => categoryFilter.value === 'all' || issue.issue_category === categoryFilter.value).forEach(issue => result.set(issue.issue_type_code, issue.issue_type_label))
@@ -161,9 +162,10 @@ async function loadAll() {
     selectedFileId.value = version.file_id
     selectableVersions.value = await listVersions(version.file_id)
     selectedVersionId.value = version.id
-    ;[summary.value, issues.value] = await Promise.all([getDiagnosisSummary(version.id), listDiagnosisIssues(version.id)])
+    const runId = String(route.query.run_id || '') || undefined
+    ;[summary.value, issues.value] = await Promise.all([getDiagnosisSummary(version.id, runId), listDiagnosisIssues(version.id, runId)])
     patch({ fileId: version.file_id, currentVersionId: version.id, versionNo: version.version_no,
-      taskId: summary.value.task_id || null, reviewBatchId: null })
+      taskId: summary.value.task_id || null, diagnosisRunId: summary.value.run_id || null, reviewBatchId: null })
     if (issues.value.length) await selectIssue(issues.value[0].id)
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) statusMessage.value = '该版本不存在'

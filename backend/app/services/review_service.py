@@ -35,7 +35,7 @@ class ReviewService:
         suggestion = self._require_mutable_suggestion(suggestion_id)
         checked = SuggestionConsistencyService(self.settings).require_executable(suggestion)
         if not checked.executable:
-            raise ValueError("review_only 需要人工选择暂不处理或确认为误报，不能作为修改动作通过。")
+            raise ValueError("review_only 不是可执行修改动作，必须由 AI 重新生成具体方案或标记为误报。")
         validation = validate_suggestion_action(checked.suggestion, self.settings)
         if not validation.valid:
             raise ValueError(f"建议动作不可通过：{validation.reason}")
@@ -326,7 +326,7 @@ class ReviewService:
         for item in approved:
             checked = SuggestionConsistencyService(self.settings).require_executable(item)
             if not checked.executable:
-                raise ValueError(f"建议 {item.id} 不可执行：{checked.reason or '仅供人工审核'}")
+                raise ValueError(f"建议 {item.id} 不可执行：{checked.reason or '需要 AI 重新生成具体动作'}")
         base_version_id = suggestions[0].version_id if suggestions else int(batch["version_id"])
         base_version = VersionRepository(self.settings).get_version(base_version_id)
         if base_version is None:

@@ -75,7 +75,8 @@ const apiBaseError = ref('')
 type NavItem = { label: string; icon: string; to: string; match: string; badge?: string }
 
 const navGroups = computed(() => {
-  const versionId = state.newVersionId || state.currentVersionId
+  const versionId = state.currentVersionId
+  const runQuery = state.diagnosisRunId ? `?run_id=${encodeURIComponent(state.diagnosisRunId)}` : ''
   return [
     {
       label: '工作台',
@@ -88,9 +89,9 @@ const navGroups = computed(() => {
     {
       label: '结果查看',
       items: [
-        { label: '体系概览', icon: 'M5 19V9m7 10V5m7 14v-7', to: versionId ? `/overview/${versionId}` : '/versions', match: versionId ? `/overview/${versionId}` : '' },
+        { label: '体系概览', icon: 'M5 19V9m7 10V5m7 14v-7', to: versionId ? `/overview/${versionId}${runQuery}` : '/versions', match: versionId ? `/overview/${versionId}` : '' },
         { label: '分类浏览', icon: 'M5 4v16m0-8h6m0 0v8m0-8h8m-8 0V4', to: versionId ? `/tree/${versionId}` : '/versions', match: versionId ? `/tree/${versionId}` : '' },
-        { label: '诊断问题', icon: 'M12 9v4m0 4h.01M10 3h4l7 7-7 11h-4L3 10l7-7Z', to: versionId ? `/diagnosis/${versionId}` : '/diagnosis', match: versionId ? `/diagnosis/${versionId}` : '/diagnosis' },
+        { label: '诊断问题', icon: 'M12 9v4m0 4h.01M10 3h4l7 7-7 11h-4L3 10l7-7Z', to: versionId ? `/diagnosis/${versionId}${runQuery}` : '/diagnosis', match: versionId ? `/diagnosis/${versionId}` : '/diagnosis' },
         { label: '诊断报告', icon: 'M7 3h7l4 4v14H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm6 0v5h5M8 13h8m-8 4h6', to: versionId ? `/report/${versionId}` : '/report', match: versionId ? `/report/${versionId}` : '/report' },
       ] as NavItem[],
     },
@@ -112,7 +113,7 @@ const title = computed(() => {
 })
 
 const description = computed(() => {
-  if (route.path.startsWith('/workflow')) return '跟踪规则诊断、AI 自动审核、动作执行与结果复诊的完整链路。'
+  if (route.path.startsWith('/workflow')) return '跟踪规则或 AI 增强诊断、自动审核、动作执行与结果复诊的完整链路。'
   if (route.path.startsWith('/versions')) return '比较、导出和回滚不可变的产品分类体系版本。'
   if (route.path.startsWith('/report')) return '查看诊断覆盖、证据和维护结果的可追溯报告。'
   if (route.path.startsWith('/overview')) return '从规模、层级和质量指标理解当前体系状态。'

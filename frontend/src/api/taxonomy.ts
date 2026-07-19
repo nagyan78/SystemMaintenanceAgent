@@ -15,6 +15,24 @@ export type TaxonomyNode = {
   node_status?: string
 }
 
+export type TaxonomyOverview = {
+  version_id: number
+  file_id: number
+  node_count: number
+  root_count: number
+  max_depth: number
+  max_children_count: number
+  leaf_count: number
+  non_leaf_count: number
+  missing_parent_count: number
+  duplicate_name_count: number
+  synonym_non_empty_count: number
+}
+
+export function getTaxonomyOverview(versionId: number) {
+  return apiGet<TaxonomyOverview>(`/taxonomy/overview?version_id=${versionId}`)
+}
+
 export function getTreeLevel(versionId: number, parentId?: number) {
   const parent = parentId === undefined ? '' : `&parent_id=${parentId}`
   return apiGet<TaxonomyNode[]>(`/taxonomy/tree?version_id=${versionId}${parent}`)

@@ -22,7 +22,8 @@ class SuggestionRepository:
         with connect(self.settings) as connection:
             if work_item_id:
                 existing = connection.execute(
-                    "SELECT id FROM adjustment_suggestion WHERE work_item_id = ?", (work_item_id,)
+                    "SELECT id FROM adjustment_suggestion WHERE work_item_id = ? AND issue_id = ?",
+                    (work_item_id, suggestion.issue_id),
                 ).fetchone()
                 if existing:
                     return int(existing["id"])

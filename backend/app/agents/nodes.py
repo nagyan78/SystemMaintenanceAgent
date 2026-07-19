@@ -24,6 +24,8 @@ from backend.app.services.taxonomy_service import TaxonomyService
 from backend.app.services.vector_index_service import VectorIndexService
 from backend.app.services.version_service import VersionService
 from backend.app.services.version_verification_service import VersionVerificationService
+from backend.app.services.quality_score_service import calculate_quality_score
+from backend.app.services.ai_review_service import AIReviewService
 from backend.app.services.adaptive_planning_service import AdaptivePlanningService
 from backend.app.schemas.planning import DiagnosisBatchFeedback, MaintenancePlan
 from backend.app.repositories.triage_repo import TriageRepository
@@ -279,12 +281,15 @@ def content_diagnosis_node(state: TaxonomyGraphState) -> StateUpdate:
             "candidate_count": 0, "deep_diagnosed_count": 0, "ai_issue_count": 0,
             "skipped_count": 0, "failed_count": 0, "unexamined_reasons": {},
             "model_calls": 0, "tokens_used": 0, "wall_seconds": 0,
-            "plan_revision": state.plan_revision, "stop_reason": None,
-            "rules_complete": True, "ai_complete": True, "coverage_complete": True,
-            "completion_status": "completed", "run_id": None,
+            "plan_revision": state.plan_revision, "stop_reason": "规则模式未生成 AI 修改方案",
+            "rules_complete": True, "ai_complete": False, "coverage_complete": False,
+            "completion_status": "partial", "run_id": None,
             "workflow_id": state.workflow_id, "plan": plan.model_dump(),
         }
     triage_count = len(TriageRepository(_current_settings()).list(state.workflow_id))
+    all_issues = DiagnosisRepository(_current_settings()).list_issues(version_id)
+    score = calculate_quality_score(state.node_count, all_issues)
+    VersionRepository(_current_settings()).update_quality_score(version_id, score.score)
     plan_update = {}
     if state.maintenance_plan:
         maintenance = MaintenancePlan.model_validate(state.maintenance_plan)
@@ -318,6 +323,9 @@ def generate_suggestion_node(state: TaxonomyGraphState) -> StateUpdate:
     )
     generated_count = int(result.get("suggestion_count", 0))
     review_batch_id = result.get("review_batch_id")
+    suggestion_work_counts = result.get("work_item_counts", {})
+    incomplete_suggestions = sum(int(suggestion_work_counts.get(key, 0)) for key in ("inconclusive", "permanent_failed", "skipped", "retryable_failed"))
+    completion_update = {"diagnosis_completion_status": "partial"} if incomplete_suggestions else {}
     if generated_count == 0:
         return _complete_step(
             state,
@@ -325,6 +333,8 @@ def generate_suggestion_node(state: TaxonomyGraphState) -> StateUpdate:
             current_step="generate_suggestion",
             progress=78,
             suggestion_count=0,
+            suggestion_work_item_counts=suggestion_work_counts,
+            **completion_update,
         )
     version = VersionRepository(_current_settings()).get_version(version_id)
     if review_batch_id and version:
@@ -341,6 +351,8 @@ def generate_suggestion_node(state: TaxonomyGraphState) -> StateUpdate:
         progress=78,
         suggestion_count=generated_count,
         review_batch_id=review_batch_id,
+        suggestion_work_item_counts=suggestion_work_counts,
+        **completion_update,
     )
 
 
@@ -382,13 +394,13 @@ def wait_human_review_node(state: TaxonomyGraphState) -> StateUpdate:
 
 
 def ai_review_action_node(state: TaxonomyGraphState) -> StateUpdate:
-    """Let the AI proposal pipeline review itself, then retain only safe executable actions.
-
-    Suggestion generation has already used the action validation tool. This node performs
-    a second deterministic consistency pass over persisted suggestions before execution.
-    """
+    """Run an independent AI judgment, then the deterministic execution gate."""
     review_batch_id = _require_review_batch_id(state)
-    result = ReviewService(_current_settings()).auto_complete_review(
+    review_service = ReviewService(_current_settings())
+    suggestions = review_service.list_review_batch(review_batch_id)
+    from backend.app.services.model_service import ModelService
+    ai_review = AIReviewService(ModelService(_current_settings()).get_chat_model()).review(suggestions)
+    result = review_service.auto_complete_review(
         review_batch_id,
         operator="ai_reviewer",
         complete_if_empty=False,
@@ -404,10 +416,14 @@ def ai_review_action_node(state: TaxonomyGraphState) -> StateUpdate:
         review_decision="approve",
         review_payload={
             "mode": "ai_auto_review",
+            "ai_review_completed": ai_review.completed,
+            "ai_review_decisions": ai_review.decisions,
+            "ai_review_warning": ai_review.warning,
             "approved_suggestion_ids": approved_ids,
             "ignored_suggestion_ids": ignored_ids,
         },
         approved_action_count=len(approved_ids),
+        diagnosis_completion_status="partial" if ignored_ids or not ai_review.completed else state.diagnosis_completion_status,
     )
 
 
@@ -479,6 +495,11 @@ def verify_new_version_node(state: TaxonomyGraphState) -> StateUpdate:
         new_version_id=state.new_version_id,
         build_vector_index=state.enable_ai_analysis,
     )
+    if state.analysis_run_id:
+        DiagnosisRepository(_current_settings()).link_run_issues(
+            run_id=state.analysis_run_id,
+            version_id=state.new_version_id,
+        )
     return _complete_step(
         state,
         "verify_new_version_node",

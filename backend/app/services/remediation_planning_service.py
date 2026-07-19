@@ -12,7 +12,7 @@ class RemediationPlanningService:
     """Build conservative, executable action proposals from confirmed detector facts.
 
     The service never mutates persistence. Every proposal still passes action
-    validation, snapshot simulation and human review before execution.
+    validation, independent AI review and snapshot simulation before execution.
     """
 
     AMBIGUOUS_NAMES = {"其他", "其它", "综合", "通用", "未分类"}
@@ -63,8 +63,10 @@ class RemediationPlanningService:
             "version_id": version_id,
             "target_node_id": issue.get("subject_node_id") or issue.get("node_id"),
             "target_node_name": issue.get("subject_node_name") or issue.get("node_name"),
-            "reason": str(issue.get("reason") or issue.get("description") or "人工确认后处理"),
+            "reason": str(issue.get("reason") or issue.get("description") or "AI 根据问题证据生成修改方案"),
             "confidence": float(issue.get("confidence") or 0),
+            # This flag now means a second AI safety review is required before
+            # execution; it does not route the suggestion to a person.
             "need_confirm": True,
             "status": "pending",
         }
@@ -83,7 +85,7 @@ class RemediationPlanningService:
         return self._base(
             version_id, issue, action_type="rename_node", old_name=old_name,
             new_name=cleaned, action_payload={"new_name": cleaned}, risk_level="low",
-            suggestion=f"建议将「{old_name}」调整为「{cleaned}」，可在审核页继续编辑。",
+            suggestion=f"将「{old_name}」调整为「{cleaned}」，并在副本中验证命名唯一性。",
         )
 
     def _clean_synonym(self, version_id: int, issue: dict[str, Any]) -> AdjustmentSuggestion | None:
@@ -168,16 +170,16 @@ class RemediationPlanningService:
                                missing_id: int, ancestor: dict[str, Any] | None) -> AdjustmentSuggestion:
         return self._base(
             version_id, issue, action_type="review_only",
-            action_payload={"needs_manual_edit": True, "missing_parent_id": missing_id,
+            action_payload={"requires_ai_resolution": True, "missing_parent_id": missing_id,
                 "subject_node_id": int(node["category_id"]), "current_path": node.get("path_names"),
                 "nearest_valid_ancestor_id": ancestor.get("category_id") if ancestor else None,
                 "nearest_valid_ancestor_name": ancestor.get("category_name") if ancestor else None,
-                "no_change_reason": "无法可靠推导缺失父节点名称或挂载位置",
-                "action": {"type": "needs_manual_edit", "label": "需要人工补充修改方案"},
+                "no_change_reason": "现有证据无法可靠推导缺失父节点名称或挂载位置，必须由 AI 深度分析补全",
+                "action": {"type": "requires_ai_resolution", "label": "AI 深度分析缺失父节点"},
                 "impact_scope": {"direct_affected_nodes": [{"id": int(node["category_id"]), "name": node["category_name"]}],
                                  "affected_descendant_count": 0, "path_changed": True,
                                  "shared_missing_parent": False, "shared_child_count": 1}},
-            risk_level="medium", suggestion="需要人工补充修改方案：请确认缺失父节点名称和挂载位置。",
+            risk_level="medium", suggestion="AI 必须结合完整路径、祖先和同级节点补全父节点名称与挂载位置。",
         )
 
     def _move(self, version_id: int, issue: dict[str, Any]) -> AdjustmentSuggestion | None:
@@ -187,7 +189,7 @@ class RemediationPlanningService:
         issue_type = str(issue.get("issue_type_code") or issue.get("issue_type") or "unknown")
         # Semantic token overlap is not sufficient evidence for moving a subtree.
         # Only the deterministic excessive-depth correction is generated here;
-        # semantic placement findings stay review_only unless a human supplies a target.
+        # AI-enhanced mode must supply the semantic target.
         if issue_type not in {"deep_level", "excessive_depth"} or not node.get("parent_id"):
             return None
         parent = self.taxonomy.get_node_detail(version_id, int(node["parent_id"]))
@@ -207,7 +209,7 @@ class RemediationPlanningService:
                 "new_path": new_path, "new_level": int(new_parent.get("level") or 0) + 1,
                 "selection_basis": f"该节点当前层级为 {node.get('level')}，上移至原祖父节点后降低一层；未使用名称相似度猜测父节点。",
                 "affected_child_count": len(self.taxonomy.get_children(version_id, int(node["category_id"])))},
-            risk_level="medium", suggestion=f"建议移动到父节点「{new_parent['category_name']}」，执行前确认业务归属。",
+            risk_level="medium", suggestion=f"移动到父节点「{new_parent['category_name']}」，并在副本中验证整棵子树路径。",
         )
 
     def _split(self, version_id: int, issue: dict[str, Any]) -> AdjustmentSuggestion | None:
@@ -227,11 +229,11 @@ class RemediationPlanningService:
         ]
         return self._base(
             version_id, issue, action_type="split_subtree", action_payload={"groups": groups},
-            risk_level="high", suggestion="已生成完整覆盖直接子节点的初始分组；组名和成员必须经人工审核。",
+            risk_level="high", suggestion="已生成完整覆盖直接子节点的初始分组；AI 必须补全业务分组名称并通过整树预演。",
         )
 
     def _merge(self, version_id: int, issue: dict[str, Any]) -> AdjustmentSuggestion | None:
-        # 规则层无法证明语义等价；没有明确等价证据时必须人工判断。
+        # 规则层无法证明语义等价；AI 模式会优先生成并验证合并方案。
         return None
         nodes = self.taxonomy.list_nodes(version_id)
         candidates: list[dict[str, Any]] = []
@@ -286,14 +288,14 @@ class RemediationPlanningService:
         return self._base(
             version_id, issue, action_type="delete_leaf_node",
             action_payload={"target_node_id": int(node["category_id"])}, risk_level="high",
-            suggestion="该叶子节点当前没有已登记外部引用，可在人工确认后删除。",
+            suggestion="该叶子节点没有子节点和已登记外部引用，可在副本预演通过后删除。",
         )
 
     def _no_change(self, version_id: int, issue: dict[str, Any]) -> AdjustmentSuggestion:
         return self._base(
             version_id, issue, action_type="review_only",
-            action_payload={"no_change_reason": "当前证据不足，缺少明确可执行的新名称、拆分方案、移动依据或等价证据"},
-            risk_level="low", suggestion="当前证据不足，不自动修改；请人工确认问题或保留待确认。",
+            action_payload={"requires_ai_resolution": True, "no_change_reason": "当前方案缺少明确可执行的新名称、拆分方案、移动依据或等价证据"},
+            risk_level="low", suggestion="当前方案不完整，必须进入 AI 深度分析补全具体动作。",
         )
 
     def _node(self, version_id: int, issue: dict[str, Any]) -> dict[str, Any] | None:

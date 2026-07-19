@@ -373,8 +373,12 @@ def init_db(settings: Settings) -> None:
         connection.execute("""UPDATE diagnosis_issue SET subject_node_id=COALESCE(subject_node_id,node_id),
                               subject_node_name=COALESCE(subject_node_name,node_name),
                               subject_path=COALESCE(subject_path,path)""")
+        # One batched work item may produce one suggestion per issue.  The
+        # composite key keeps retries idempotent without collapsing a batch to
+        # its first issue.
+        connection.execute("DROP INDEX IF EXISTS idx_suggestion_work_item")
         connection.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_suggestion_work_item ON adjustment_suggestion(work_item_id) WHERE work_item_id IS NOT NULL"
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_suggestion_work_item_issue ON adjustment_suggestion(work_item_id, issue_id) WHERE work_item_id IS NOT NULL"
         )
         connection.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_version_action_batch ON taxonomy_version(action_batch_id) WHERE action_batch_id IS NOT NULL"
