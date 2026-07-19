@@ -27,8 +27,8 @@ _WORKFLOW_CHECKPOINTER = None
 class StartWorkflowRequest(BaseModel):
     file_id: int
     enable_ai_analysis: bool = False
-    model_provider: str = "ollama"
-    model_name: str = "qwen3:8b"
+    model_provider: str = "deepseek"
+    model_name: str = "deepseek-chat"
     priority_subtree_ids: list[int] = Field(default_factory=list)
     sample_strategy: Literal["focused", "full_scan", "sampling"] = "focused"
     focus_issues: list[str] = Field(default_factory=list)
@@ -86,6 +86,8 @@ def start_taxonomy_workflow(
     background_tasks: BackgroundTasks,
 ) -> StartWorkflowResponse:
     settings = request.app.state.settings
+    if payload.model_provider != "deepseek" or payload.model_name != "deepseek-chat":
+        raise HTTPException(status_code=400, detail="Only deepseek/deepseek-chat is supported.")
     if FileRepository(settings).get_file(payload.file_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found.")
 
@@ -365,9 +367,6 @@ def _run_workflow(
     if options.get("enable_ai_analysis"):
         runtime_settings = settings.model_copy(
             update={
-                "llm_provider": options.get("model_provider") or settings.llm_provider,
-                "llm_model": options.get("model_name") or settings.llm_model,
-                "llm_fallback_enabled": False,
                 "llm_max_calls": options.get("ai_max_model_calls") or settings.llm_max_calls,
                 "llm_max_tokens": options.get("ai_token_budget") or settings.llm_max_tokens,
                 "diagnosis_ai_wall_seconds": options.get("ai_wall_seconds") or settings.diagnosis_ai_wall_seconds,

@@ -30,8 +30,8 @@ class RunDiagnosisRequest(BaseModel):
     file_id: int | None = None
     version_id: int | None = None
     enable_ai_analysis: bool = False
-    model_provider: str = "ollama"
-    model_name: str = "qwen3:8b"
+    model_provider: str = "deepseek"
+    model_name: str = "deepseek-chat"
     ai_candidate_limit: int | None = Field(default=None, ge=1, le=1000)
     ai_wall_seconds: int | None = Field(default=None, ge=60, le=86400)
     ai_max_model_calls: int | None = Field(default=None, ge=1, le=10000)
@@ -56,11 +56,8 @@ def _resolve_version(payload: RunDiagnosisRequest, request: Request) -> int:
 def run_diagnosis(payload: RunDiagnosisRequest, request: Request) -> dict[str, Any]:
     settings = request.app.state.settings
     version_id = _resolve_version(payload, request)
-    if payload.model_provider not in {"ollama", "deepseek"}:
-        raise HTTPException(status_code=400, detail="model_provider must be ollama or deepseek.")
-    expected_model = "qwen3:8b" if payload.model_provider == "ollama" else "deepseek-chat"
-    if payload.model_name != expected_model:
-        raise HTTPException(status_code=400, detail=f"{payload.model_provider} must use {expected_model}.")
+    if payload.model_provider != "deepseek" or payload.model_name != "deepseek-chat":
+        raise HTTPException(status_code=400, detail="Only deepseek/deepseek-chat is supported.")
     version = VersionRepository(settings).get_version(version_id)
     if version is None:
         raise HTTPException(status_code=404, detail="Version not found.")
@@ -114,9 +111,6 @@ def run_diagnosis(payload: RunDiagnosisRequest, request: Request) -> dict[str, A
         )
         if payload.enable_ai_analysis:
             run_settings = settings.model_copy(update={
-                "llm_provider": payload.model_provider,
-                "llm_model": payload.model_name,
-                "llm_fallback_enabled": False,
                 "diagnosis_ai_wall_seconds": payload.ai_wall_seconds or settings.diagnosis_ai_wall_seconds,
                 "llm_max_calls": payload.ai_max_model_calls or settings.llm_max_calls,
                 "llm_max_tokens": payload.ai_token_budget or settings.llm_max_tokens,

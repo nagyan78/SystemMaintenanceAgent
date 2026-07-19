@@ -16,7 +16,7 @@ export type WorkspaceState = {
   reviewBatchId: string | null
   reportPath: string | null
   enableAiAnalysis: boolean
-  modelProvider: 'ollama' | 'deepseek'
+  modelProvider: 'deepseek'
   modelName: string
 }
 
@@ -38,8 +38,8 @@ const defaultState = (): WorkspaceState => ({
   reviewBatchId: null,
   reportPath: null,
   enableAiAnalysis: false,
-  modelProvider: 'ollama',
-  modelName: 'qwen3:8b',
+  modelProvider: 'deepseek',
+  modelName: 'deepseek-chat',
 })
 
 const state = reactive(defaultState())
@@ -47,7 +47,10 @@ const state = reactive(defaultState())
 function hydrate() {
   const raw = localStorage.getItem(STORAGE_KEY)
   if (!raw) return
-  Object.assign(state, defaultState(), JSON.parse(raw))
+  Object.assign(state, defaultState(), JSON.parse(raw), {
+    modelProvider: 'deepseek',
+    modelName: 'deepseek-chat',
+  })
 }
 
 function persist() {

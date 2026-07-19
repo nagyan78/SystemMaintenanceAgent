@@ -58,8 +58,7 @@
       <section v-if="uploadedFileId" class="card automation-card">
         <div class="card-head"><div><p class="eyebrow">AI 执行配置</p><h2>自动审核与执行</h2></div><span class="badge" data-tone="success">无需人工审批</span></div>
         <div class="automation-grid">
-          <label class="model-option" :class="{ selected: modelProvider === 'ollama' }"><input v-model="modelProvider" type="radio" value="ollama" /><span><strong>本地 Qwen</strong><small>数据留在本机，通过 Ollama 执行语义分析和建议审核。</small></span></label>
-          <label class="model-option" :class="{ selected: modelProvider === 'deepseek' }"><input v-model="modelProvider" type="radio" value="deepseek" /><span><strong>DeepSeek API</strong><small>使用云端模型完成候选问题分析与动作审核。</small></span></label>
+          <div class="model-option selected"><span><strong>DeepSeek API</strong><small>使用云端模型完成候选问题分析与动作审核。</small></span></div>
         </div>
         <p class="automation-note">AI 通过建议后，系统仍会执行确定性规则校验和内存快照预演；不安全或不完整的动作将自动跳过。</p>
       </section>
@@ -123,7 +122,6 @@ const rowCount = ref(state.fileRowCount || 0), columnCount = ref(state.fileColum
 const columns = ref<string[]>(state.fileColumns || [])
 const existingFiles = ref<FileRecord[]>([]), tasks = ref<WorkflowListItem[]>([])
 const showFileModal = ref(false), tasksLoading = ref(false), tasksError = ref('')
-const modelProvider = ref<'ollama' | 'deepseek'>(state.modelProvider)
 const expectedFields = ['category_id', 'category_name', 'category_group_id', 'category_pids', 'category_group_name', 'syn_list']
 const displayFileName = computed(() => file.value?.name || fileName.value)
 const schemaMatch = computed(() => expectedFields.every(field => columns.value.includes(field)))
@@ -157,10 +155,11 @@ async function submit() {
 async function startAnalysis() {
   if (!uploadedFileId.value) return
   loading.value = true; error.value = ''
-  const modelName = modelProvider.value === 'deepseek' ? 'deepseek-chat' : 'qwen3:8b'
+  const modelProvider = 'deepseek' as const
+  const modelName = 'deepseek-chat'
   try {
-    const workflow = await startWorkflow(uploadedFileId.value, { enable_ai_analysis: true, model_provider: modelProvider.value, model_name: modelName })
-    patch({ taskId: workflow.task_id, workflowId: workflow.workflow_id, threadId: workflow.thread_id, enableAiAnalysis: true, modelProvider: modelProvider.value, modelName })
+    const workflow = await startWorkflow(uploadedFileId.value, { enable_ai_analysis: true, model_provider: modelProvider, model_name: modelName })
+    patch({ taskId: workflow.task_id, workflowId: workflow.workflow_id, threadId: workflow.thread_id, enableAiAnalysis: true, modelProvider, modelName })
     await router.push(`/workflow/${workflow.task_id}`)
   } catch (cause) { error.value = cause instanceof Error ? cause.message : '自动维护启动失败' }
   finally { loading.value = false }

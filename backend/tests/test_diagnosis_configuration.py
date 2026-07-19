@@ -46,8 +46,8 @@ def test_quick_diagnosis_skips_model_and_records_configuration(tmp_path, monkeyp
         json={
             "file_id": upload["file_id"],
             "enable_ai_analysis": False,
-            "model_provider": "ollama",
-            "model_name": "qwen3:8b",
+            "model_provider": "deepseek",
+            "model_name": "deepseek-chat",
         },
     )
 
@@ -76,11 +76,20 @@ def test_quick_diagnosis_skips_model_and_records_configuration(tmp_path, monkeyp
     assert rerun.json()["status"] == "waiting_review"
 
 
-def test_diagnosis_rejects_mismatched_provider_model(tmp_path):
+def test_diagnosis_rejects_local_qwen_provider(tmp_path):
     client = TestClient(create_app(_settings(tmp_path)))
     response = client.post(
         "/api/diagnosis/run",
-        json={"version_id": 1, "enable_ai_analysis": True, "model_provider": "ollama", "model_name": "deepseek-chat"},
+        json={"version_id": 1, "enable_ai_analysis": True, "model_provider": "ollama", "model_name": "qwen3:8b"},
+    )
+    assert response.status_code == 400
+
+
+def test_workflow_rejects_local_qwen_provider(tmp_path):
+    client = TestClient(create_app(_settings(tmp_path)))
+    response = client.post(
+        "/api/workflows/taxonomy/start",
+        json={"file_id": 1, "enable_ai_analysis": True, "model_provider": "ollama", "model_name": "qwen3:8b"},
     )
     assert response.status_code == 400
 
@@ -112,8 +121,8 @@ def test_explicit_high_coverage_request_overrides_planner_sample(tmp_path, monke
         json={
             "file_id": upload["file_id"],
             "enable_ai_analysis": True,
-            "model_provider": "ollama",
-            "model_name": "qwen3:8b",
+            "model_provider": "deepseek",
+            "model_name": "deepseek-chat",
             "ai_candidate_limit": 927,
             "ai_wall_seconds": 14400,
         },
@@ -143,8 +152,8 @@ def test_ai_budget_exhaustion_keeps_results_and_generates_report(tmp_path, monke
         json={
             "file_id": upload["file_id"],
             "enable_ai_analysis": True,
-            "model_provider": "ollama",
-            "model_name": "qwen3:8b",
+            "model_provider": "deepseek",
+            "model_name": "deepseek-chat",
         },
     )
 
@@ -182,8 +191,8 @@ def test_ai_connection_error_keeps_results_and_generates_report(tmp_path, monkey
         json={
             "file_id": upload["file_id"],
             "enable_ai_analysis": True,
-            "model_provider": "ollama",
-            "model_name": "qwen3:8b",
+            "model_provider": "deepseek",
+            "model_name": "deepseek-chat",
         },
     )
 

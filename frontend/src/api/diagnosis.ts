@@ -52,7 +52,7 @@ export function importTaxonomy(fileId: number) {
 
 export type DiagnosisRunConfig = {
   enable_ai_analysis: boolean
-  model_provider: 'ollama' | 'deepseek'
+  model_provider: 'deepseek'
   model_name: string
   ai_candidate_limit?: number
   ai_wall_seconds?: number

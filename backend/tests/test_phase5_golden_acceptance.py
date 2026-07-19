@@ -24,7 +24,7 @@ def _run_golden(client: TestClient) -> dict:
     assert upload.status_code == 200
     diagnosis = client.post("/api/diagnosis/run", json={
         "file_id": upload.json()["file_id"], "enable_ai_analysis": False,
-        "model_provider": "ollama", "model_name": "qwen3:8b",
+        "model_provider": "deepseek", "model_name": "deepseek-chat",
     })
     assert diagnosis.status_code == 200
     body = diagnosis.json()

@@ -83,7 +83,7 @@ export type ResumeRequest = {
 
 export type StartWorkflowOptions = {
   enable_ai_analysis?: boolean
-  model_provider?: 'ollama' | 'deepseek'
+  model_provider?: 'deepseek'
   model_name?: string
   priority_subtree_ids?: number[]
   sample_strategy?: 'focused' | 'full_scan' | 'sampling'

@@ -43,7 +43,7 @@ class AgentRunService:
         }
         run_id = self.repo.create_run(AgentRunRecord(
             workflow_id=workflow_id, agent_type="content_diagnosis", version_id=version_id,
-            model_profile=self.settings.llm_model,
+            model_profile=self.settings.deepseek_model,
             budget=configured_budget,
         ))
         candidates = TaxonomyRepository(self.settings).list_content_diagnosis_candidates(
@@ -118,7 +118,7 @@ class AgentRunService:
                 agent_name="content_diagnosis", event_type="candidate_completed",
                 phase="candidate", status=status, attempt=item.attempt,
                 latency_ms=int((time.perf_counter() - started) * 1000),
-                model=self.settings.llm_model,
+                model=self.settings.deepseek_model,
                 summary={"subject_id": item.subject_id, "issue_count": len(issues)},
             )
             return {"processed_count": 1, "issue_count": len(issues), "clean_count": int(not issues), "inconclusive_count": 0, "failed_count": 0, "skipped_count": 0}
@@ -192,7 +192,7 @@ class AgentRunService:
         review_batch_id = f"review_{uuid4().hex[:12]}"
         run_id = self.repo.create_run(AgentRunRecord(
             workflow_id=workflow_id, agent_type="suggestion_generation", version_id=version_id,
-            model_profile=self.settings.llm_model,
+            model_profile=self.settings.deepseek_model,
             budget={"review_batch_id": review_batch_id, "analysis_run_id": analysis_run_id},
         ))
         issue_ids: list[int] = []
@@ -236,7 +236,7 @@ class AgentRunService:
                 workflow_id=run["workflow_id"], run_id=item.run_id, work_item_id=item_id,
                 agent_name="suggestion_generation", event_type="issue_completed", phase="suggestion",
                 status=status, attempt=item.attempt, latency_ms=int((time.perf_counter()-started)*1000),
-                model=self.settings.llm_model,
+                model=self.settings.deepseek_model,
                 summary={"issue_id": item.subject_id, "suggestion_count": result.generated_count},
             )
             return {"processed_count": 1, "suggestion_count": result.generated_count, "failed_count": 0}
