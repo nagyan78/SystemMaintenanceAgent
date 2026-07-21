@@ -26,11 +26,11 @@ def seed_issue(tmp_path: Path):
     version = VersionRepository(cfg).create_version(file_id=1, version_no='v1.0')
     TaxonomyRepository(cfg).bulk_insert_nodes(version_id=version, nodes=[
         TaxonomyNodeRecord(category_id=1, category_name='仓储货物堆放架', parent_id=None, level=1, path_ids='1', path_names='仓储货物堆放架'),
-        TaxonomyNodeRecord(category_id=7079, category_name='锌制货架', parent_id=1, level=2, path_ids='1,7079', path_names='仓储货物堆放架 > 锌制货架'),
+        TaxonomyNodeRecord(category_id=7079, category_name='金属货架', parent_id=1, level=2, path_ids='1,7079', path_names='仓储货物堆放架 > 金属货架'),
     ])
     issue = DiagnosisRepository(cfg).create_issue(version_id=version, issue=DiagnosisIssueRecord(
-        issue_type='naming_nonstandard', node_id=7079, node_name='锌制货架', description='名称不规范',
-        reason='缺少用途限定', risk_level='medium', confidence=1, path='仓储货物堆放架 > 锌制货架'))
+        issue_type='naming_nonstandard', node_id=7079, node_name='金属货架', description='名称不规范',
+        reason='缺少用途限定', risk_level='medium', confidence=1, path='仓储货物堆放架 > 金属货架'))
     return cfg, version, issue
 
 
@@ -42,15 +42,15 @@ def test_consistency_rejects_parent_target_and_name_plus_category(tmp_path):
     result = service.check(wrong, normalize_new=True)
     assert result.downgraded and result.suggestion.action_type == 'review_only'
     assert '问题主体节点' in (result.reason or '')
-    fallback = wrong.model_copy(update={'target_node_id':7079, 'old_name':'锌制货架', 'new_name':'锌制货架分类', 'action_payload':{'new_name':'锌制货架分类'}})
+    fallback = wrong.model_copy(update={'target_node_id':7079, 'old_name':'金属货架', 'new_name':'金属货架分类', 'action_payload':{'new_name':'金属货架分类'}})
     result = service.check(fallback, normalize_new=True)
     assert result.downgraded and '原名称+分类' in (result.reason or '')
 
 
-def test_consistency_accepts_explicit_zinc_rack_rename(tmp_path):
+def test_consistency_accepts_explicit_semantic_rename(tmp_path):
     cfg, version, issue = seed_issue(tmp_path)
     suggestion = AdjustmentSuggestion(issue_id=issue, version_id=version, action_type='rename_node', target_node_id=7079,
-        old_name='锌制货架', new_name='锌制仓储用货架', action_payload={'new_name':'锌制仓储用货架'},
+        old_name='金属货架', new_name='仓储用金属货架', action_payload={'new_name':'仓储用金属货架'},
         reason='用途限定', suggestion='规范命名', risk_level='medium', confidence=1)
     result = SuggestionConsistencyService(cfg).check(suggestion, normalize_new=True)
     assert result.valid and result.executable and not result.downgraded

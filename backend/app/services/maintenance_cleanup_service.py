@@ -15,7 +15,7 @@ from backend.app.db import connect, sqlite_path_from_url
 
 BUSINESS_TABLES = (
     "evaluation_baseline", "agent_evaluation", "agent_event", "run_issue", "agent_work_item", "agent_run",
-    "tool_cache", "agent_memory", "diagnosis_triage", "category_reference", "workflow_event",
+    "tool_cache", "agent_memory", "workflow_event",
     "version_execution_record", "report_artifact", "operation_log", "adjustment_suggestion",
     "review_batch", "diagnosis_issue", "category_node", "taxonomy_version", "task_record", "uploaded_file",
 )
@@ -199,9 +199,9 @@ class MaintenanceCleanupService:
                         ("agent_event", "workflow_id", workflow_runs), ("run_issue", "run_id", run_ids),
                         ("agent_work_item", "run_id", run_ids),
                         ("agent_run", "workflow_id", workflow_runs), ("agent_memory", "source_workflow_id", workflow_runs),
-                        ("diagnosis_triage", "workflow_id", workflow_runs), ("tool_cache", "workflow_id", workflow_runs),
+                        ("tool_cache", "workflow_id", workflow_runs),
                         ("task_record", "id", workflows),
-                        ("report_artifact", "version_id", versions), ("category_reference", "version_id", versions),
+                        ("report_artifact", "version_id", versions),
                         ("operation_log", "version_id", versions), ("diagnosis_issue", "version_id", versions),
                         ("category_node", "version_id", versions), ("taxonomy_version", "id", versions),
                         ("uploaded_file", "id", files),

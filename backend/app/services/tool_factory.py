@@ -1,6 +1,7 @@
 """Instance-scoped LangChain tools for agent workers."""
 
 from dataclasses import dataclass
+import json
 import threading
 from typing import Any
 
@@ -17,7 +18,6 @@ from backend.app.schemas.suggestion import AdjustmentSuggestion
 from backend.app.tools.validation_tools import validate_suggestion_action
 from backend.app.tools.payload_tools import coerce_json_object
 from backend.app.vectorstores.qdrant_store import QdrantStore
-from backend.app.repositories.triage_repo import TriageRepository
 from backend.app.services.tool_registry import ToolRegistry, ToolSpec
 
 
@@ -94,20 +94,11 @@ class AgentToolFactory:
             with self.resource_limits.qdrant:
                 return resolved_store.search_similar(version_id, node_text, min(max(top_k, 1), 20))
 
-        @tool
-        def submit_diagnosis(issue: dict[str, Any] | str) -> str:
-            """提交当前作用域的一条诊断结果。"""
+        def persist_issue(issue: dict[str, Any] | str) -> str:
             issue = coerce_json_object(issue, field_name="issue")
             version_id = int(issue["version_id"])
             _enforce_scope(scope, version_id)
             confidence = _coerce_confidence(issue.get("confidence", 0.0))
-            if confidence < 0.6 or issue.get("detector_disagreement") or issue.get("inconclusive"):
-                triage_id = TriageRepository(settings).create(
-                    workflow_id=scope.workflow_id if scope else "unscoped",
-                    version_id=version_id,
-                    issue={**issue, "confidence": confidence},
-                )
-                return f"triage_{triage_id}"
             record = DiagnosisIssueRecord(
                 issue_type=normalize_issue_type_code(issue.get("issue_type")), node_id=issue.get("node_id"),
                 node_name=issue.get("node_name"),
@@ -119,7 +110,47 @@ class AgentToolFactory:
             )
             return f"issue_{diagnosis.create_issue(version_id=version_id, issue=record)}"
 
-        return [get_node_detail, get_node_path, get_children, search_similar_nodes, submit_diagnosis]
+        @tool
+        def submit_diagnosis(issue: dict[str, Any] | str) -> str:
+            """兼容提交当前作用域的一条问题诊断。"""
+            return persist_issue(issue)
+
+        @tool
+        def submit_content_assessment(assessment: dict[str, Any] | str) -> str:
+            """提交合理或存在问题的二分类结论。"""
+            value = coerce_json_object(assessment, field_name="assessment")
+            conclusion = str(value.get("conclusion") or "").strip()
+            if conclusion not in {"reasonable", "problem"}:
+                raise ValueError("conclusion must be reasonable or problem")
+            version_id = scope.version_id if scope is not None else int(value["version_id"])
+            _enforce_scope(scope, version_id)
+            node_id = (
+                int(scope.subject_id)
+                if scope is not None and scope.subject_id is not None
+                else int(value["node_id"])
+            )
+            scoped_node = (
+                taxonomy.get_node_detail(version_id, node_id) or {}
+                if scope is not None
+                else {}
+            )
+            node_name = scoped_node.get("category_name") or value.get("node_name")
+            issue_id = None
+            if conclusion == "problem":
+                issue = coerce_json_object(value.get("issue") or {}, field_name="assessment.issue")
+                issue["version_id"] = version_id
+                issue["node_id"] = node_id
+                issue["node_name"] = node_name
+                issue_id = persist_issue(issue)
+            return json.dumps({
+                "accepted": True,
+                "conclusion": conclusion,
+                "node_id": node_id,
+                "node_name": node_name,
+                "issue_id": issue_id,
+            }, ensure_ascii=False)
+
+        return [get_node_detail, get_node_path, get_children, search_similar_nodes, submit_diagnosis, submit_content_assessment]
 
     def suggestion_tools(self, submit_tool: Any, scope: ToolScope | None = None) -> list[Any]:
         tools = self.content_diagnosis_tools(scope)[:4]

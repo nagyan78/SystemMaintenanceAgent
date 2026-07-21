@@ -16,8 +16,8 @@ const versions = read('../src/views/VersionsView.vue')
 for (const route of ['/upload', '/workflow/:taskId', '/versions', '/diagnosis', '/diagnosis/:versionId', '/report', '/report/:versionId', '/tree/:versionId']) {
   assert.ok(router.includes(route), `missing route ${route}`)
 }
-assert.ok(router.includes("{ path: '/reviews', redirect: '/versions' }"), 'legacy review center must redirect away from manual review')
-assert.ok(router.includes("{ path: '/review/:reviewBatchId', redirect: '/versions' }"), 'legacy review detail must redirect away from manual review')
+assert.ok(!router.includes("path: '/reviews'"), 'manual review center route must be removed')
+assert.ok(!router.includes("path: '/review/:reviewBatchId'"), 'manual review detail route must be removed')
 
 for (const label of ['上传与启动', '执行进度', '版本管理', '体系概览', '分类浏览', '诊断问题', '诊断报告']) {
   assert.ok(shell.includes(label), `missing navigation item ${label}`)

@@ -14,6 +14,7 @@ from backend.app.services.content_diagnosis_service import ContentDiagnosisAgent
 from backend.app.services.retry_policy import RetryPolicy
 from backend.app.services.suggestion_service import SuggestionAgent
 from backend.app.services.tool_factory import AgentResourceLimits, AgentToolFactory, ToolScope
+from backend.app.services.stratified_sampling_service import StratifiedSamplingService
 
 
 class AgentRunService:
@@ -46,13 +47,21 @@ class AgentRunService:
             model_profile=self.settings.deepseek_model,
             budget=configured_budget,
         ))
-        candidates = TaxonomyRepository(self.settings).list_content_diagnosis_candidates(
-            version_id, priority_subtrees=resolved_plan.priority_subtrees,
-            priority_subtree_ids=resolved_plan.priority_subtree_ids,
-            focus_issues=resolved_plan.focus_issues,
-            sample_strategy=resolved_plan.sample_strategy,
-            limit=min(max(resolved_plan.estimated_candidates, 1), 1000),
-        )
+        taxonomy = TaxonomyRepository(self.settings)
+        if resolved_plan.sample_strategy == "sampling":
+            candidates = StratifiedSamplingService().select(
+                taxonomy.list_nodes(version_id),
+                sample_size=self.settings.diagnosis_sample_size,
+                seed=self.settings.diagnosis_sample_seed,
+            )
+        else:
+            candidates = taxonomy.list_content_diagnosis_candidates(
+                version_id, priority_subtrees=resolved_plan.priority_subtrees,
+                priority_subtree_ids=resolved_plan.priority_subtree_ids,
+                focus_issues=resolved_plan.focus_issues,
+                sample_strategy=resolved_plan.sample_strategy,
+                limit=min(max(resolved_plan.estimated_candidates, 1), 1000),
+            )
         ids = [self.repo.upsert_work_item(run_id, "candidate", str(item["category_id"]), item) for item in candidates]
         self.repo.update_run(run_id, status="running", coverage={
             "total_nodes": rule_scanned_nodes, "rule_scanned_nodes": rule_scanned_nodes,
@@ -109,9 +118,19 @@ class AgentRunService:
                 ),
             )
             with self.llm_slots:
-                issues = agent.run(int(run["version_id"]), DiagnosisPlan(estimated_candidates=1))
-            status = "succeeded" if issues else "clean"
-            payload = {"issues": [issue.model_dump() for issue in issues]}
+                assessments = agent.run_assessments(int(run["version_id"]), DiagnosisPlan(estimated_candidates=1))
+            assessment = assessments[0] if assessments else None
+            issues = [assessment.issue] if assessment and assessment.issue is not None else []
+            status = {
+                "problem": "succeeded",
+                "reasonable": "clean",
+            }.get(assessment.conclusion if assessment else "")
+            if status is None:
+                raise RuntimeError("MODEL_NO_VALID_BINARY_CONCLUSION")
+            payload = {
+                "assessment": assessment.model_dump(),
+                "issues": [issue.model_dump() for issue in issues],
+            }
             self.repo.complete_work_item(item_id, status=status, result_payload=payload)
             self.repo.record_event(
                 workflow_id=run["workflow_id"], run_id=item.run_id, work_item_id=item_id,
@@ -119,9 +138,16 @@ class AgentRunService:
                 phase="candidate", status=status, attempt=item.attempt,
                 latency_ms=int((time.perf_counter() - started) * 1000),
                 model=self.settings.deepseek_model,
-                summary={"subject_id": item.subject_id, "issue_count": len(issues)},
+                summary={"subject_id": item.subject_id, "issue_count": len(issues), "conclusion": status},
             )
-            return {"processed_count": 1, "issue_count": len(issues), "clean_count": int(not issues), "inconclusive_count": 0, "failed_count": 0, "skipped_count": 0}
+            return {
+                "processed_count": 1,
+                "issue_count": len(issues),
+                "clean_count": int(status == "clean"),
+                "inconclusive_count": int(status == "inconclusive"),
+                "failed_count": 0,
+                "skipped_count": 0,
+            }
         except Exception as exc:
             retryable = self.retry.classify(exc) == "retryable_external"
             status = self.repo.fail_work_item(item_id, retryable=retryable, error_code=type(exc).__name__, error_message=str(exc))
@@ -142,9 +168,18 @@ class AgentRunService:
         run = self.repo.get_run(run_id) or {}
         budget = run.get("budget") or {}
         usage = self.repo.usage_totals(run_id)
-        deep_count = sum(int(counts.get(key, 0)) for key in ("succeeded", "clean", "inconclusive"))
+        deep_count = sum(int(counts.get(key, 0)) for key in ("succeeded", "clean"))
         failed_count = int(counts.get("permanent_failed", 0))
         skipped_count = int(counts.get("skipped", 0))
+        reasonable_count = int(counts.get("clean", 0))
+        problem_count = int(counts.get("succeeded", 0))
+        assessed_count = reasonable_count + problem_count
+        sample_score = round(100 * reasonable_count / assessed_count, 2) if assessed_count else None
+        sample_assessments = [
+            dict(item.result_payload.get("assessment") or {})
+            for item in self.repo.list_work_items(run_id)
+            if item.status in {"succeeded", "clean"} and item.result_payload.get("assessment")
+        ]
         reasons: dict[str, int] = {}
         for item in self.repo.list_work_items(run_id):
             if item.status in {"skipped", "permanent_failed", "retryable_failed"}:
@@ -163,6 +198,11 @@ class AgentRunService:
             "candidate_count": int(counts.get("total", 0)),
             "deep_diagnosed_count": deep_count,
             "ai_issue_count": int(counts.get("succeeded", 0)),
+            "reasonable_count": reasonable_count,
+            "problem_count": problem_count,
+            "ai_content_sample_score": sample_score,
+            "sample_seed": self.settings.diagnosis_sample_seed,
+            "sample_assessments": sample_assessments,
             "skipped_count": skipped_count,
             "failed_count": failed_count,
             "unexamined_reasons": reasons,

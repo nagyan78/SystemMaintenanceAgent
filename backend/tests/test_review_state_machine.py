@@ -18,7 +18,7 @@ from backend.app.services.remediation_planning_service import RemediationPlannin
 def _settings(tmp_path):
     return Settings(database_url=f"sqlite:///{tmp_path / 'app.db'}", upload_dir=tmp_path / "uploads",
                     export_dir=tmp_path / "exports", report_dir=tmp_path / "reports",
-                    deepseek_api_key="", dashscope_api_key="")
+                    deepseek_api_key="", dashscope_api_key="", enable_legacy_manual_review_api=True)
 
 
 def _seed_missing_parent_batch(tmp_path, count=3):

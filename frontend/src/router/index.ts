@@ -13,8 +13,6 @@ const routes: RouteRecordRaw[] = [
   { path: '/upload', component: UploadView },
   { path: '/workflow/:taskId', component: WorkflowView, props: true },
   { path: '/workflows', redirect: '/upload' },
-  { path: '/reviews', redirect: '/versions' },
-  { path: '/review/:reviewBatchId', redirect: '/versions' },
   { path: '/versions', component: VersionsView },
   { path: '/report', component: ReportView },
   { path: '/report/:versionId', component: ReportView },

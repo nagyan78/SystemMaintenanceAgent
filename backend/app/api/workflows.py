@@ -3,7 +3,6 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
-from langgraph.types import Command
 from pydantic import BaseModel
 from pydantic import Field
 
@@ -30,7 +29,7 @@ class StartWorkflowRequest(BaseModel):
     model_provider: str = "deepseek"
     model_name: str = "deepseek-chat"
     priority_subtree_ids: list[int] = Field(default_factory=list)
-    sample_strategy: Literal["focused", "full_scan", "sampling"] = "focused"
+    sample_strategy: Literal["focused", "full_scan", "sampling"] = "sampling"
     focus_issues: list[str] = Field(default_factory=list)
     ai_candidate_limit: int | None = Field(default=None, ge=1, le=1000)
     ai_max_model_calls: int | None = Field(default=None, ge=1, le=10000)
@@ -45,17 +44,6 @@ class StartWorkflowResponse(BaseModel):
     status: str
     current_step: str
     progress: int
-
-
-class ResumeWorkflowRequest(BaseModel):
-    decision: str
-    approved_suggestion_ids: list[int] = []
-    rejected_suggestion_ids: list[int] = []
-    confirmed_without_action_suggestion_ids: list[int] = []
-    uncertain_suggestion_ids: list[int] = []
-    edits: list[dict[str, Any]] = []
-    operator: str = "local_user"
-    reject_reason: str | None = None
 
 
 def _get_workflow_checkpointer():
@@ -332,20 +320,12 @@ def workflow_events(
 @router.post("/{task_id}/resume")
 def resume_workflow(
     task_id: str,
-    payload: ResumeWorkflowRequest,
     request: Request,
-    background_tasks: BackgroundTasks,
 ) -> dict[str, Any]:
-    settings = request.app.state.settings
-    task_repo = TaskRepository(settings)
-    task = task_repo.get_task(task_id)
-    if task is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
-    if task["status"] != "waiting_review":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Task is not waiting for review.")
-    task_repo.update_task(task_id=task_id, status="running", current_step="resume_queued")
-    WorkflowRunner(settings).submit(background_tasks, _resume_workflow, settings, task, payload.model_dump())
-    return {"task_id": task_id, "status": "running", "current_step": "resume_queued"}
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="人工审核恢复接口已停用；新任务由独立 AI 复核并自动执行。",
+    )
 
 
 @router.post("/{task_id}/cancel")
@@ -381,7 +361,7 @@ def _run_workflow(
         model_provider=(options.get("model_provider") if options.get("enable_ai_analysis") else None),
         model_name=(options.get("model_name") if options.get("enable_ai_analysis") else None),
         priority_subtree_ids=options.get("priority_subtree_ids") or [],
-        sample_strategy=options.get("sample_strategy") or "focused",
+        sample_strategy=options.get("sample_strategy") or "sampling",
         focus_issues=options.get("focus_issues") or [],
         ai_candidate_limit=options.get("ai_candidate_limit"),
         ai_max_model_calls=options.get("ai_max_model_calls"),
@@ -390,11 +370,7 @@ def _run_workflow(
     )
     task_repo = TaskRepository(settings)
     try:
-        graph = build_taxonomy_graph(
-            _get_workflow_checkpointer(),
-            settings=runtime_settings,
-            enable_suggestion_review=False,
-        )
+        graph = build_taxonomy_graph(_get_workflow_checkpointer(), settings=runtime_settings)
         result = graph.invoke(state, config={"configurable": {"thread_id": state.thread_id}})
         if result.get("status") == "failed":
             task_repo.update_task(
@@ -421,26 +397,6 @@ def _run_workflow(
             status="failed",
             message=str(exc),
         )
-
-
-def _resume_workflow(settings, task: dict[str, Any], payload: dict[str, Any]) -> None:
-    task_repo = TaskRepository(settings)
-    try:
-        graph = build_taxonomy_graph(
-            _get_workflow_checkpointer(), settings=settings, enable_suggestion_review=True,
-        )
-        result = graph.invoke(
-            Command(resume=payload),
-            config={"configurable": {"thread_id": task["thread_id"]}},
-        )
-        if result.get("status") == "failed":
-            task_repo.update_task(
-                task_id=task["id"], status="failed", current_step=result.get("current_step"),
-                progress=result.get("progress", 0), error_message=result.get("error_message"),
-                result_payload=result,
-            )
-    except Exception as exc:
-        task_repo.update_task(task_id=task["id"], status="failed", current_step="failed", error_message=str(exc))
 
 
 def _loads(value: str | None) -> dict[str, Any]:

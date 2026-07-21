@@ -1,4 +1,4 @@
-from collections import Counter, defaultdict
+from collections import defaultdict
 
 from backend.app.config import Settings
 from backend.app.repositories.diagnosis_repo import DiagnosisRepository
@@ -14,6 +14,7 @@ class DiagnosisService:
         "excessive_depth",
         "wide_node",
         "excessive_width",
+        "duplicate_sibling",
         "duplicate_name",
         "unknown",
         "orphan",
@@ -43,7 +44,7 @@ class DiagnosisService:
             issue_types=self.STRUCTURE_ISSUE_TYPES,
         )
         summary = DiagnosisRepository(self.settings).count_by_type(version_id)
-        for key in ("missing_parent", "excessive_depth", "excessive_width", "unknown"):
+        for key in ("missing_parent", "excessive_depth", "excessive_width", "duplicate_sibling"):
             summary.setdefault(key, 0)
         return StructureDiagnosisResult(
             version_id=version_id,
@@ -72,58 +73,33 @@ class DiagnosisService:
                     risk_level="low", confidence=1.0, path=path,
                     evidence=f"名称命中确定性模糊词规则：{name}", source="content_rule",
                 ))
-            if name in {"锅炉、辅助设备、零件", "锌制货架", "干燥、分散、混合设备及类似设备", "卷扬机及绞盘"}:
-                issues.append(DiagnosisIssueRecord(
-                    issue_type="naming_nonstandard", node_id=int(node["category_id"]), node_name=name,
-                    description=f"节点名称「{name}」需要核对分类边界与规范表达",
-                    reason="名称包含并列概念或缺少明确用途限定；仅出现连接词不能直接推出改名结论",
-                    risk_level="medium" if name == "锌制货架" else "low", confidence=1.0, path=path,
-                    evidence=f"确定性名称核对规则命中：{name}", source="content_rule",
-                ))
             synonyms = _split_synonyms(node.get("syn_list"))
             normalized = [item.casefold().strip() for item in synonyms if item.strip()]
-            if name.casefold() in normalized or len(normalized) != len(set(normalized)):
+            raw_synonyms = str(node.get("syn_list") or "")
+            synonym_format_reasons: list[str] = []
+            if name.casefold() in normalized:
+                synonym_format_reasons.append("包含节点主名称")
+            if len(normalized) != len(set(normalized)):
+                synonym_format_reasons.append("存在重复值")
+            if "\n" in raw_synonyms or "\r" in raw_synonyms:
+                synonym_format_reasons.append("包含换行")
+            if synonym_format_reasons:
                 issues.append(DiagnosisIssueRecord(
                     issue_type="synonym_format", node_id=int(node["category_id"]),
-                    node_name=name, description="同义词包含节点主名称或重复值",
-                    reason="同义词列表存在可由规则确定的重复或自引用",
+                    node_name=name, description="同义词格式不规范",
+                    reason="同义词列表" + "、".join(synonym_format_reasons),
                     risk_level="low", confidence=1.0, path=path,
                     evidence=f"原始同义词：{node.get('syn_list') or ''}", source="content_rule",
                 ))
-            raw_synonyms = str(node.get("syn_list") or "")
-            if name == "机械、设备类产品" and ("\n" in raw_synonyms or "机械机械" in raw_synonyms):
-                issues.append(DiagnosisIssueRecord(
-                    issue_type="synonym_format", node_id=int(node["category_id"]), node_name=name,
-                    description="同义词包含换行、错误拼接或重复词", reason="同义词文本格式可由规则确定为异常",
-                    risk_level="low", confidence=1.0, path=path, evidence=f"原始同义词：{raw_synonyms}", source="content_rule",
-                ))
             child_names = {str(item["category_name"]).strip() for item in by_parent.get(int(node["category_id"]), [])}
             overlapping = [term for term in synonyms if term in child_names]
-            if overlapping or (name == "气体压缩机" and "压缩机" in synonyms):
+            if overlapping:
                 issues.append(DiagnosisIssueRecord(
-                    issue_type="synonym_overlap" if overlapping else "synonym_conflict",
+                    issue_type="synonym_overlap",
                     node_id=int(node["category_id"]), node_name=name,
                     description="父节点同义词包含子节点具体类型或范围过宽的词",
                     reason="同义词会扩大父节点语义边界并与下级分类重叠", risk_level="medium", confidence=1.0,
-                    path=path, evidence=f"建议删除：{', '.join(overlapping or ['压缩机'])}", source="content_rule",
-                ))
-            if name == "窑炉、熔炉及电炉用零件" and synonyms:
-                issues.append(DiagnosisIssueRecord(
-                    issue_type="synonym_overlap", node_id=int(node["category_id"]), node_name=name,
-                    description="同义词可能与父子层级或相近分类语义重叠", reason="需要由 AI 根据节点定义、上下级关系和相近分类确定同义词归属",
-                    risk_level="medium", confidence=.8, path=path, evidence=f"原始同义词：{raw_synonyms}", source="content_rule",
-                ))
-            if name == "气动元件":
-                issues.append(DiagnosisIssueRecord(
-                    issue_type="parent_child_redundancy", node_id=int(node["category_id"]), node_name=name,
-                    description="父子节点命名存在包含关系", reason="缺少完整结构调整方案，不能自动移动节点",
-                    risk_level="medium", confidence=.8, path=path, evidence="父子名称存在包含或重复关系，需要结合产品语义判断保留、重命名、合并或移动", source="content_rule",
-                ))
-            if name == "隧道电推板窑":
-                issues.append(DiagnosisIssueRecord(
-                    issue_type="semantic_misplacement", node_id=int(node["category_id"]), node_name=name,
-                    description="与推板窑可能是上下位关系，也可能与电推板窑炉语义重复", reason="现有证据无法确定移动或合并",
-                    risk_level="medium", confidence=.5, path=path, evidence="需要业务专家确认上下位或等价关系", source="content_rule",
+                    path=path, evidence=f"建议删除：{', '.join(overlapping)}", source="content_rule",
                 ))
         repo = DiagnosisRepository(self.settings)
         for issue in issues:
@@ -157,19 +133,25 @@ class DiagnosisService:
         nodes: list[dict],
         max_depth: int,
     ) -> list[DiagnosisIssueRecord]:
-        return [
-            DiagnosisIssueRecord(
+        issues: list[DiagnosisIssueRecord] = []
+        for node in nodes:
+            depth = int(node["level"] or 0)
+            if not bool(node.get("is_leaf")) or depth <= max_depth:
+                continue
+            excess = depth - max_depth
+            risk_level = "low" if excess == 1 else "medium" if excess == 2 else "high"
+            issues.append(DiagnosisIssueRecord(
                 issue_type="excessive_depth",
                 node_id=int(node["category_id"]),
                 node_name=node["category_name"],
-                description=f"节点层级为 {node['level']}，超过阈值 {max_depth}",
-                reason="分类路径过深，影响维护和浏览效率",
-                risk_level="medium",
+                description=f"叶路径长度为 {depth}，超过阈值 {max_depth}",
+                reason=f"该根到叶路径需要减少 {excess} 层",
+                risk_level=risk_level,
                 confidence=1.0,
-            )
-            for node in nodes
-            if int(node["level"] or 0) > max_depth
-        ]
+                path=str(node.get("path_names") or node["category_name"]),
+                evidence=f"实际路径长度：{depth}；固定阈值：{max_depth}；需减少层数：{excess}",
+            ))
+        return issues
 
     def _wide_node_issues(
         self,
@@ -182,41 +164,48 @@ class DiagnosisService:
             node_names[int(node["category_id"])] = node["category_name"]
             if node["parent_id"] is not None:
                 child_counts[int(node["parent_id"])] += 1
-        return [
-            DiagnosisIssueRecord(
+        issues: list[DiagnosisIssueRecord] = []
+        for parent_id, count in child_counts.items():
+            if count <= max_children:
+                continue
+            minimum_groups = (count + max_children - 1) // max_children
+            risk_level = "low" if minimum_groups == 2 else "medium" if minimum_groups == 3 else "high"
+            issues.append(DiagnosisIssueRecord(
                 issue_type="excessive_width",
                 node_id=parent_id,
                 node_name=node_names.get(parent_id),
                 description=f"节点直接子节点数量为 {count}，超过阈值 {max_children}",
-                reason="直接子类过多，建议拆分或增加中间层",
-                risk_level="medium",
+                reason=f"至少需要拆分为 {minimum_groups} 个中间分组",
+                risk_level=risk_level,
                 confidence=1.0,
-            )
-            for parent_id, count in child_counts.items()
-            if count > max_children
-        ]
+                evidence=f"直接子节点数：{count}；单组上限：{max_children}；最少分组数：{minimum_groups}",
+            ))
+        return issues
 
     def _duplicate_name_issues(self, nodes: list[dict]) -> list[DiagnosisIssueRecord]:
-        name_counts = Counter(node["category_name"] for node in nodes)
-        duplicate_names = {name for name, count in name_counts.items() if count > 1}
-        issues = []
-        for name in sorted(duplicate_names):
-            duplicates = [
-                node for node in nodes if node["category_name"] == name
-            ]
-            ids = ", ".join(str(node["category_id"]) for node in duplicates)
-            paths = "；".join(str(node["path_names"]) for node in duplicates[:3])
-            issues.append(
-                DiagnosisIssueRecord(
-                    issue_type="unknown",
-                    node_id=None,
+        siblings: dict[tuple[int | None, str], list[dict]] = defaultdict(list)
+        for node in nodes:
+            name = str(node["category_name"] or "").strip()
+            siblings[(node.get("parent_id"), name)].append(node)
+        issues: list[DiagnosisIssueRecord] = []
+        for (_, name), duplicates in sorted(siblings.items(), key=lambda item: (str(item[0][0]), item[0][1])):
+            if len(duplicates) < 2:
+                continue
+            ordered = sorted(duplicates, key=lambda item: int(item["category_id"]))
+            retained = ordered[0]
+            ids = ", ".join(str(item["category_id"]) for item in ordered)
+            for duplicate in ordered[1:]:
+                issues.append(DiagnosisIssueRecord(
+                    issue_type="duplicate_sibling",
+                    node_id=int(duplicate["category_id"]),
                     node_name=name,
-                    description=f"名称「{name}」重复出现，节点 ID：{ids}",
-                    reason=f"同名节点路径样例：{paths}",
-                    risk_level="medium",
+                    description=f"同一父节点下名称「{name}」重复，节点 ID：{ids}",
+                    reason=f"保留候选节点为 {retained['category_id']}，其余节点需合并或重命名",
+                    risk_level="high",
                     confidence=1.0,
-                )
-            )
+                    path=str(duplicate.get("path_names") or name),
+                    evidence=f"同级重复节点：{ids}",
+                ))
         return issues
 
 

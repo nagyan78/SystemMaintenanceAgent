@@ -215,7 +215,8 @@ def test_high_risk_structure_keeps_97_9_but_blocks_excellent_risk_level(tmp_path
     settings = _settings(tmp_path)
     version_id = _seed_1058_fixture(settings)
     text = ReportService(settings).generate_diagnosis_report(version_id).report_path.read_text(encoding="utf-8")
-    assert "综合评分：97.90/100（需要整改）" in text
+    assert "综合评分：当前未记录" in text
+    assert "AI 内容抽样评分：未完成抽样，不计算综合分" in text
     assert "整体**需要重点治理**" in text
     assert "_calc_quality_score" not in text
 

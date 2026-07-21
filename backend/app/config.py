@@ -30,11 +30,17 @@ class Settings(BaseModel):
     agent_work_item_max_attempts: int = Field(default_factory=lambda: int(os.getenv("AGENT_WORK_ITEM_MAX_ATTEMPTS", "3")))
     agent_lease_seconds: int = Field(default_factory=lambda: int(os.getenv("AGENT_LEASE_SECONDS", "120")))
     llm_max_calls: int = Field(default_factory=lambda: int(os.getenv("LLM_MAX_CALLS", "1000")))
-    llm_max_tokens: int = Field(default_factory=lambda: int(os.getenv("LLM_MAX_TOKENS", "1000000")))
+    llm_max_tokens: int = Field(default_factory=lambda: int(os.getenv("LLM_MAX_TOKENS", "1200000")))
     llm_request_timeout_seconds: int = Field(default_factory=lambda: int(os.getenv("LLM_REQUEST_TIMEOUT_SECONDS", "45")))
-    diagnosis_ai_candidate_limit: int = Field(default_factory=lambda: int(os.getenv("DIAGNOSIS_AI_CANDIDATE_LIMIT", "10")))
+    diagnosis_ai_candidate_limit: int = Field(default_factory=lambda: int(os.getenv("DIAGNOSIS_AI_CANDIDATE_LIMIT", "200")))
+    diagnosis_sample_size: int = Field(default_factory=lambda: int(os.getenv("DIAGNOSIS_SAMPLE_SIZE", "200")))
+    diagnosis_sample_seed: int = Field(default_factory=lambda: int(os.getenv("DIAGNOSIS_SAMPLE_SEED", "20260721")))
     diagnosis_ai_max_iter: int = Field(default_factory=lambda: int(os.getenv("DIAGNOSIS_AI_MAX_ITER", "4")))
-    diagnosis_ai_wall_seconds: int = Field(default_factory=lambda: int(os.getenv("DIAGNOSIS_AI_WALL_SECONDS", "300")))
+    diagnosis_ai_wall_seconds: int = Field(default_factory=lambda: int(os.getenv("DIAGNOSIS_AI_WALL_SECONDS", "900")))
+    enable_legacy_manual_review_api: bool = Field(
+        default_factory=lambda: os.getenv("ENABLE_LEGACY_MANUAL_REVIEW_API", "false").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
     max_tree_depth_threshold: int = 7
     max_children_threshold: int = 80
     max_upload_size_bytes: int = 50 * 1024 * 1024

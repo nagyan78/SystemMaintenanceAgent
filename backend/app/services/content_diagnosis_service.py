@@ -16,15 +16,20 @@ from backend.app.config import Settings, get_settings
 from backend.app.services.model_service import ModelService
 from backend.app.services.model_router import ModelBudgetExceededError
 from backend.app.repositories.taxonomy_repo import TaxonomyRepository
-from backend.app.schemas.issue import ContentIssue, DiagnosisPlan
+from backend.app.schemas.issue import ContentIssue, ContentSampleAssessment, DiagnosisPlan
 from backend.app.services.tool_factory import AgentResourceLimits, AgentToolFactory
 from backend.app.domain.issue_types import normalize_issue_type_code
 from backend.app.tools.payload_tools import coerce_json_object
+from backend.app.services.stratified_sampling_service import StratifiedSamplingService
 
 
 logger = logging.getLogger(__name__)
 CandidateSelector = Callable[[int, DiagnosisPlan], list[dict[str, Any]]]
 CandidateProgressSink = Callable[[int, int], None]
+
+
+class ModelConclusionError(RuntimeError):
+    """The model exhausted its bounded turns without a valid binary conclusion."""
 
 
 class DiagnosisPlanningAgent:
@@ -84,25 +89,38 @@ class ContentDiagnosisAgent:
         self.progress_sink = progress_sink
         self.model_calls_used = 0
         self.tokens_used = 0
+        self.last_assessments: list[ContentSampleAssessment] = []
 
     def run(self, version_id: int, plan: DiagnosisPlan) -> list[ContentIssue]:
+        assessments = self.run_assessments(version_id, plan)
+        return [item.issue for item in assessments if item.conclusion == "problem" and item.issue is not None]
+
+    def run_assessments(self, version_id: int, plan: DiagnosisPlan) -> list[ContentSampleAssessment]:
         if self.llm is None:
             logger.warning("Content diagnosis skipped because DeepSeek API key is not configured.")
+            self.last_assessments = []
             return []
         llm_with_tools = self.llm.bind_tools(self.tools)
-        issues: list[ContentIssue] = []
+        assessments: list[ContentSampleAssessment] = []
         candidates = list(self.candidate_selector(version_id, plan))
         deadline = time.monotonic() + max(1, self.settings.diagnosis_ai_wall_seconds)
         for index, candidate in enumerate(candidates, start=1):
             self._ensure_within_deadline(deadline)
-            issue = self._diagnose_candidate(llm_with_tools, version_id, candidate, plan, deadline)
-            if issue:
-                issues.append(issue)
+            assessment = self._diagnose_candidate(llm_with_tools, version_id, candidate, plan, deadline)
+            assessments.append(assessment)
             if self.progress_sink:
                 self.progress_sink(index, len(candidates))
-        return issues
+        self.last_assessments = assessments
+        return assessments
 
     def select_candidates(self, version_id: int, plan: DiagnosisPlan) -> list[dict[str, Any]]:
+        if plan.sample_strategy == "sampling":
+            nodes = TaxonomyRepository(self.settings).list_nodes(version_id)
+            return StratifiedSamplingService().select(
+                nodes,
+                sample_size=self.settings.diagnosis_sample_size,
+                seed=self.settings.diagnosis_sample_seed,
+            )
         limit = max(1, min(int(plan.estimated_candidates or 200), 1000))
         return TaxonomyRepository(self.settings).list_content_diagnosis_candidates(
             version_id,
@@ -120,16 +138,23 @@ class ContentDiagnosisAgent:
         candidate: dict[str, Any],
         plan: DiagnosisPlan,
         deadline: float,
-    ) -> ContentIssue | None:
+    ) -> ContentSampleAssessment:
         messages = [
             SystemMessage(
                 content=f"{CONTENT_DIAGNOSIS_SYSTEM_PROMPT}\n\n{CONTENT_DIAGNOSIS_FEW_SHOT}"
             ),
             HumanMessage(content=_candidate_prompt(version_id, candidate, plan)),
         ]
+        submit_only_llm = None
+        submit_tool = next(
+            (item for item in self.tools if item.name == "submit_content_assessment"),
+            None,
+        )
+        context_queried = False
         for _ in range(self.max_iter):
             self._ensure_within_deadline(deadline)
-            response = llm_with_tools.invoke(messages)
+            active_llm = submit_only_llm if context_queried and submit_only_llm is not None else llm_with_tools
+            response = active_llm.invoke(messages)
             self.model_calls_used += 1
             usage = getattr(response, "usage_metadata", None) or {}
             call_tokens = int(usage.get("total_tokens", 0) or 0)
@@ -145,7 +170,7 @@ class ContentDiagnosisAgent:
             invalid_tool_calls = getattr(response, "invalid_tool_calls", []) or []
             if not tool_calls and not invalid_tool_calls:
                 messages.append(response)
-                messages.append(HumanMessage(content="请继续分析，或调用 submit_diagnosis 提交问题。"))
+                messages.append(HumanMessage(content="请继续分析，并调用 submit_content_assessment 提交合理或不合理结论。"))
                 continue
             messages.append(response)
             for invalid_tool_call in invalid_tool_calls:
@@ -155,23 +180,42 @@ class ContentDiagnosisAgent:
                     messages,
                     str(invalid_tool_call.get("error") or "工具参数不是合法 JSON，请使用 JSON 对象重试。"),
                 )
-            submitted_issue: ContentIssue | None = None
+            submitted_assessment: ContentSampleAssessment | None = None
             for tool_call in tool_calls:
-                if str(tool_call.get("name") or "") == "submit_diagnosis" and submitted_issue is not None:
+                if str(tool_call.get("name") or "") not in {"submit_diagnosis", "submit_content_assessment"}:
+                    context_queried = True
+                if str(tool_call.get("name") or "") in {"submit_diagnosis", "submit_content_assessment"} and submitted_assessment is not None:
                     self._record_tool_error(
-                        "submit_diagnosis",
+                        str(tool_call.get("name") or "submit_content_assessment"),
                         tool_call,
                         messages,
-                        "同一轮只能提交一个诊断问题，请在下一轮继续。",
+                        "同一轮只能提交一个样本结论。",
                     )
                     continue
-                issue = self._execute_tool_call(tool_call, messages, plan.focus_issues)
-                if issue and submitted_issue is None:
-                    submitted_issue = issue
-            if submitted_issue:
-                return submitted_issue
+                assessment = self._execute_tool_call(tool_call, messages, plan.focus_issues)
+                if assessment and submitted_assessment is None:
+                    submitted_assessment = assessment
+            if submitted_assessment:
+                return submitted_assessment
+            if context_queried and submit_tool is not None and submit_only_llm is None:
+                try:
+                    submit_only_llm = self.llm.bind_tools(
+                        [submit_tool], tool_choice="submit_content_assessment"
+                    )
+                except TypeError:
+                    # Test doubles and some compatible providers do not expose tool_choice.
+                    submit_only_llm = self.llm.bind_tools([submit_tool])
+            messages.append(HumanMessage(
+                content=(
+                    "上下文查询阶段已经结束。请勿继续调用查询工具；"
+                    "现在必须调用 submit_content_assessment 提交 reasonable 或 problem；"
+                    "若为 problem，必须给出具体问题类型和完整 issue。"
+                )
+            ))
         logger.warning("Content diagnosis max_iter exhausted for candidate %s", candidate)
-        return None
+        raise ModelConclusionError(
+            f"MODEL_NO_VALID_BINARY_CONCLUSION: node_id={int(candidate['category_id'])}"
+        )
 
     @staticmethod
     def _ensure_within_deadline(deadline: float) -> None:
@@ -180,12 +224,14 @@ class ContentDiagnosisAgent:
 
     def _execute_tool_call(
         self, tool_call: dict[str, Any], messages: list[Any], focus_issues: list[str] | None = None,
-    ) -> ContentIssue | None:
+    ) -> ContentSampleAssessment | None:
         name = str(tool_call.get("name") or "")
         try:
             args = coerce_json_object(tool_call.get("args") or {}, field_name=f"{name} 参数")
             if name == "submit_diagnosis":
                 args["issue"] = coerce_json_object(args.get("issue", {}), field_name="issue")
+            elif name == "submit_content_assessment":
+                args["assessment"] = coerce_json_object(args.get("assessment", {}), field_name="assessment")
             tool_obj = self.tool_map[name]
         except (KeyError, ValueError) as exc:
             self._record_tool_error(name, tool_call, messages, str(exc))
@@ -216,9 +262,22 @@ class ContentDiagnosisAgent:
         )
         if name == "submit_diagnosis":
             try:
-                return _issue_from_tool_args(args, str(observation))
+                issue = _issue_from_tool_args(args, str(observation))
+                return ContentSampleAssessment(
+                    conclusion="problem",
+                    node_id=int(issue.node_id),
+                    node_name=issue.node_name,
+                    reason=issue.reason,
+                    issue=issue,
+                )
             except (KeyError, TypeError, ValueError) as exc:
                 self._trace(f"Observation: submit_diagnosis response could not be parsed: {exc}")
+                return None
+        if name == "submit_content_assessment":
+            try:
+                return _assessment_from_tool_args(args, observation)
+            except (KeyError, TypeError, ValueError) as exc:
+                self._trace(f"Observation: submit_content_assessment response could not be parsed: {exc}")
                 return None
         return None
 
@@ -301,6 +360,27 @@ def _issue_from_tool_args(args: dict[str, Any], issue_id: str) -> ContentIssue:
     )
 
 
+def _assessment_from_tool_args(args: dict[str, Any], observation: Any) -> ContentSampleAssessment:
+    value = args["assessment"]
+    conclusion = str(value["conclusion"])
+    parsed_observation = json.loads(str(observation)) if isinstance(observation, str) else (observation or {})
+    issue = None
+    if conclusion == "problem":
+        issue_id = str(parsed_observation.get("issue_id") or "")
+        issue = _issue_from_tool_args({"issue": value["issue"]}, issue_id)
+        issue = issue.model_copy(update={
+            "node_id": int(parsed_observation.get("node_id", issue.node_id)),
+            "node_name": parsed_observation.get("node_name") or issue.node_name,
+        })
+    return ContentSampleAssessment(
+        conclusion=conclusion,
+        node_id=int(parsed_observation.get("node_id", value["node_id"])),
+        node_name=parsed_observation.get("node_name") or value.get("node_name"),
+        reason=str(value.get("reason") or "未提供判断摘要"),
+        issue=issue,
+    )
+
+
 def _fallback_plan(tree_overview: dict) -> DiagnosisPlan:
     roots = tree_overview.get("root_categories") or []
     priority_subtrees = [
@@ -309,7 +389,7 @@ def _fallback_plan(tree_overview: dict) -> DiagnosisPlan:
     ]
     return DiagnosisPlan(
         priority_subtrees=priority_subtrees,
-        sample_strategy="focused",
+        sample_strategy="sampling",
         focus_issues=["synonym_pollution", "semantic_duplicate"],
         estimated_candidates=200,
     )

@@ -49,7 +49,7 @@ class TaxonomyGraphState(BaseModel):
     model_provider: str | None = None
     model_name: str | None = None
     priority_subtree_ids: list[int] = Field(default_factory=list)
-    sample_strategy: Literal["focused", "full_scan", "sampling"] = "focused"
+    sample_strategy: Literal["focused", "full_scan", "sampling"] = "sampling"
     focus_issues: list[str] = Field(default_factory=list)
     ai_candidate_limit: int | None = None
     ai_max_model_calls: int | None = None

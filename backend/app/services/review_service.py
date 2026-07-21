@@ -169,8 +169,13 @@ class ReviewService:
         operator: str = "local_user",
         *,
         complete_if_empty: bool = True,
+        approved_suggestion_ids: set[int] | None = None,
     ) -> dict[str, Any]:
-        """Approve complete executable proposals and ignore every non-executable proposal."""
+        """只通过确定性校验和独立 AI 门禁均允许的可执行方案。
+
+        ``None`` 保留显式维护 API 的既有行为；传入具体集合时表示自动工作流，
+        独立 AI 未明确通过的建议一律不得进入执行阶段。
+        """
         suggestions = self.list_review_batch(review_batch_id)
         if not suggestions:
             raise ValueError("审核批次没有建议。")
@@ -181,6 +186,16 @@ class ReviewService:
         for suggestion in suggestions:
             if suggestion.status in {"approved", "rejected", "executed"}:
                 unchanged_ids.append(suggestion.id)
+                continue
+            if approved_suggestion_ids is not None and suggestion.id not in approved_suggestion_ids:
+                if suggestion.status in {"pending", "edited"}:
+                    self.defer_suggestion(
+                        suggestion.id,
+                        issue_status="deferred",
+                        operator=operator,
+                        reason="独立 AI 未明确通过该方案，禁止进入自动执行。",
+                    )
+                ignored_ids.append(suggestion.id)
                 continue
             result = consistency.check(suggestion)
             if result.valid and result.executable:

@@ -135,7 +135,7 @@ def test_rollback_creates_new_version_from_historical_snapshot(tmp_path):
 def test_m4_graph_routes_validate_to_execute_save_and_report(tmp_path):
     from backend.app.agents.graph import build_taxonomy_graph
 
-    graph = build_taxonomy_graph(settings=_settings(tmp_path), enable_suggestion_review=True)
+    graph = build_taxonomy_graph(settings=_settings(tmp_path))
     edges = {(edge.source, edge.target) for edge in graph.get_graph().edges}
 
     assert ("validate_action_node", "execute_action_node") in edges

@@ -14,6 +14,7 @@ ActionType = Literal[
     "split_subtree",
     "deprecate_node",
     "delete_leaf_node",
+    "collapse_intermediate_node",
     "mark_as_valid",
 ]
 RiskLevel = Literal["low", "medium", "high"]

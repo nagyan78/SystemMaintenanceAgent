@@ -103,7 +103,8 @@ class SuggestionAgent:
             "instruction": (
                 "逐条返回修改方案，输出 JSON 对象 {\"suggestions\": [...]}。每条必须对应输入 issue_id，"
                 "包含 AdjustmentSuggestion 的全部字段；不得返回 review_only，不得要求人工核对。"
-                "高风险删除、合并或移动也必须给出完整动作，但删除仅限无子节点且无外部引用的叶子节点。"
+                "高风险删除、合并或移动也必须给出完整动作。普通删除仅限叶子节点；"
+                "异常深路径使用 collapse_intermediate_node，并选择路径长度减 7 个非根、非叶中间节点。"
             ),
         }
         try:

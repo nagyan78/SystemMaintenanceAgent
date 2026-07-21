@@ -17,6 +17,7 @@ from backend.app.repositories.version_repo import VersionRepository
 from backend.app.repositories.report_repo import ReportRepository
 from backend.app.schemas.issue import ReportResult
 from backend.app.services.taxonomy_service import TaxonomyService
+from backend.app.services.quality_score_service import calculate_composite_quality_score
 from backend.app.domain.issue_types import get_issue_type
 
 
@@ -94,6 +95,7 @@ ACTION_LABELS = {
     "split_subtree": "拆分子树",
     "deprecate_node": "停用节点",
     "delete_leaf_node": "删除节点",
+    "collapse_intermediate_node": "删除中间层并改挂子节点",
     "mark_as_valid": "标记为有效",
 }
 
@@ -175,7 +177,6 @@ class ReportService:
         representative_cases = select_representative_cases(active_issues, issue_groups)
         persisted = [_suggestion_to_dict(item) for item in raw_suggestions]
         guidance = build_guidance_suggestions(active_issues)
-        quality = build_quality_explanation(version.get("quality_score"), active_issues)
         stats = {
             "node_count": overview.node_count,
             "root_count": overview.root_count,
@@ -187,6 +188,19 @@ class ReportService:
         }
         basic_info = _build_basic_info(version, file_record, task)
         runtime_info = _build_runtime_info(task, task_result, overview.node_count, issues)
+        sample_score = runtime_info.get("ai_content_sample_score")
+        composite = calculate_composite_quality_score(
+            overview.node_count,
+            active_issues,
+            ai_content_sample_score=float(sample_score) if sample_score is not None else None,
+        )
+        quality = build_quality_explanation(composite.overall_quality_score, active_issues)
+        quality.update({
+            "structure_score": composite.structure_score,
+            "content_rule_score": composite.content_rule_score,
+            "ai_content_sample_score": composite.ai_content_sample_score,
+            "overall_quality_score": composite.overall_quality_score,
+        })
         changes = _build_version_changes(self.settings, version)
         conclusion = build_conclusion(stats, issue_summary, self.settings)
         next_actions = build_next_actions(active_issues)
@@ -239,7 +253,7 @@ class ReportService:
 
 - 基线版本：{parent_id or '无'}
 - 当前版本：{version.get('version_no')}（ID {version_id}）
-- 审核决策统计：{counts}
+- AI 复核决策统计：{counts}
 - 实际执行动作：{actions or ['无']}
 - 修改前/后问题数量：{len(before)} / {len(current)}
 - 已解决：{len(resolved)}；未解决：{len(unresolved)}；新增：{len(added)}；待确认：{len(deferred)}
@@ -398,14 +412,14 @@ def build_guidance_suggestions(issues: list[dict]) -> list[dict[str, Any]]:
         ],
         "duplicate_name": ["结合完整路径核对同名节点，确认应合并、重命名还是保留。"],
         "semantic_duplicate": ["比较节点定义、路径和适用范围，确认是否合并或保留差异。"],
-        "naming_irregular": ["按现有命名规范统一表达，重命名前确认下游引用影响。"],
+        "naming_irregular": ["按现有命名规范统一表达，并校验同级名称唯一性。"],
         "inconsistent_granularity": ["对照同级节点范围，统一分类粒度或增加必要中间层。"],
         "vague_node": ["补充业务定义并明确分类边界，必要时拆分或重命名。"],
         "ambiguous_name": ["补充业务定义并明确分类边界，必要时拆分或重命名。"],
         "deep_level": ["复核超阈值路径是否可归并，并保留必要的业务层级。"],
         "wide_node": ["复核过宽节点的分类维度，必要时增加有业务含义的中间层。"],
         "orphan": ["恢复有效祖先路径，或将节点移动到经过确认的分类位置。"],
-        "duplicate_mount": ["核对重复挂载来源，保留唯一权威路径并评估引用影响。"],
+        "duplicate_mount": ["核对重复挂载来源，保留唯一权威路径并递归更新后代路径。"],
         "cycle_reference": ["立即解除循环祖先关系，并对受影响子树执行完整性复核。"],
         "circular_reference": ["立即解除循环祖先关系，并对受影响子树执行完整性复核。"],
     }
@@ -496,6 +510,9 @@ def render_markdown_report(data: DiagnosisReportData, settings: Settings) -> str
 - 诊断模式：{info['diagnosis_mode']}
 - 节点总数：{stats['node_count']}
 - 综合评分：{score}
+- 结构规则评分：{data.quality_result['structure_score']:.2f}/100
+- 内容规则评分：{data.quality_result['content_rule_score']:.2f}/100
+- AI 内容抽样评分：{_score_metric(data.quality_result['ai_content_sample_score'])}
 
 ### 诊断结论
 
@@ -644,6 +661,10 @@ def _metric(value: int | None) -> str:
     return str(value) if value is not None else "当前任务未记录"
 
 
+def _score_metric(value: float | None) -> str:
+    return f"{value:.2f}/100" if value is not None else "未完成抽样，不计算综合分"
+
+
 def _render_ai_analysis(data: DiagnosisReportData) -> str:
     runtime, info = data.runtime_info, data.basic_info
     if not runtime["ai_enabled"]:
@@ -660,8 +681,10 @@ def _render_ai_analysis(data: DiagnosisReportData) -> str:
         f"- AI分析范围：{scope}",
         f"- 抽取节点数量：{_metric(runtime['candidate_count'])}",
         f"- 成功分析数量：{_metric(runtime['completed_count'])}",
+        f"- 判断合理数量：{_metric(runtime['reasonable_count'])}",
         f"- 确认问题数量：{_metric(runtime['ai_issue_count']) if runtime['ai_issue_count'] is not None else runtime['model_content_count']}",
-        f"- 无法判断数量：{_metric(runtime['ai_inconclusive_count'])}",
+        f"- 未完成数量：{_metric(runtime['ai_inconclusive_count'])}",
+        f"- AI 内容抽样评分：{_score_metric(runtime['ai_content_sample_score'])}",
         f"- 使用模型：{info['model_name']}",
         "",
         "### AI分析结论",
@@ -789,6 +812,8 @@ def _build_runtime_info(
             "completed_count": None,
             "ai_issue_count": None,
             "ai_inconclusive_count": None,
+            "reasonable_count": None,
+            "ai_content_sample_score": None,
             "ai_state": "未运行",
             "coverage_complete": False,
             "stop_reason": "未关联诊断任务",
@@ -814,7 +839,13 @@ def _build_runtime_info(
     candidate_count = _optional_int_value(coverage.get("candidate_count", task_result.get("candidate_count")))
     completed_count = _optional_int_value(coverage.get("deep_diagnosed_count", task_result.get("ai_processed_count")))
     ai_issue_count = _optional_int_value(coverage.get("ai_issue_count", task_result.get("ai_issue_count")))
-    ai_inconclusive_count = _optional_int_value(task_result.get("ai_inconclusive_count"))
+    reasonable_count = _optional_int_value(coverage.get("reasonable_count", task_result.get("reasonable_count")))
+    ai_inconclusive_count = _optional_int_value(
+        int(coverage.get("failed_count", 0) or 0) + int(coverage.get("skipped_count", 0) or 0)
+    )
+    ai_content_sample_score = coverage.get(
+        "ai_content_sample_score", task_result.get("ai_content_sample_score")
+    )
     if not ai_enabled:
         ai_state = "本次未启用"
     elif degraded:
@@ -841,6 +872,10 @@ def _build_runtime_info(
         "completed_count": completed_count,
         "ai_issue_count": ai_issue_count,
         "ai_inconclusive_count": ai_inconclusive_count,
+        "reasonable_count": reasonable_count,
+        "ai_content_sample_score": (
+            float(ai_content_sample_score) if ai_content_sample_score is not None else None
+        ),
         "ai_state": ai_state,
         "coverage_complete": coverage_complete,
         "coverage": coverage,

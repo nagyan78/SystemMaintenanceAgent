@@ -1,4 +1,3 @@
-import math
 import re
 from collections import defaultdict
 from typing import Any
@@ -37,15 +36,15 @@ class RemediationPlanningService:
             "synonym_pollution": self._clean_synonym,
             "missing_parent": self._add_missing_parent,
             "orphan": self._add_missing_parent,
-            "excessive_depth": self._move,
+            "excessive_depth": self._no_change,
             "semantic_misplacement": self._move,
             "inconsistent_dimension": self._no_change,
             "parent_child_redundancy": self._no_change,
-            "deep_level": self._move,
+            "deep_level": self._no_change,
             "bad_parent_child_relation": self._move,
             "inconsistent_granularity": self._move,
-            "wide_node": self._split,
-            "excessive_width": self._split,
+            "wide_node": self._no_change,
+            "excessive_width": self._no_change,
             "duplicate_sibling": self._merge,
             "duplicate_name": self._no_change,
             "semantic_duplicate": self._merge,
@@ -74,19 +73,9 @@ class RemediationPlanningService:
         return AdjustmentSuggestion.model_validate(payload)
 
     def _rename(self, version_id: int, issue: dict[str, Any]) -> AdjustmentSuggestion | None:
-        node = self._node(version_id, issue)
-        if not node:
-            return None
-        old_name = str(node["category_name"]).strip()
-        explicit_names = {"锌制货架": "锌制仓储用货架"}
-        cleaned = explicit_names.get(old_name)
-        if not cleaned or cleaned == old_name:
-            return None
-        return self._base(
-            version_id, issue, action_type="rename_node", old_name=old_name,
-            new_name=cleaned, action_payload={"new_name": cleaned}, risk_level="low",
-            suggestion=f"将「{old_name}」调整为「{cleaned}」，并在副本中验证命名唯一性。",
-        )
+        # 确定性规划器不能只根据旧名称推断语义正确的新产品名称。
+        # 新名称必须由 AI 方案生成阶段提供，否则该问题保持为不可执行。
+        return None
 
     def _clean_synonym(self, version_id: int, issue: dict[str, Any]) -> AdjustmentSuggestion | None:
         node = self._node(version_id, issue)
@@ -99,11 +88,10 @@ class RemediationPlanningService:
         name_key = str(node["category_name"]).strip().casefold()
         children = self.taxonomy.get_children(version_id, int(node["category_id"]))
         child_names = {str(item["category_name"]).strip().casefold() for item in children}
-        forced_remove = {"气体压缩机": {"压缩机"}}.get(str(node["category_name"]), set())
         for term in terms:
             key = term.casefold()
             malformed = "\n" in term or term.count(str(node["category_name"])) > 1
-            if key == name_key or key in seen or key in child_names or term in forced_remove or malformed:
+            if key == name_key or key in seen or key in child_names or malformed:
                 continue
             seen.add(key)
             kept.append(term)
@@ -219,7 +207,7 @@ class RemediationPlanningService:
         children = self.taxonomy.get_children(version_id, int(node["category_id"]))
         if len(children) < 4:
             return None
-        group_count = max(2, min(6, math.ceil(len(children) / 20)))
+        group_count = max(2, math.ceil(len(children) / 80))
         buckets: list[list[dict[str, Any]]] = [[] for _ in range(group_count)]
         for index, child in enumerate(sorted(children, key=lambda item: (str(item["category_name"]), int(item["category_id"])))):
             buckets[index % group_count].append(child)
@@ -283,12 +271,10 @@ class RemediationPlanningService:
         node = self._node(version_id, issue)
         if not node or self.taxonomy.get_children(version_id, int(node["category_id"])):
             return None
-        if self.taxonomy.count_external_references(version_id, int(node["category_id"])):
-            return self._deprecate(version_id, issue)
         return self._base(
             version_id, issue, action_type="delete_leaf_node",
             action_payload={"target_node_id": int(node["category_id"])}, risk_level="high",
-            suggestion="该叶子节点没有子节点和已登记外部引用，可在副本预演通过后删除。",
+            suggestion="该节点为叶子节点，可在副本预演通过后从新版本删除。",
         )
 
     def _no_change(self, version_id: int, issue: dict[str, Any]) -> AdjustmentSuggestion:

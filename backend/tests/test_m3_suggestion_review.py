@@ -260,6 +260,25 @@ def test_review_service_approves_and_logs_without_modifying_nodes(tmp_path):
     assert log_count == 1
 
 
+def test_automatic_review_only_executes_explicit_ai_approvals(tmp_path):
+    from backend.app.services.review_service import ReviewService
+
+    settings = _settings(tmp_path)
+    version_id = _insert_version_with_issue(settings, "duplicate_name")
+    suggestion = _create_executable_rename(settings, version_id)
+
+    blocked = ReviewService(settings).auto_complete_review(
+        "rename-review",
+        operator="ai_reviewer",
+        complete_if_empty=False,
+        approved_suggestion_ids=set(),
+    )
+
+    assert blocked["approved_ids"] == []
+    assert blocked["ignored_ids"] == [suggestion.id]
+    assert SuggestionRepository(settings).get_suggestion(suggestion.id).status == "deferred"
+
+
 def test_review_service_rejects_batch_approve_for_medium_risk(tmp_path):
     from backend.app.services.review_service import ReviewService
     from backend.app.services.suggestion_service import SuggestionAgent
@@ -292,14 +311,14 @@ def test_validate_approved_actions_returns_passed_result(tmp_path):
     assert validations[0].suggestion_id == suggestion.id
 
 
-def test_graph_topology_routes_content_to_suggestion_and_m4_execution_after_validate(tmp_path):
+def test_graph_topology_routes_content_to_ai_review_and_m4_execution_after_validate(tmp_path):
     from backend.app.agents.graph import build_taxonomy_graph
 
-    graph = build_taxonomy_graph(settings=_settings(tmp_path), enable_suggestion_review=True)
+    graph = build_taxonomy_graph(settings=_settings(tmp_path))
     edges = {(edge.source, edge.target) for edge in graph.get_graph().edges}
 
     assert ("content_diagnosis_node", "generate_suggestion_node") in edges
-    assert ("generate_suggestion_node", "wait_human_review_node") in edges
+    assert ("generate_suggestion_node", "ai_review_action_node") in edges
     assert ("validate_action_node", "execute_action_node") in edges
     assert ("execute_action_node", "save_new_version_node") in edges
     assert ("save_new_version_node", "verify_new_version_node") in edges

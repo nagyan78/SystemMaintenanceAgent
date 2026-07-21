@@ -38,7 +38,7 @@ class IndexResult(BaseModel):
 class DiagnosisPlan(BaseModel):
     priority_subtrees: list[str] = Field(default_factory=list)
     priority_subtree_ids: list[int] = Field(default_factory=list)
-    sample_strategy: Literal["focused", "full_scan", "sampling"] = "focused"
+    sample_strategy: Literal["focused", "full_scan", "sampling"] = "sampling"
     focus_issues: list[str] = Field(default_factory=list)
     estimated_candidates: int = 200
 
@@ -52,6 +52,11 @@ class DiagnosisCoverage(BaseModel):
     candidate_count: int = 0
     deep_diagnosed_count: int = 0
     ai_issue_count: int = 0
+    reasonable_count: int = 0
+    problem_count: int = 0
+    ai_content_sample_score: float | None = None
+    sample_seed: int | None = None
+    sample_assessments: list[dict[str, Any]] = Field(default_factory=list)
     skipped_count: int = 0
     failed_count: int = 0
     unexamined_reasons: dict[str, int] = Field(default_factory=dict)
@@ -86,6 +91,14 @@ class ContentDiagnosisOutput(BaseModel):
 
 class ContentIssue(DiagnosisIssueRecord):
     issue_id: str | None = None
+
+
+class ContentSampleAssessment(BaseModel):
+    conclusion: Literal["reasonable", "problem"]
+    node_id: int
+    node_name: str | None = None
+    reason: str
+    issue: ContentIssue | None = None
 
 
 class ReportResult(BaseModel):

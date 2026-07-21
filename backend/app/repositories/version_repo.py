@@ -148,7 +148,7 @@ class VersionRepository:
                 (status, quality_score, export_path, version_id),
             )
 
-    def update_quality_score(self, version_id: int, quality_score: float) -> None:
+    def update_quality_score(self, version_id: int, quality_score: float | None) -> None:
         with connect(self.settings) as connection:
             connection.execute(
                 "UPDATE taxonomy_version SET quality_score = ? WHERE id = ?",

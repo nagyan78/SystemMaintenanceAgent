@@ -10,7 +10,7 @@ from backend.app.schemas.suggestion import AdjustmentSuggestion
 ACTION_ALIASES = {"clean_synonym": "update_synonyms", "mark_as_valid": "review_only"}
 ALLOWED_BY_ISSUE = {
     "missing_parent": {"move_node", "add_node", "review_only"},
-    "excessive_depth": {"move_node", "review_only"},
+    "excessive_depth": {"collapse_intermediate_node", "review_only"},
     "excessive_width": {"split_subtree", "move_node", "add_node", "review_only"},
     "duplicate_sibling": {"merge_node", "rename_node", "deprecate_node", "delete_leaf_node", "review_only"},
     "parent_child_redundancy": {"rename_node", "merge_node", "move_node", "deprecate_node", "delete_leaf_node", "review_only"},
@@ -22,7 +22,7 @@ ALLOWED_BY_ISSUE = {
     "semantic_duplicate": {"merge_node", "rename_node", "deprecate_node", "delete_leaf_node", "review_only"},
     "semantic_misplacement": {"move_node", "review_only"},
     "inconsistent_dimension": {"split_subtree", "move_node", "rename_node", "add_node", "review_only"},
-    "unknown": {"add_node", "move_node", "rename_node", "merge_node", "update_synonyms", "split_subtree", "deprecate_node", "delete_leaf_node", "review_only"},
+    "unknown": {"add_node", "move_node", "rename_node", "merge_node", "update_synonyms", "split_subtree", "collapse_intermediate_node", "deprecate_node", "delete_leaf_node", "review_only"},
 }
 
 
@@ -54,7 +54,7 @@ class SuggestionConsistencyService:
         if allowed and effective_action not in allowed:
             return self._invalid(candidate, f"问题类型“{issue['issue_type_label']}”不能使用动作“{effective_action}”。", normalize_new)
         subject_node_id = issue.get("subject_node_id") or issue.get("node_id")
-        if effective_action not in {"review_only", "add_node"} and subject_node_id is not None:
+        if effective_action not in {"review_only", "add_node", "collapse_intermediate_node"} and subject_node_id is not None:
             if candidate.target_node_id != int(subject_node_id):
                 return self._invalid(candidate, f"动作目标节点必须是问题主体节点 {subject_node_id}，不能修改其父节点或其他节点。", normalize_new)
         if effective_action == "review_only":
@@ -132,14 +132,14 @@ class SuggestionConsistencyService:
         elif effective_action == "merge_node":
             payload = candidate.action_payload
             required_keys = ("source_node_id", "target_node_id", "equivalence_evidence",
-                             "affected_child_count", "reference_count")
+                             "affected_child_count")
             if any(payload.get(key) in (None, "") for key in required_keys):
-                return self._invalid(candidate, "合并节点必须包含语义等价证据、迁移子节点和引用影响范围。", normalize_new)
+                return self._invalid(candidate, "合并节点必须包含语义等价证据和迁移子节点影响范围。", normalize_new)
             preview = {"action_type": effective_action,
                        "before": {"源节点": payload.get("source_node_name") or f"ID {payload['source_node_id']}"},
                        "after": {"保留节点": payload.get("target_node_name") or f"ID {payload['target_node_id']}",
                                  "合并后同义词": payload.get("merged_synonyms") or []},
-                       "impact": {"迁移子节点": payload["affected_child_count"], "影响引用数量": payload["reference_count"],
+                       "impact": {"迁移子节点": payload["affected_child_count"],
                                   "等价证据": payload["equivalence_evidence"]}}
         elif effective_action == "add_node" and code == "missing_parent":
             payload = candidate.action_payload
@@ -162,6 +162,30 @@ class SuggestionConsistencyService:
                                  "修改后的完整路径": payload["new_path"]},
                        "action": payload.get("action") or {"type": "create_missing_parent", "label": "补建缺失父节点"},
                        "impact_scope": impact_scope, "impact": impact_scope}
+        elif effective_action == "collapse_intermediate_node":
+            subject = self.taxonomy.get_node_detail(candidate.version_id, int(subject_node_id)) if subject_node_id is not None else None
+            raw_ids = candidate.action_payload.get("target_node_ids") or [candidate.action_payload.get("target_node_id") or candidate.target_node_id]
+            target_ids = [int(value) for value in raw_ids if value is not None]
+            targets = [self.taxonomy.get_node_detail(candidate.version_id, node_id) for node_id in target_ids]
+            if not targets or any(item is None for item in targets) or not subject:
+                return self._invalid(candidate, "路径压缩的中间节点或问题叶节点不存在。", normalize_new)
+            path_ids = {int(value) for value in str(subject.get("path_ids") or "").replace("[", "").replace("]", "").split(",") if value.strip().isdigit()}
+            if any(int(target["category_id"]) not in path_ids or target.get("parent_id") is None for target in targets):
+                return self._invalid(candidate, "只能删除异常路径上的非根中间节点。", normalize_new)
+            if any(not self.taxonomy.get_children(candidate.version_id, int(target["category_id"])) for target in targets):
+                return self._invalid(candidate, "路径压缩禁止删除叶子节点。", normalize_new)
+            remove_count = max(int(subject.get("level") or 0) - 7, 0)
+            if len(target_ids) != remove_count:
+                return self._invalid(candidate, f"该异常路径必须选择 {remove_count} 个中间节点。", normalize_new)
+            basis = str(candidate.action_payload.get("semantic_basis") or "").strip()
+            if not basis:
+                return self._invalid(candidate, "路径压缩必须说明删除后父子语义仍成立的依据。", normalize_new)
+            preview = {
+                "action_type": effective_action,
+                "before": {"删除节点": [target.get("category_name") for target in targets], "原路径": subject.get("path_names")},
+                "after": {"删除中间节点数": len(targets), "路径减少层数": len(targets)},
+                "impact": {"删除节点 ID": target_ids, "语义依据": basis},
+            }
         elif effective_action in {"add_node", "split_subtree", "deprecate_node", "delete_leaf_node"}:
             preview = {
                 "action_type": effective_action,

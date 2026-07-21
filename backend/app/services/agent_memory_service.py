@@ -22,7 +22,7 @@ class AgentMemoryService:
         prefix=f"file:{file_id}:subtree:{subtree}:{issue_type}:"
         if action_type: return self.repo.list_for_scope(prefix+action_type,version_id,limit)
         contexts=[]
-        for action in ("merge_node","split_subtree","move_node","rename_node","clean_synonym","deprecate_node","delete_leaf_node"):
+        for action in ("merge_node","split_subtree","collapse_intermediate_node","move_node","rename_node","clean_synonym","deprecate_node","delete_leaf_node"):
             contexts.extend(self.repo.list_for_scope(prefix+action,version_id,limit))
         contexts.sort(key=lambda item:item["id"], reverse=True)
         return [item["content"]|{"memory_id":item["id"],"confidence":item["confidence"]} for item in contexts[:limit]]

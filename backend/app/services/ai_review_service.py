@@ -75,10 +75,10 @@ class AIReviewService:
                 and item.get("verdict") in {"approve", "concern"}
             ]
             if len({item["suggestion_id"] for item in decisions}) != len(known):
-                return AIReviewResult(False, decisions, "独立 AI 复核返回不完整；已保留现有方案并继续确定性校验。")
+                return AIReviewResult(False, decisions, "独立 AI 复核返回不完整；本批方案禁止自动执行。")
             return AIReviewResult(True, decisions)
         except Exception as exc:
-            return AIReviewResult(False, [], f"独立 AI 复核不可用：{type(exc).__name__}；已保留现有方案并继续确定性校验。")
+            return AIReviewResult(False, [], f"独立 AI 复核不可用：{type(exc).__name__}；本批方案禁止自动执行。")
 
 
 def _extract_json(text: str) -> dict[str, Any]:

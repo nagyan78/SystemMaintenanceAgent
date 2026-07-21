@@ -20,7 +20,6 @@ from backend.app.agents.nodes import (
     structure_diagnosis_node,
     validate_action_node,
     verify_new_version_node,
-    wait_human_review_node,
 )
 from backend.app.agents.states import TaxonomyGraphState
 from backend.app.config import Settings, get_settings
@@ -43,7 +42,7 @@ def create_initial_state(
     model_provider: str | None = None,
     model_name: str | None = None,
     priority_subtree_ids: list[int] | None = None,
-    sample_strategy: str = "focused",
+    sample_strategy: str = "sampling",
     focus_issues: list[str] | None = None,
     ai_candidate_limit: int | None = None,
     ai_max_model_calls: int | None = None,
@@ -74,12 +73,12 @@ def create_memory_checkpointer() -> InMemorySaver:
     return InMemorySaver()
 
 
-def route_after_suggestion(state: TaxonomyGraphState, *, enable_suggestion_review: bool = True) -> str:
+def route_after_suggestion(state: TaxonomyGraphState) -> str:
     if state.status in {"failed", "cancelled"}:
         return "end"
     if state.suggestion_count == 0 or state.review_batch_id is None:
         return "generate_report_node"
-    return "wait_human_review_node" if enable_suggestion_review else "ai_review_action_node"
+    return "ai_review_action_node"
 
 
 def route_after_diagnosis(state: TaxonomyGraphState) -> str:
@@ -111,8 +110,6 @@ def route_if_success(state: TaxonomyGraphState, next_node: str) -> str:
 def build_taxonomy_graph(
     checkpointer=None,
     settings: Settings | None = None,
-    *,
-    enable_suggestion_review: bool = False,
 ):
     runtime_settings = settings or get_settings()
     builder = StateGraph(TaxonomyGraphState)
@@ -125,10 +122,7 @@ def build_taxonomy_graph(
     builder.add_node("diagnosis_planning_node", bind_workflow_node(diagnosis_planning_node, runtime_settings))
     builder.add_node("content_diagnosis_node", bind_workflow_node(content_diagnosis_node, runtime_settings))
     builder.add_node("generate_suggestion_node", bind_workflow_node(generate_suggestion_node, runtime_settings))
-    if enable_suggestion_review:
-        builder.add_node("wait_human_review_node", bind_workflow_node(wait_human_review_node, runtime_settings))
-    else:
-        builder.add_node("ai_review_action_node", bind_workflow_node(ai_review_action_node, runtime_settings))
+    builder.add_node("ai_review_action_node", bind_workflow_node(ai_review_action_node, runtime_settings))
     builder.add_node("validate_action_node", bind_workflow_node(validate_action_node, runtime_settings))
     builder.add_node("execute_action_node", bind_workflow_node(execute_action_node, runtime_settings))
     builder.add_node("save_new_version_node", bind_workflow_node(save_new_version_node, runtime_settings))
@@ -156,17 +150,15 @@ def build_taxonomy_graph(
     )
     builder.add_conditional_edges(
         "generate_suggestion_node",
-        lambda state: route_after_suggestion(state, enable_suggestion_review=enable_suggestion_review),
+        route_after_suggestion,
         {
-            "wait_human_review_node": "wait_human_review_node" if enable_suggestion_review else "ai_review_action_node",
-            "ai_review_action_node": "ai_review_action_node" if not enable_suggestion_review else "wait_human_review_node",
+            "ai_review_action_node": "ai_review_action_node",
             "generate_report_node": "generate_report_node",
             "end": END,
         },
     )
-    review_node = "wait_human_review_node" if enable_suggestion_review else "ai_review_action_node"
     builder.add_conditional_edges(
-        review_node,
+        "ai_review_action_node",
         route_after_review,
         {"validate_action_node": "validate_action_node", "generate_report_node": "generate_report_node", "end": END},
     )

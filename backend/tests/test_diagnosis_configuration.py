@@ -65,7 +65,8 @@ def test_quick_diagnosis_skips_model_and_records_configuration(tmp_path, monkeyp
     assert task["end_time"] is None
     assert client.get(f"/workflow/{result['task_id']}").status_code == 200
     assert client.get(f"/diagnosis/summary?version_id={result['version_id']}").status_code == 200
-    assert client.get(f"/versions?file_id={upload['file_id']}").json()[0]["quality_score"] is not None
+    # 未执行 AI 内容抽样时只有规则分，综合分应保持未评级。
+    assert client.get(f"/versions?file_id={upload['file_id']}").json()[0]["quality_score"] is None
     assert client.get(f"/reports?file_id={upload['file_id']}").status_code == 200
 
     rerun = client.post(
@@ -123,6 +124,7 @@ def test_explicit_high_coverage_request_overrides_planner_sample(tmp_path, monke
             "enable_ai_analysis": True,
             "model_provider": "deepseek",
             "model_name": "deepseek-chat",
+            "sample_strategy": "full_scan",
             "ai_candidate_limit": 927,
             "ai_wall_seconds": 14400,
         },
@@ -132,6 +134,41 @@ def test_explicit_high_coverage_request_overrides_planner_sample(tmp_path, monke
     assert captured == {"estimated_candidates": 927, "wall_seconds": 14400}
     assert response.json()["ai_candidate_limit"] == 927
     assert response.json()["ai_wall_seconds"] == 14400
+
+
+def test_sampling_strategy_uses_fixed_project_sample_size(tmp_path, monkeypatch):
+    from backend.app.schemas.issue import DiagnosisPlan
+    from backend.app.services.content_diagnosis_service import ContentDiagnosisAgent, DiagnosisPlanningAgent
+
+    captured = {}
+    monkeypatch.setattr(DiagnosisPlanningAgent, "run", lambda *args, **kwargs: DiagnosisPlan(estimated_candidates=10))
+
+    def capture_plan(self, version_id, plan):
+        captured["estimated_candidates"] = plan.estimated_candidates
+        return []
+
+    monkeypatch.setattr(ContentDiagnosisAgent, "run", capture_plan)
+    client = TestClient(create_app(_settings(tmp_path)))
+    upload = client.post(
+        "/upload",
+        files={"file": ("taxonomy.xlsx", _workbook(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    ).json()
+
+    response = client.post(
+        "/api/diagnosis/run",
+        json={
+            "file_id": upload["file_id"],
+            "enable_ai_analysis": True,
+            "model_provider": "deepseek",
+            "model_name": "deepseek-chat",
+            "sample_strategy": "sampling",
+            "ai_candidate_limit": 927,
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured == {"estimated_candidates": 200}
+    assert response.json()["ai_candidate_limit"] == 200
 
 
 def test_ai_budget_exhaustion_keeps_results_and_generates_report(tmp_path, monkeypatch):

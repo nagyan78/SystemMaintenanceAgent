@@ -22,6 +22,14 @@ import json
 router = APIRouter(prefix="/reviews", tags=["reviews"])
 
 
+def _require_legacy_manual_review_api(request: Request) -> None:
+    if not request.app.state.settings.enable_legacy_manual_review_api:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="人工审核接口已停用；修改方案仅允许由独立 AI 复核工作流处理。",
+        )
+
+
 @router.get("")
 def list_review_batches(
     request: Request,
@@ -141,6 +149,7 @@ def get_review_batch(review_batch_id: str, request: Request) -> dict[str, Any]:
 
 @router.post("/{review_batch_id}/regenerate")
 def regenerate_review_batch(review_batch_id: str, request: Request) -> dict[str, Any]:
+    _require_legacy_manual_review_api(request)
     settings = request.app.state.settings
     batches = ReviewBatchRepository(settings)
     source = batches.get(review_batch_id)
@@ -204,7 +213,7 @@ def _action_fingerprint(action_type: str, payload: dict[str, Any]) -> str:
         "add_node": ("category_id", "parent_id", "new_name"),
         "rename_node": ("new_name",), "move_node": ("new_parent_id", "new_path"),
         "update_synonyms": ("synonyms_to_remove", "synonyms_to_add", "final_syn_list"),
-        "split_subtree": ("groups",), "merge_node": ("source_node_id", "target_node_id"),
+        "split_subtree": ("groups",), "collapse_intermediate_node": ("target_node_ids", "semantic_basis"), "merge_node": ("source_node_id", "target_node_id"),
     }.get(action_type, tuple(sorted(payload)))
     return json.dumps({"action_type": action_type, **{key: payload.get(key) for key in keys}},
                       ensure_ascii=False, sort_keys=True)
@@ -216,6 +225,7 @@ def apply_review_decision(
     payload: ReviewDecisionRequest,
     request: Request,
 ) -> dict[str, Any]:
+    _require_legacy_manual_review_api(request)
     try:
         approved_count = ReviewService(request.app.state.settings).apply_workflow_decision(
             review_batch_id,
@@ -245,6 +255,7 @@ def auto_complete_review(
     request: Request,
 ) -> dict[str, Any]:
     """Complete review without manual editing: executable items pass, all others are ignored."""
+    _require_legacy_manual_review_api(request)
     try:
         return ReviewService(request.app.state.settings).auto_complete_review(
             review_batch_id, payload.operator
@@ -259,6 +270,7 @@ def execute_review_batch(
     payload: ExecuteReviewRequest,
     request: Request,
 ) -> dict[str, Any]:
+    _require_legacy_manual_review_api(request)
     try:
         return ReviewService(request.app.state.settings).execute_approved_actions(
             review_batch_id,
@@ -270,6 +282,7 @@ def execute_review_batch(
 
 @router.post("/{review_batch_id}/preview")
 def preview_review_batch(review_batch_id: str, payload: PreviewReviewRequest, request: Request) -> dict[str, Any]:
+    _require_legacy_manual_review_api(request)
     repo = SuggestionRepository(request.app.state.settings)
     batch = repo.list_suggestions(review_batch_id=review_batch_id)
     selected = [item for item in batch if not payload.suggestion_ids or item.id in payload.suggestion_ids]
@@ -284,6 +297,7 @@ def preview_review_batch(review_batch_id: str, payload: PreviewReviewRequest, re
 
 @router.post("/{review_batch_id}/execution-preview")
 def create_execution_preview(review_batch_id: str, request: Request) -> dict[str, Any]:
+    _require_legacy_manual_review_api(request)
     try:
         return ExecutionPreviewService(request.app.state.settings).create(review_batch_id)
     except ValueError as exc:
@@ -292,6 +306,7 @@ def create_execution_preview(review_batch_id: str, request: Request) -> dict[str
 
 @router.post("/{review_batch_id}/manual-suggestions")
 def create_manual_suggestions(review_batch_id: str, payload: ManualSuggestionsRequest, request: Request) -> dict[str, Any]:
+    _require_legacy_manual_review_api(request)
     settings = request.app.state.settings
     batch = ReviewBatchRepository(settings).get(review_batch_id)
     if not batch:

@@ -56,7 +56,6 @@ class ExecutionPreviewService:
         )
         affected_children = sum(int(item.change_preview.get("impact", {}).get("受影响子节点数量") or
                                     item.change_preview.get("impact", {}).get("迁移子节点") or 0) for item in executable_approved)
-        affected_references = sum(int(item.change_preview.get("impact", {}).get("影响引用数量") or 0) for item in executable_approved)
         affected_children += sum(item["affected_child_count"] for item in deduplication)
         introduced_risks = [
             {"risk_level": "high" if any(word in str(error) for word in ("环", "孤立", "父节点")) else "medium",
@@ -67,7 +66,7 @@ class ExecutionPreviewService:
             "review_batch_id": review_batch_id, "base_version_id": version_id,
             "valid": not errors and simulation.valid, "review_hash": simulation.review_hash,
             "errors": errors, "warnings": [], "action_counts": dict(action_counts),
-            "affected_child_count": affected_children, "affected_reference_count": affected_references,
+            "affected_child_count": affected_children,
             "path_changes": [item.change_preview for item in executable_approved if item.action_type == "move_node"],
             "deduplicated_actions": deduplication,
             "summary": [item["summary"] for item in deduplication],

@@ -42,6 +42,24 @@ class DeleteLeafPayload(BaseModel):
     target_node_id: int
 
 
+class CollapseIntermediatePayload(BaseModel):
+    target_node_id: int | None = None
+    target_node_ids: list[int] = Field(default_factory=list)
+    semantic_basis: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def require_unique_targets(self) -> "CollapseIntermediatePayload":
+        values = self.node_ids()
+        if not values:
+            raise ValueError("collapse target node ids are required")
+        if len(self.target_node_ids) != len(set(self.target_node_ids)):
+            raise ValueError("collapse target node ids must be unique")
+        return self
+
+    def node_ids(self) -> list[int]:
+        return list(dict.fromkeys([*self.target_node_ids, *([self.target_node_id] if self.target_node_id is not None else [])]))
+
+
 class ActionPreview(BaseModel):
     valid: bool
     errors: list[dict] = Field(default_factory=list)

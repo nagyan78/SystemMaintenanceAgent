@@ -57,7 +57,6 @@ def test_graph_runs_m1_deterministic_workflow_to_report(tmp_path):
     graph = build_taxonomy_graph(
         checkpointer,
         settings=settings,
-        enable_suggestion_review=False,
     )
     state = create_initial_state(
         file_id=file_id,
@@ -88,7 +87,6 @@ def test_graph_m2_runs_content_diagnosis_without_human_review(tmp_path):
     graph = build_taxonomy_graph(
         create_memory_checkpointer(),
         settings=settings,
-        enable_suggestion_review=False,
     )
     state = create_initial_state(
         file_id=file_id,

@@ -72,8 +72,10 @@ def _seed(settings: Settings) -> int:
         ("ambiguous_name", 3, "其他", "review_only"),
         ("synonym_format_issue", 4, "苹果", "update_synonyms"),
         ("missing_parent", 50, "断裂节点", "add_node"),
-        ("deep_level", 60, "过深节点", "move_node"),
-        ("wide_node", 7, "宽节点", "split_subtree"),
+        # 深度压缩的删除节点和宽度分组名称必须由 AI 给出语义方案；
+        # 确定性规划器只提供不可执行基线，不能伪造移动或编号分组。
+        ("deep_level", 60, "过深节点", "review_only"),
+        ("wide_node", 7, "宽节点", "review_only"),
         ("duplicate_name", None, "重复分类", "review_only"),
         ("obsolete_node", 20, "停用候选", "review_only"),
         ("redundant_leaf", 21, "废弃叶子", "review_only"),

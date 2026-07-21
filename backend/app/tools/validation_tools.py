@@ -6,7 +6,7 @@ from backend.app.config import Settings, get_settings
 from backend.app.db import connect
 from backend.app.repositories.taxonomy_repo import TaxonomyRepository
 from backend.app.schemas.suggestion import ActionValidationResult, AdjustmentSuggestion
-from backend.app.schemas.action import DeprecateNodePayload, DeleteLeafPayload, MergeNodePayload, SplitSubtreePayload
+from backend.app.schemas.action import CollapseIntermediatePayload, DeprecateNodePayload, DeleteLeafPayload, MergeNodePayload, SplitSubtreePayload
 from backend.app.tools.payload_tools import coerce_json_object
 
 REMOVE_SYNONYM_KEYS = (
@@ -38,6 +38,7 @@ ALLOWED_ACTION_TYPES = {
     "split_subtree",
     "deprecate_node",
     "delete_leaf_node",
+    "collapse_intermediate_node",
     "mark_as_valid",
 }
 
@@ -67,7 +68,7 @@ def validate_suggestion_action(
         return _invalid("confidence 必须在 0 到 1 之间。")
     if suggestion.need_confirm is False and suggestion.risk_level in {"medium", "high"}:
         return _invalid("中高风险建议必须 need_confirm=true。")
-    if suggestion.action_type in {"merge_node", "split_subtree", "deprecate_node", "delete_leaf_node"}:
+    if suggestion.action_type in {"merge_node", "split_subtree", "deprecate_node", "delete_leaf_node", "collapse_intermediate_node"}:
         if not suggestion.need_confirm or suggestion.risk_level != "high":
             return _invalid("结构治理动作必须为 high risk 且 need_confirm=true。")
     if not _issue_exists(runtime_settings, suggestion.version_id, suggestion.issue_id):
@@ -136,9 +137,17 @@ def validate_suggestion_action(
     if suggestion.action_type == "split_subtree":
         if "groups" in suggestion.action_payload:
             try:
-                SplitSubtreePayload.model_validate(suggestion.action_payload)
+                split = SplitSubtreePayload.model_validate(suggestion.action_payload)
             except Exception as exc:
                 return _invalid(f"split_subtree payload 非法：{exc}")
+            children = taxonomy_repo.get_children(suggestion.version_id, int(suggestion.target_node_id))
+            actual = {int(item["category_id"]) for item in children}
+            assigned = {child_id for group in split.groups for child_id in group.child_ids}
+            if assigned != actual:
+                return _invalid("split_subtree 必须恰好覆盖全部直接子节点。")
+            if len(actual) > 80:
+                if any(len(group.child_ids) < 2 or len(group.child_ids) > 80 for group in split.groups):
+                    return _invalid("过宽整改的每个分组必须包含 2 到 80 个节点。")
     if suggestion.action_type == "deprecate_node":
         try:
             DeprecateNodePayload.model_validate({**suggestion.action_payload, "target_node_id": suggestion.action_payload.get("target_node_id", suggestion.target_node_id)})
@@ -149,6 +158,20 @@ def validate_suggestion_action(
             DeleteLeafPayload.model_validate({**suggestion.action_payload, "target_node_id": suggestion.action_payload.get("target_node_id", suggestion.target_node_id)})
         except Exception as exc:
             return _invalid(f"delete_leaf_node payload 非法：{exc}")
+    if suggestion.action_type == "collapse_intermediate_node":
+        try:
+            collapse = CollapseIntermediatePayload.model_validate({**suggestion.action_payload, "target_node_id": suggestion.action_payload.get("target_node_id", suggestion.target_node_id)})
+        except Exception as exc:
+            return _invalid(f"collapse_intermediate_node payload 非法：{exc}")
+        for node_id in collapse.node_ids():
+            selected = TaxonomyRepository(runtime_settings).get_node_detail(suggestion.version_id, node_id)
+            if selected is None:
+                return _invalid(f"待删除中间节点 {node_id} 不存在。")
+            if selected.get("parent_id") is None:
+                return _invalid("collapse_intermediate_node 禁止删除根节点。")
+            children = TaxonomyRepository(runtime_settings).get_children(suggestion.version_id, node_id)
+            if not children:
+                return _invalid("collapse_intermediate_node 禁止删除叶子节点。")
     return ActionValidationResult(valid=True)
 
 

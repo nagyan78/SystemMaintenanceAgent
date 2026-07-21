@@ -11,7 +11,7 @@ def _settings(tmp_path):
     return Settings(
         database_url=f"sqlite:///{tmp_path/'app.db'}", upload_dir=tmp_path/'uploads',
         report_dir=tmp_path/'reports', export_dir=tmp_path/'exports',
-        deepseek_api_key="", dashscope_api_key="",
+        deepseek_api_key="", dashscope_api_key="", enable_legacy_manual_review_api=True,
     )
 
 

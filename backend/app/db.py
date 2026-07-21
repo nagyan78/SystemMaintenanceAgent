@@ -264,23 +264,6 @@ def init_db(settings: Settings) -> None:
                 FOREIGN KEY(evaluation_id) REFERENCES agent_evaluation(id)
             );
 
-            CREATE TABLE IF NOT EXISTS category_reference (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, version_id INTEGER NOT NULL,
-                category_id INTEGER NOT NULL, reference_type TEXT NOT NULL,
-                reference_key TEXT NOT NULL, created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(version_id, category_id, reference_type, reference_key)
-            );
-
-            CREATE TABLE IF NOT EXISTS diagnosis_triage (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL,
-                version_id INTEGER NOT NULL, node_id INTEGER, node_name TEXT,
-                issue_type TEXT NOT NULL, reason TEXT, evidence TEXT,
-                confidence REAL NOT NULL, detector_disagreement INTEGER DEFAULT 0,
-                status TEXT NOT NULL DEFAULT 'needs_triage', decision TEXT,
-                operator TEXT, created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-                decided_time DATETIME
-            );
-
             CREATE UNIQUE INDEX IF NOT EXISTS idx_category_node_version_category
             ON category_node(version_id, category_id);
 

@@ -24,6 +24,7 @@ def _settings(tmp_path):
         export_dir=tmp_path / "exports",
         deepseek_api_key="",
         dashscope_api_key="",
+        enable_legacy_manual_review_api=True,
     )
 
 

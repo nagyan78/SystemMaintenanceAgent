@@ -3,7 +3,7 @@ import json
 
 from backend.app.config import Settings
 from backend.app.repositories.taxonomy_repo import TaxonomyRepository
-from backend.app.schemas.action import ActionPreview, DeprecateNodePayload, DeleteLeafPayload, MergeNodePayload, SplitSubtreePayload
+from backend.app.schemas.action import ActionPreview, CollapseIntermediatePayload, DeprecateNodePayload, DeleteLeafPayload, MergeNodePayload, SplitSubtreePayload
 from backend.app.schemas.suggestion import SuggestionRecord
 from backend.app.schemas.taxonomy import TaxonomyNodeRecord
 from backend.app.schemas.version import VersionDiff
@@ -12,8 +12,6 @@ from backend.app.tools.validation_tools import extract_move_new_parent_id, resol
 
 
 class SnapshotActionApplier:
-    def __init__(self, reference_checker=None):
-        self.reference_checker = reference_checker
     def apply(self, nodes: dict[int, TaxonomyNodeRecord], suggestion: SuggestionRecord) -> None:
         handler = getattr(self, f"_{suggestion.action_type}", None)
         if handler is None:
@@ -74,7 +72,11 @@ class SnapshotActionApplier:
         if assigned != actual:
             raise ValueError("split child_ids 必须完整覆盖当前直接子节点")
         next_id = max(nodes, default=0) + 1
-        for group in payload.groups:
+        ordered_groups = sorted(
+            payload.groups,
+            key=lambda group: (group.name.strip().casefold(), min(group.child_ids)),
+        )
+        for group in ordered_groups:
             group_id, next_id = next_id, next_id + 1
             nodes[group_id] = TaxonomyNodeRecord(category_id=group_id, category_name=group.name.strip(), parent_id=target.category_id, level=target.level + 1, path_ids=str(group_id), path_names=group.name.strip())
             for child_id in group.child_ids:
@@ -111,9 +113,33 @@ class SnapshotActionApplier:
         self._node(nodes, payload.target_node_id)
         if any(item.parent_id == payload.target_node_id for item in nodes.values()):
             raise ValueError("delete_leaf_node 只允许删除叶子节点")
-        if self.reference_checker and self.reference_checker(suggestion.version_id, payload.target_node_id):
-            raise ValueError("delete_leaf_node 目标存在外部引用")
         del nodes[payload.target_node_id]
+
+    def _collapse_intermediate_node(self, nodes, suggestion):
+        data = {**suggestion.action_payload, "target_node_id": suggestion.action_payload.get("target_node_id", suggestion.target_node_id)}
+        payload = CollapseIntermediatePayload.model_validate(data)
+        targets = [self._node(nodes, node_id) for node_id in payload.node_ids()]
+        for selected in sorted(targets, key=lambda item: int(item.level or 0), reverse=True):
+            target = self._node(nodes, selected.category_id)
+            if target.parent_id is None:
+                raise ValueError("collapse_intermediate_node 禁止删除根节点")
+            children = [item for item in nodes.values() if item.parent_id == target.category_id]
+            if not children:
+                raise ValueError("collapse_intermediate_node 禁止删除叶子节点")
+            siblings = [
+                item for item in nodes.values()
+                if item.parent_id == target.parent_id and item.category_id != target.category_id
+            ]
+            sibling_names = {item.category_name for item in siblings}
+            conflicts = sorted({item.category_name for item in children} & sibling_names)
+            if conflicts:
+                raise ValueError(f"改挂后产生同级重名：{', '.join(conflicts)}")
+            resulting_width = len(siblings) + len(children)
+            if resulting_width > 80:
+                raise ValueError(f"改挂后父节点直接子节点数为 {resulting_width}，超过 80")
+            for child in children:
+                nodes[child.category_id] = child.model_copy(update={"parent_id": target.parent_id})
+            del nodes[target.category_id]
 
     @staticmethod
     def _node(nodes, node_id):
@@ -124,8 +150,7 @@ class SnapshotActionApplier:
 
 class ActionSimulationService:
     def __init__(self, settings: Settings) -> None:
-        repo = TaxonomyRepository(settings)
-        self.settings, self.applier = settings, SnapshotActionApplier(repo.count_external_references)
+        self.settings, self.applier = settings, SnapshotActionApplier()
 
     def simulate(self, version_id: int, suggestions: list[SuggestionRecord]) -> ActionPreview:
         source = TaxonomyRepository(self.settings).list_node_records(version_id, include_deprecated=True)
@@ -152,7 +177,7 @@ class ActionSimulationService:
 
 
 def _ordered(items):
-    rank = {"add_node": 0, "split_subtree": 1, "merge_node": 2, "move_node": 3, "rename_node": 4, "clean_synonym": 5, "update_synonyms": 5, "review_only": 9, "deprecate_node": 6, "delete_leaf_node": 7}
+    rank = {"add_node": 0, "split_subtree": 1, "collapse_intermediate_node": 2, "merge_node": 3, "move_node": 4, "rename_node": 5, "clean_synonym": 6, "update_synonyms": 6, "review_only": 10, "deprecate_node": 7, "delete_leaf_node": 8}
     return sorted(items, key=lambda item: (rank.get(item.action_type, 5), item.id))
 
 
@@ -162,9 +187,13 @@ def _conflicts(items):
         if item.action_type == "split_subtree" and item.target_node_id in split:
             errors.append({"code": "multi_action_conflict", "suggestion_id": item.id, "reason": "同一节点不能重复 split"})
         if item.action_type == "split_subtree": split.add(item.target_node_id)
-        if item.target_node_id in terminal:
+        action_targets = {item.target_node_id} if item.target_node_id is not None else set()
+        if item.action_type == "collapse_intermediate_node":
+            action_targets.update(int(value) for value in item.action_payload.get("target_node_ids", []) if value is not None)
+        if action_targets & terminal:
             errors.append({"code": "multi_action_conflict", "suggestion_id": item.id, "reason": "节点已被删除或弃用"})
-        if item.action_type in {"delete_leaf_node", "deprecate_node"}: terminal.add(item.target_node_id)
+        if item.action_type in {"delete_leaf_node", "collapse_intermediate_node", "deprecate_node"}:
+            terminal.update(action_targets)
     return errors
 
 
@@ -178,6 +207,8 @@ def _validate(nodes):
         if node.parent_id is not None and parent is None: errors.append({"code": "orphan", "node_id": node.category_id, "parent_id": node.parent_id, "reason": f"悬空父节点：{node.category_id}"})
         if node.node_status == "active" and parent and parent.node_status != "active": errors.append({"code": "inactive_ancestor", "node_id": node.category_id, "parent_id": node.parent_id, "reason": f"active 节点存在 deprecated 祖先：{node.category_id}"})
         if int(node.level or 0) > 7: errors.append({"code": "depth_limit", "node_id": node.category_id, "level": int(node.level or 0), "reason": f"层级过深：{node.category_id}（层级 {node.level}）"})
+        direct_children = sum(1 for item in nodes if item.parent_id == node.category_id and item.node_status == "active")
+        if direct_children > 80: errors.append({"code": "width_limit", "node_id": node.category_id, "children_count": direct_children, "reason": f"节点过宽：{node.category_id}（直接子节点 {direct_children}）"})
         synonyms = [item.strip() for item in (node.syn_list or "").replace("，", ",").split(",")]
         if node.syn_list and (any(not item for item in synonyms) or len(synonyms) != len(set(synonyms))):
             errors.append({"code": "synonyms_invalid", "node_id": node.category_id, "reason": f"同义词存在重复或空值：{node.category_id}"})
@@ -195,8 +226,18 @@ def _validate(nodes):
 def _introduced_validation_errors(before_errors, after_errors):
     """Only block defects introduced or worsened by the proposed action set."""
     baseline = {_validation_identity(item) for item in before_errors}
+    baseline_limits = {
+        (item.get("code"), item.get("node_id")): int(item.get("level") or item.get("children_count") or 0)
+        for item in before_errors
+        if item.get("code") in {"depth_limit", "width_limit"}
+    }
     introduced = []
     for item in after_errors:
+        if item.get("code") in {"depth_limit", "width_limit"}:
+            previous = baseline_limits.get((item.get("code"), item.get("node_id")))
+            current = int(item.get("level") or item.get("children_count") or 0)
+            if previous is not None and current <= previous:
+                continue
         if _validation_identity(item) not in baseline:
             introduced.append({**item, "reason": f"新增{item['reason']}"})
     return introduced
