@@ -9,6 +9,7 @@ from backend.app.agents.nodes import (
     build_tree_node,
     bind_workflow_node,
     content_diagnosis_node,
+    deterministic_optimize_node,
     diagnosis_planning_node,
     execute_action_node,
     generate_report_node,
@@ -76,24 +77,24 @@ def create_memory_checkpointer() -> InMemorySaver:
 def route_after_suggestion(state: TaxonomyGraphState) -> str:
     if state.status in {"failed", "cancelled"}:
         return "end"
-    if state.suggestion_count == 0 or state.review_batch_id is None:
-        return "generate_report_node"
-    return "ai_review_action_node"
+    if state.suggestion_count == 0 or state.review_batch_id is None or state.approved_action_count == 0:
+        return "deterministic_optimize_node"
+    return "validate_action_node"
 
 
 def route_after_diagnosis(state: TaxonomyGraphState) -> str:
     if state.status in {"failed", "cancelled"}:
         return "end"
-    return "generate_suggestion_node" if state.enable_ai_analysis else "generate_report_node"
+    return "generate_suggestion_node" if state.enable_ai_analysis else "deterministic_optimize_node"
 
 
 def route_after_review(state: TaxonomyGraphState) -> str:
     if state.status in {"failed", "cancelled"}:
         return "end"
     if state.review_decision == "reject":
-        return "generate_report_node"
+        return "deterministic_optimize_node"
     if state.approved_action_count == 0:
-        return "generate_report_node"
+        return "deterministic_optimize_node"
     return "validate_action_node"
 
 
@@ -122,6 +123,7 @@ def build_taxonomy_graph(
     builder.add_node("diagnosis_planning_node", bind_workflow_node(diagnosis_planning_node, runtime_settings))
     builder.add_node("content_diagnosis_node", bind_workflow_node(content_diagnosis_node, runtime_settings))
     builder.add_node("generate_suggestion_node", bind_workflow_node(generate_suggestion_node, runtime_settings))
+    builder.add_node("deterministic_optimize_node", bind_workflow_node(deterministic_optimize_node, runtime_settings))
     builder.add_node("ai_review_action_node", bind_workflow_node(ai_review_action_node, runtime_settings))
     builder.add_node("validate_action_node", bind_workflow_node(validate_action_node, runtime_settings))
     builder.add_node("execute_action_node", bind_workflow_node(execute_action_node, runtime_settings))
@@ -146,21 +148,21 @@ def build_taxonomy_graph(
     builder.add_conditional_edges(
         "content_diagnosis_node",
         route_after_diagnosis,
-        {"generate_suggestion_node": "generate_suggestion_node", "generate_report_node": "generate_report_node", "end": END},
+        {"generate_suggestion_node": "generate_suggestion_node", "deterministic_optimize_node": "deterministic_optimize_node", "end": END},
     )
     builder.add_conditional_edges(
         "generate_suggestion_node",
         route_after_suggestion,
         {
-            "ai_review_action_node": "ai_review_action_node",
-            "generate_report_node": "generate_report_node",
+            "validate_action_node": "validate_action_node",
+            "deterministic_optimize_node": "deterministic_optimize_node",
             "end": END,
         },
     )
     builder.add_conditional_edges(
         "ai_review_action_node",
         route_after_review,
-        {"validate_action_node": "validate_action_node", "generate_report_node": "generate_report_node", "end": END},
+        {"validate_action_node": "validate_action_node", "deterministic_optimize_node": "deterministic_optimize_node", "end": END},
     )
     builder.add_conditional_edges(
         "validate_action_node",
@@ -177,6 +179,11 @@ def build_taxonomy_graph(
             lambda state, target=target: route_if_success(state, target),
             {target: target, "end": END},
         )
+    builder.add_conditional_edges(
+        "deterministic_optimize_node",
+        lambda state: route_if_success(state, "verify_new_version_node"),
+        {"verify_new_version_node": "verify_new_version_node", "end": END},
+    )
     builder.add_edge("generate_report_node", END)
 
     return builder.compile(checkpointer=checkpointer)

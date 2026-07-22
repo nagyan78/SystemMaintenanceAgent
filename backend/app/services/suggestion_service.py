@@ -74,8 +74,14 @@ class SuggestionAgent:
             # Deterministic planning remains a fallback and a validation source,
             # never a reason to skip model analysis.
             record = self._generate_llm_suggestion_record(version_id, issue) if self.llm is not None else None
-            if record is None and self.llm is None:
-                record = self._rule_based_suggestion_record(version_id, issue)
+            if record is None:
+                baseline = RemediationPlanningService(self.settings).plan(version_id, issue)
+                if baseline and baseline.risk_level == "low" and baseline.action_type != "review_only":
+                    # Deterministic low-risk proposals remain subject to the
+                    # independent AI review and full snapshot simulation.
+                    record = self._persist_ai_suggestion(baseline)
+                elif self.llm is None:
+                    record = self._rule_based_suggestion_record(version_id, issue)
             if record is None:
                 continue
             records.append(record)

@@ -15,6 +15,8 @@ from backend.app.services.batch_content_diagnosis_service import BatchContentDia
 from backend.app.services.model_service import ModelService
 from backend.app.services.retry_policy import RetryPolicy
 from backend.app.services.suggestion_service import SuggestionAgent
+from backend.app.services.remediation_planning_service import RemediationPlanningService
+from backend.app.services.suggestion_consistency_service import SuggestionConsistencyService
 from backend.app.services.tool_factory import AgentResourceLimits, AgentToolFactory, ToolScope
 from backend.app.services.stratified_sampling_service import StratifiedSamplingService
 
@@ -299,16 +301,30 @@ class AgentRunService:
             model_profile=self.settings.deepseek_model,
             budget={"review_batch_id": review_batch_id, "analysis_run_id": analysis_run_id},
         ))
-        issue_ids: list[int] = []
-        if analysis_run_id:
-            for item in self.repo.list_work_items(analysis_run_id):
-                for issue in item.result_payload.get("issues", []):
-                    raw_id = issue.get("issue_id")
-                    if isinstance(raw_id, str) and raw_id.startswith("issue_"):
-                        issue_ids.append(int(raw_id.removeprefix("issue_")))
-        if not issue_ids:
-            issue_ids = [int(issue["id"]) for issue in DiagnosisRepository(self.settings).list_pending_issues(version_id)]
-        issue_ids = issue_ids[:50]
+        # The delivery workflow intentionally executes only deterministic,
+        # low-risk rule repairs. Semantic AI findings stay in the report and do
+        # not enter the mutation path.
+        pending = DiagnosisRepository(self.settings).list_pending_issues(version_id)
+        planner = RemediationPlanningService(self.settings)
+        consistency = SuggestionConsistencyService(self.settings)
+        safe_rule_ids: list[int] = []
+        for issue in sorted(
+            pending,
+            key=lambda item: (
+                0 if str(item.get("issue_type_code") or item.get("issue_type")) in {"synonym_format", "synonym_format_issue"} else 1,
+                int(item["id"]),
+            ),
+        ):
+            if issue.get("source") == "model_analysis":
+                continue
+            proposal = planner.plan(version_id, issue)
+            checked = consistency.check(proposal, normalize_new=True) if proposal else None
+            if checked and checked.valid and checked.executable and checked.suggestion.risk_level == "low":
+                safe_rule_ids.append(int(issue["id"]))
+            if len(safe_rule_ids) >= 5:
+                break
+
+        issue_ids = safe_rule_ids
         batch_size = 10
         batches = [issue_ids[index:index + batch_size] for index in range(0, len(issue_ids), batch_size)]
         ids = [

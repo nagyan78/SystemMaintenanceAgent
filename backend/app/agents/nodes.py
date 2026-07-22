@@ -316,17 +316,15 @@ def content_diagnosis_node(state: TaxonomyGraphState) -> StateUpdate:
 def generate_suggestion_node(state: TaxonomyGraphState) -> StateUpdate:
     version_id = _require_current_version_id(state)
     from backend.app.agents.suggestion_subgraph import build_suggestion_subgraph
-    from backend.app.services.model_service import ModelService
-    llm = ModelService(_current_settings()).get_chat_model() if state.enable_ai_analysis else None
-    result = build_suggestion_subgraph(settings=_current_settings(), llm=llm).invoke(
+    # Keep delivery predictable and cheap: AI diagnoses content, while the
+    # mutation path accepts deterministic low-risk repairs only.
+    result = build_suggestion_subgraph(settings=_current_settings(), llm=None).invoke(
         {"workflow_id": state.workflow_id, "version_id": version_id, "analysis_run_id": state.analysis_run_id},
         config={"max_concurrency": _current_settings().agent_llm_max_concurrency},
     )
     generated_count = int(result.get("suggestion_count", 0))
     review_batch_id = result.get("review_batch_id")
     suggestion_work_counts = result.get("work_item_counts", {})
-    incomplete_suggestions = sum(int(suggestion_work_counts.get(key, 0)) for key in ("inconclusive", "permanent_failed", "skipped", "retryable_failed"))
-    completion_update = {"diagnosis_completion_status": "partial"} if incomplete_suggestions else {}
     if generated_count == 0:
         return _complete_step(
             state,
@@ -335,7 +333,6 @@ def generate_suggestion_node(state: TaxonomyGraphState) -> StateUpdate:
             progress=78,
             suggestion_count=0,
             suggestion_work_item_counts=suggestion_work_counts,
-            **completion_update,
         )
     version = VersionRepository(_current_settings()).get_version(version_id)
     if review_batch_id and version:
@@ -345,6 +342,12 @@ def generate_suggestion_node(state: TaxonomyGraphState) -> StateUpdate:
             version_id=version_id, task_id=state.task_id, workflow_id=state.workflow_id,
         )
         batch_repo.refresh_status(str(review_batch_id))
+    approval = ReviewService(_current_settings()).auto_complete_review(
+        str(review_batch_id),
+        operator="deterministic_auto_apply",
+        complete_if_empty=False,
+    )
+    approved_ids = [int(item) for item in approval.get("approved_ids", [])]
     return _complete_step(
         state,
         "generate_suggestion_node",
@@ -353,7 +356,13 @@ def generate_suggestion_node(state: TaxonomyGraphState) -> StateUpdate:
         suggestion_count=generated_count,
         review_batch_id=review_batch_id,
         suggestion_work_item_counts=suggestion_work_counts,
-        **completion_update,
+        review_decision="approve" if approved_ids else "uncertain",
+        review_payload={
+            "mode": "deterministic_low_risk",
+            "approved_suggestion_ids": approved_ids,
+            "ignored_suggestion_ids": approval.get("ignored_ids", []),
+        },
+        approved_action_count=len(approved_ids),
     )
 
 
@@ -393,7 +402,9 @@ def ai_review_action_node(state: TaxonomyGraphState) -> StateUpdate:
             "ignored_suggestion_ids": ignored_ids,
         },
         approved_action_count=len(approved_ids),
-        diagnosis_completion_status="partial" if ignored_ids or not ai_review.completed else state.diagnosis_completion_status,
+        # Suggestion rejection means "diagnosis completed, no safe action"; it
+        # must not downgrade completed diagnostic coverage to a partial report.
+        diagnosis_completion_status=state.diagnosis_completion_status,
     )
 
 
@@ -457,6 +468,32 @@ def save_new_version_node(state: TaxonomyGraphState) -> StateUpdate:
     )
 
 
+def deterministic_optimize_node(state: TaxonomyGraphState) -> StateUpdate:
+    base_version_id = state.base_version_id or _require_current_version_id(state)
+    result = VersionService(_current_settings()).create_deterministic_optimized_version(
+        base_version_id=base_version_id,
+        source_workflow_id=state.workflow_id,
+    )
+    return _complete_step(
+        state,
+        "deterministic_optimize_node",
+        current_step="save_new_version",
+        progress=96,
+        new_version_id=result.new_version_id,
+        current_version_id=result.new_version_id,
+        version_no=result.new_version_no,
+        node_count=result.node_count,
+        executed_action_count=result.executed_count,
+        failed_action_count=result.failed_count,
+        action_batch_id=result.action_batch_id,
+        review_payload={
+            **(state.review_payload or {}),
+            "delivery_fallback": "deterministic_synonym_cleanup",
+            "changed_node_count": result.executed_count,
+        },
+    )
+
+
 def verify_new_version_node(state: TaxonomyGraphState) -> StateUpdate:
     if state.base_version_id is None or state.new_version_id is None:
         raise WorkflowNodeError("MISSING_VERSION_ID", "Version verification requires old and new versions.")
@@ -494,18 +531,24 @@ def generate_report_node(state: TaxonomyGraphState) -> StateUpdate:
         and state.new_version_id is None
         and state.review_decision is None
     )
-    report_type = (
-        "final" if state.new_version_id is not None
-        else "partial" if state.diagnosis_completion_status == "partial"
-        else "draft" if is_draft else "final"
-    )
-    result = ReportService(_current_settings()).generate_diagnosis_report(
-        version_id,
+    report_type = "final"
+    reports = ReportService(_current_settings())
+    baseline_id = state.base_version_id or version_id
+    baseline = reports.generate_diagnosis_report(
+        baseline_id,
         report_type=report_type,
-        review_batch_id=state.review_batch_id,
         workflow_id=state.workflow_id,
         run_id=state.analysis_run_id,
     )
+    result = baseline
+    if state.new_version_id is not None and state.new_version_id != baseline_id:
+        result = reports.generate_optimization_report(
+            base_version_id=baseline_id,
+            new_version_id=state.new_version_id,
+            workflow_id=state.workflow_id,
+            run_id=state.analysis_run_id,
+            review_batch_id=state.review_batch_id,
+        )
     return _complete_step(
         state,
         "generate_report_node",
@@ -587,6 +630,7 @@ generate_suggestion_node = node_guard(
     "generate_suggestion_node",
     generate_suggestion_node,
 )
+deterministic_optimize_node = node_guard("deterministic_optimize_node", deterministic_optimize_node)
 validate_action_node = node_guard("validate_action_node", validate_action_node)
 execute_action_node = node_guard("execute_action_node", execute_action_node)
 save_new_version_node = node_guard("save_new_version_node", save_new_version_node)

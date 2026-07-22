@@ -57,16 +57,18 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
 import AgentRunProgress from '../components/AgentRunProgress.vue'
 import AgentEventLog from '../components/AgentEventLog.vue'
 import type { AgentEvent } from '../components/AgentEventLog.vue'
 import { cancelWorkflow, getWorkflowStatus, workflowEvents } from '../api/workflows'
+import { exportVersion } from '../api/versions'
+import { apiUrl } from '../api/client'
 import { useWorkspace } from '../state/workspace'
 
 const props = defineProps<{ taskId?: string }>()
-const route = useRoute(), taskId = String(route.params.taskId || props.taskId), { state, patch } = useWorkspace()
+const route = useRoute(), router = useRouter(), taskId = String(route.params.taskId || props.taskId), { state, patch } = useWorkspace()
 const status = ref('pending'), progress = ref(0), currentStep = ref(''), currentVersionId = ref<number | null>(null), fileId = ref<number | null>(state.fileId)
 const errorMessage = ref(''), enableAi = ref(state.enableAiAnalysis), modelName = ref(state.modelName), timer = ref<number | null>(null)
 const eventSource = ref<EventSource | null>(null), agentEvents = ref<AgentEvent[]>([]), seenEventIds = new Set<number>()
@@ -74,6 +76,7 @@ const rawCounts = ref<Record<string, number>>({})
 const planRevision = ref(1), stopReason = ref(''), modelCallsUsed = ref(0), tokensUsed = ref(0), wallSecondsUsed = ref(0), candidateCount = ref(0), aiProcessedCount = ref(0)
 const analysisRunId = ref(state.diagnosisRunId || '')
 const isProgressModalDismissed = ref(false)
+const delivered = ref(false)
 
 const statusLabel = computed(() => ({ pending: '正在准备', running: '正在自动维护', partial: '部分完成', completed_degraded: '降级完成', completed: '维护完成', failed: '执行失败', cancelled: '已停止', waiting_review: '旧任务已暂停' } as Record<string, string>)[status.value] || status.value)
 const tone = computed(() => ['completed', 'completed_degraded', 'partial'].includes(status.value) ? 'success' : status.value === 'failed' ? 'danger' : 'warning')
@@ -111,7 +114,20 @@ async function refresh() {
     const data = await getWorkflowStatus(taskId)
     status.value = data.status; progress.value = ['completed', 'completed_degraded', 'partial'].includes(data.status) ? 100 : data.progress; currentStep.value = data.current_step; currentVersionId.value = data.current_version_id || null; fileId.value = data.file_id; errorMessage.value = data.error_message || ''; enableAi.value = Boolean(data.enable_ai_analysis); modelName.value = data.model_name || ''; analysisRunId.value = data.analysis_run_id || ''; rawCounts.value = data.work_item_counts || {}; planRevision.value = Number(data.coverage?.plan_revision || 1); stopReason.value = String(data.coverage?.stop_reason || ''); modelCallsUsed.value = Number(data.coverage?.model_calls || 0); tokensUsed.value = Number(data.coverage?.tokens_used || 0); wallSecondsUsed.value = Number(data.coverage?.wall_seconds || 0); candidateCount.value = Number(data.coverage?.candidate_count || data.candidate_count || 0); aiProcessedCount.value = Number(data.coverage?.deep_diagnosed_count || data.ai_processed_count || 0)
     patch({ taskId, fileId: data.file_id, currentVersionId: data.current_version_id || null, newVersionId: data.executed_action_count ? data.current_version_id || null : state.newVersionId, diagnosisRunId: analysisRunId.value || null, enableAiAnalysis: enableAi.value, modelName: modelName.value })
-    if (['completed', 'completed_degraded', 'partial', 'failed', 'cancelled'].includes(data.status)) stop()
+    if (['completed', 'completed_degraded', 'partial', 'failed', 'cancelled'].includes(data.status)) {
+      stop()
+      if (data.status === 'completed' && data.current_version_id && !delivered.value) {
+        delivered.value = true
+        const exported = await exportVersion(data.current_version_id)
+        const anchor = document.createElement('a')
+        anchor.href = apiUrl(exported.download_url)
+        anchor.download = exported.file_name
+        document.body.appendChild(anchor)
+        anchor.click()
+        anchor.remove()
+        await router.replace(`/report/${data.current_version_id}?type=final`)
+      }
+    }
   } catch (cause) { errorMessage.value = cause instanceof Error ? cause.message : '状态查询失败'; stop() }
 }
 function consumeAgentEvent(type: string, event: MessageEvent) { const data = JSON.parse(event.data || '{}'), id = Number(data.event_id || event.lastEventId || 0); if (id && seenEventIds.has(id)) return; if (id) seenEventIds.add(id); agentEvents.value = [...agentEvents.value, { event_id: id, event_type: type, agent_name: data.agent_name, status: data.status, attempt: data.attempt, tool_name: data.tool_name, latency_ms: data.latency_ms, summary: data.summary, evidence_refs: data.evidence_refs }].slice(-200) }

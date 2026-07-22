@@ -161,7 +161,14 @@ function stageLabel(step?: string) { return ({ uploaded: '已上传', parse_exce
 async function submit() {
   if (!file.value) return
   loading.value = true; error.value = ''
-  try { const uploaded = await uploadFile(file.value); applyFileContext({ id: uploaded.file_id, ...uploaded }); await loadExistingFiles() }
+  try {
+    const uploaded = await uploadFile(file.value)
+    applyFileContext({ id: uploaded.file_id, ...uploaded })
+    await loadExistingFiles()
+    enableAiAnalysis.value = true
+    saveAiMode()
+    await startAnalysis()
+  }
   catch (cause) { error.value = cause instanceof Error ? cause.message : '上传失败' }
   finally { loading.value = false }
 }

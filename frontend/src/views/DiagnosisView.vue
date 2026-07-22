@@ -8,6 +8,9 @@
           <p class="lead">集中查看系统发现的问题、判断依据和可执行修改建议。</p>
         </div>
         <div class="action-row">
+          <button v-if="summary" class="button primary" :disabled="applying" @click="applyFixes">
+            {{ applying ? '正在生成 v1.1…' : '执行修改并生成 v1.1' }}
+          </button>
           <RouterLink v-if="summary" class="button primary" :to="`/report/${summary.version_id}?type=${summary.report_type || 'draft'}`">查看诊断报告</RouterLink>
           <button class="button secondary" :disabled="loading" @click="loadAll">刷新结果</button>
         </div>
@@ -113,9 +116,9 @@ import { getDiagnosisIssue, getDiagnosisSummary, listDiagnosisIssues } from '../
 import type { DiagnosisIssue, DiagnosisSummary } from '../api/diagnosis'
 import { listFiles } from '../api/files'
 import type { FileRecord } from '../api/files'
-import { getVersion, listVersions } from '../api/versions'
+import { applyVersionFixes, getVersion, listVersions } from '../api/versions'
 import type { VersionRecord } from '../api/versions'
-import { ApiError } from '../api/client'
+import { ApiError, apiUrl } from '../api/client'
 import { useWorkspace } from '../state/workspace'
 
 const props = defineProps<{ versionId?: string }>()
@@ -123,6 +126,7 @@ const route = useRoute(), router = useRouter()
 const { patch } = useWorkspace()
 const activeVersionId = computed(() => Number(route.params.versionId || props.versionId || 0))
 const loading = ref(false), error = ref(''), statusMessage = ref('')
+const applying = ref(false)
 const summary = ref<DiagnosisSummary | null>(null), issues = ref<DiagnosisIssue[]>([]), selected = ref<DiagnosisIssue | null>(null)
 const files = ref<FileRecord[]>([]), selectableVersions = ref<VersionRecord[]>([])
 const selectedFileId = ref(0), selectedVersionId = ref(0)
@@ -146,6 +150,27 @@ const hasActiveFilters = computed(() => categoryFilter.value !== 'all' || typeFi
 function clearFilters() { categoryFilter.value = 'all'; typeFilter.value = 'all'; riskFilter.value = 'all'; sourceFilter.value = 'all' }
 
 async function selectIssue(id: number) { try { selected.value = await getDiagnosisIssue(id) } catch (e) { error.value = e instanceof Error ? e.message : '详情加载失败' } }
+async function applyFixes() {
+  if (!summary.value || applying.value) return
+  applying.value = true
+  error.value = ''
+  statusMessage.value = '正在执行修改并生成新版本…'
+  try {
+    const result = await applyVersionFixes(summary.value.version_id)
+    const anchor = document.createElement('a')
+    anchor.href = apiUrl(result.download_url)
+    anchor.download = result.file_name
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    await router.push(`/diagnosis/${result.new_version_id}`)
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : '执行修改失败'
+  } finally {
+    applying.value = false
+  }
+}
+
 async function loadSelectableVersions() {
   selectableVersions.value = selectedFileId.value ? await listVersions(selectedFileId.value) : []
   selectedVersionId.value = 0

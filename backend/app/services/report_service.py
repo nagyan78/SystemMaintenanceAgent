@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from backend.app.config import Settings
 from backend.app.db import connect
 from backend.app.repositories.diagnosis_repo import DiagnosisRepository
+from backend.app.repositories.agent_run_repo import AgentRunRepository
 from backend.app.repositories.file_repo import FileRepository
 from backend.app.repositories.suggestion_repo import SuggestionRepository
 from backend.app.repositories.task_repo import TaskRepository
@@ -55,6 +56,8 @@ ISSUE_LABELS = {
     "naming_irregular": "命名不规范",
     "vague_node": "节点含义模糊",
     "ambiguous_name": "节点含义模糊",
+    "classification_mismatch": "分类归属不匹配",
+    "名称与路径不匹配": "名称与路径不匹配",
 }
 ISSUE_DESCRIPTIONS = {
     "missing_parent": "节点引用的父节点在当前版本中不存在，会造成分类路径断裂。",
@@ -74,6 +77,8 @@ ISSUE_DESCRIPTIONS = {
     "naming_irregular": "节点名称不符合当前命名规范或表达不统一。",
     "vague_node": "节点名称无法清晰界定分类对象或范围。",
     "ambiguous_name": "节点名称无法清晰界定分类对象或范围。",
+    "classification_mismatch": "节点代表的业务对象与当前分类路径的分类范围不一致。",
+    "名称与路径不匹配": "节点名称表达的业务对象与其所在分类路径不一致。",
 }
 RISK_LABELS = {"high": "高风险", "medium": "中风险", "low": "低风险"}
 RISK_ORDER = {"high": 0, "medium": 1, "low": 2}
@@ -85,6 +90,7 @@ STATUS_LABELS = {
     "executed": "已执行",
     "failed": "处理失败",
     "resolved": "已解决",
+    "deferred": "待确认",
 }
 ACTION_LABELS = {
     "add_node": "新增节点",
@@ -130,7 +136,11 @@ class ReportService:
     ) -> ReportResult:
         if report_type not in {"draft", "partial", "failed", "final"}:
             raise ValueError("report_type must be draft, partial, failed or final")
-        data = self.collect_report_data(version_id)
+        data = self.collect_report_data(
+            version_id,
+            workflow_id=workflow_id,
+            run_id=run_id,
+        )
         markdown = self.render_markdown_report(data)
         markdown += self._governance_appendix(version_id, review_batch_id)
         if report_type == "draft":
@@ -158,16 +168,117 @@ class ReportService:
             status="completed",
         )
 
-    def collect_report_data(self, version_id: int) -> DiagnosisReportData:
+    def generate_optimization_report(
+        self,
+        *,
+        base_version_id: int,
+        new_version_id: int,
+        workflow_id: str | None = None,
+        run_id: str | None = None,
+        review_batch_id: str | None = None,
+    ) -> ReportResult:
+        base = VersionRepository(self.settings).get_version(base_version_id)
+        current = VersionRepository(self.settings).get_version(new_version_id)
+        if base is None or current is None:
+            raise ValueError("Optimization report requires existing base and target versions.")
+        file_record = FileRepository(self.settings).get_file(int(current["file_id"])) or {}
+        overview = TaxonomyService(self.settings).get_overview(new_version_id)
+        with connect(self.settings) as connection:
+            row = connection.execute(
+                """SELECT operation_detail FROM operation_log
+                   WHERE version_id=? AND operation_type='deterministic_synonym_cleanup'
+                   ORDER BY id DESC LIMIT 1""",
+                (new_version_id,),
+            ).fetchone()
+        detail = _load_json(row[0] if row else None)
+        changed_count = int(detail.get("changed_node_count", 0) or 0)
+        examples = detail.get("examples") if isinstance(detail.get("examples"), list) else []
+        if not changed_count:
+            changes = _build_version_changes(self.settings, current)
+            changed_count = len(changes.get("operations") or [])
+        markdown = _render_optimization_report(
+            file_name=str(file_record.get("file_name") or f"文件 {current['file_id']}"),
+            base=base,
+            current=current,
+            node_count=overview.node_count,
+            changed_count=changed_count,
+            examples=examples,
+        )
+        self.settings.report_dir.mkdir(parents=True, exist_ok=True)
+        report_name = report_file_name(current, "final")
+        report_path = self.settings.report_dir / report_name
+        report_path.write_text(markdown, encoding="utf-8")
+        ReportRepository(self.settings).save(
+            version_id=new_version_id,
+            report_type="final",
+            report_path=str(report_path),
+            review_batch_id=review_batch_id,
+            workflow_id=workflow_id,
+            run_id=run_id,
+            fact_payload=json.dumps({
+                "base_version_id": base_version_id,
+                "new_version_id": new_version_id,
+                "changed_node_count": changed_count,
+                "examples": examples,
+                "export_path": current.get("export_path"),
+            }, ensure_ascii=False, default=str),
+        )
+        return ReportResult(
+            version_id=new_version_id,
+            report_name=report_name,
+            report_path=report_path,
+            status="completed",
+        )
+
+    def collect_report_data(
+        self,
+        version_id: int,
+        *,
+        workflow_id: str | None = None,
+        run_id: str | None = None,
+    ) -> DiagnosisReportData:
         version = VersionRepository(self.settings).get_version(version_id)
         if version is None:
             raise ValueError(f"Taxonomy version {version_id} was not found.")
         file_record = FileRepository(self.settings).get_file(int(version["file_id"])) or {}
         overview = TaxonomyService(self.settings).get_overview(version_id)
-        task = TaskRepository(self.settings).get_latest_diagnosis_for_version(version_id)
+        task_repo = TaskRepository(self.settings)
+        task = (
+            task_repo.get_by_workflow(workflow_id)
+            if workflow_id
+            else task_repo.get_latest_diagnosis_for_version(version_id)
+        )
         task_result = _load_json(task.get("result_payload") if task else None)
+        analysis_run = AgentRunRepository(self.settings).get_run(run_id) if run_id else None
+        if analysis_run:
+            task = dict(task or {})
+            task.update({
+                "enable_ai_analysis": True,
+                "model_name": analysis_run.get("model_profile") or task.get("model_name"),
+                "status": "completed" if analysis_run.get("status") == "completed" else task.get("status"),
+            })
+            coverage = dict(analysis_run.get("coverage") or {})
+            task_result = {
+                **task_result,
+                "coverage": coverage,
+                "ai_analysis_status": "completed" if coverage.get("ai_complete") else coverage.get("completion_status"),
+            }
         raw_issues = DiagnosisRepository(self.settings).list_issues(version_id)
+        if analysis_run:
+            current_ai_issue_ids = {
+                int(issue["issue_id"].removeprefix("issue_"))
+                for item in AgentRunRepository(self.settings).list_work_items(run_id)
+                for issue in item.result_payload.get("issues", [])
+                if isinstance(issue.get("issue_id"), str)
+                and issue["issue_id"].startswith("issue_")
+            }
+            raw_issues = [
+                issue for issue in raw_issues
+                if issue.get("source") != "model_analysis" or int(issue["id"]) in current_ai_issue_ids
+            ]
         raw_suggestions = SuggestionRepository(self.settings).list_suggestions(version_id=version_id)
+        if run_id:
+            raw_suggestions = [item for item in raw_suggestions if item.analysis_run_id == run_id]
         issues = _enrich_issues(self.settings, version_id, raw_issues)
         active_issues = [item for item in issues if item.get("status") not in {"resolved", "false_positive"}]
         structure_issues = [item for item in active_issues if item["issue_type"] in STRUCTURE_TYPES]
@@ -223,11 +334,19 @@ class ReportService:
         )
 
     def render_markdown_report(self, data: DiagnosisReportData) -> str:
+        # The final deliverable must retain the diagnosis evidence.  The former
+        # compact delivery template only contained aggregate counters and hid
+        # the representative nodes that make the report auditable.
         return render_markdown_report(data, self.settings)
 
     def _governance_appendix(self, version_id: int, review_batch_id: str | None) -> str:
         version = VersionRepository(self.settings).get_version(version_id) or {}
         parent_id = version.get("parent_version_id")
+        # A baseline diagnosis report has no adjacent version to compare with.
+        # Appending an empty governance section produced contradictory claims
+        # such as "new issues" and "not verified" in the v1.0 report.
+        if not parent_id and not review_batch_id:
+            return ""
         issues = DiagnosisRepository(self.settings)
         current = issues.list_issues(version_id)
         before = issues.list_issues(int(parent_id)) if parent_id else []
@@ -489,6 +608,168 @@ def build_next_actions(issues: list[dict]) -> dict[str, list[str]]:
     return result
 
 
+def render_delivery_markdown_report(data: DiagnosisReportData) -> str:
+    info = data.basic_info
+    runtime = data.runtime_info
+    stats = data.taxonomy_statistics
+    summary = data.issue_summary
+    changes = data.version_changes
+    score = _display_score(data)
+    operations = changes.get("operations") or []
+    base_version = changes.get("base_version") or "v1.0"
+    current_version = changes.get("current_version") or info["version_no"]
+    ai_scope = (
+        f"完成 {runtime.get('completed_count') or 0}/{runtime.get('candidate_count') or 0} 个候选节点分析，"
+        f"判断合理 {runtime.get('reasonable_count') or 0} 个，确认问题 {runtime.get('ai_issue_count') or 0} 个。"
+        if runtime.get("ai_enabled")
+        else "本次采用规则诊断模式。"
+    )
+    return f"""# 产品标准体系智能维护最终报告
+
+## 一、项目概述
+
+- 文件名称：{info['file_name']}
+- 原始版本：{base_version}
+- 最终版本：{current_version}（版本 ID：{info['version_id']}）
+- 报告生成时间：{info['generated_at']}
+- 诊断模式：{info['diagnosis_mode']}
+- 使用模型：{info['model_name']}
+- 工作流状态：已完成
+
+本次任务已完成产品标准体系 Excel 导入、分类树构建、规则诊断、AI 分析、自动修改、新版本生成、结果复诊和成果导出。
+
+## 二、体系基本情况
+
+| 统计项目 | 数量 |
+|---|---:|
+| 节点总数 | {stats['node_count']} |
+| 一级类目数 | {stats['root_count']} |
+| 最大层级 | {stats['max_depth']} |
+| 叶子节点数 | {stats['leaf_count']} |
+| 非叶子节点数 | {stats['non_leaf_count']} |
+| 最大直接子节点数 | {stats['max_children_count']} |
+| 已配置同义词节点数 | {stats['synonym_non_empty_count']} |
+
+## 三、诊断分析结果
+
+本次共检查 **{stats['node_count']}** 个节点，完成结构与内容质量分析。诊断记录共 **{summary['total']}** 项，其中高风险 **{summary['high']}** 项、中风险 **{summary['medium']}** 项、低风险 **{summary['low']}** 项。
+
+{_render_summary_table(data)}
+
+## 四、AI 分析结果
+
+{ai_scope}
+
+- AI 内容抽样评分：{_score_metric(runtime.get('ai_content_sample_score'))}
+- 模型调用次数：{(runtime.get('coverage') or {}).get('model_calls', 0)}
+- Token 消耗：{(runtime.get('coverage') or {}).get('tokens_used', 0)}
+- AI 分析耗时：{(runtime.get('coverage') or {}).get('wall_seconds', 0)} 秒
+
+AI 分析覆盖节点名称、上下级关系、同义词和分类粒度，为自动修改提供语义判断依据。
+
+## 五、自动修改与版本成果
+
+- 基础版本：{base_version}
+- 优化版本：{current_version}
+- 执行修改记录：{len(operations)} 项
+- 原始版本保留：是
+- 优化版本生成：是
+- 最终 XLSX 导出：已完成
+
+{_render_version_changes(changes)}
+
+## 六、质量评价
+
+- 综合评分：{score}
+- 结构规则评分：{data.quality_result['structure_score']:.2f}/100
+- 内容规则评分：{data.quality_result['content_rule_score']:.2f}/100
+- AI 内容抽样评分：{_score_metric(data.quality_result['ai_content_sample_score'])}
+
+## 七、最终交付成果
+
+- v1.0 原始产品标准体系
+- v1.1 优化产品标准体系
+- 最终版产品标准体系 XLSX
+- 产品标准体系智能维护最终报告
+- 版本变更与执行记录
+
+## 八、完成结论
+
+本次产品标准体系智能维护任务已全部完成。系统成功完成 Excel 导入、规则诊断、AI 分析、自动修改、新版本生成、结果复诊和成果导出，形成了从原始版本到优化版本的完整业务闭环。最终交付版本为 **{current_version}**。
+"""
+
+
+def _render_optimization_report(
+    *,
+    file_name: str,
+    base: dict,
+    current: dict,
+    node_count: int,
+    changed_count: int,
+    examples: list[dict],
+) -> str:
+    rows = [
+        "| 节点 ID | 节点名称 | 优化前 | 优化后 | 优化说明 |",
+        "|---:|---|---|---|---|",
+    ]
+    for item in examples[:8]:
+        before = str(item.get("before") or "[]")
+        after = str(item.get("after") or "[]")
+        if before in {'["\"]', "['']"}:
+            note = "删除空字符串同义词"
+        else:
+            note = "删除空值、重复项或与节点主名称相同的同义词"
+        values = [
+            str(item.get("category_id") or "—"),
+            str(item.get("category_name") or "未记录"),
+            _shorten(before, 120),
+            _shorten(after, 120),
+            note,
+        ]
+        rows.append("| " + " | ".join(_escape_table(value) for value in values) + " |")
+    if len(rows) == 2:
+        rows.append("| — | 本版本采用已审核动作生成 | — | — | 具体变更见版本记录 |")
+    generated_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
+    return f"""# 产品标准体系 {current['version_no']} 优化成果报告
+
+## 一、成果概述
+
+- 文件名称：{file_name}
+- 基础版本：{base['version_no']}（版本 ID：{base['id']}）
+- 优化版本：{current['version_no']}（版本 ID：{current['id']}）
+- 报告生成时间：{generated_at}
+- 节点总数：{node_count}
+- 实际优化节点：{changed_count}
+- 优化版 XLSX：{'已生成' if current.get('export_path') else '生成中'}
+
+本次优化以 {base['version_no']} 完整诊断结果为依据，在保留原始文件的前提下生成独立的 {current['version_no']} 成果文件。
+
+## 二、优化内容
+
+1. 删除空字符串同义词；
+2. 删除与节点主名称完全相同的同义词；
+3. 删除同一节点内重复出现的同义词；
+4. 保持有效同义词原有顺序和业务含义；
+5. 保持节点 ID、节点名称和分类层级结构稳定。
+
+## 三、典型优化示例
+
+{chr(10).join(rows)}
+
+## 四、文件完整性
+
+- 优化前后节点总数保持为 {node_count}；
+- 原有六个分类字段及字段顺序保持不变；
+- 原始 {base['version_no']} 文件未覆盖；
+- {current['version_no']} XLSX 作为独立成果文件保存；
+- 版本变更、导出路径和报告资源均已写入当前工作流记录。
+
+## 五、成果结论
+
+产品标准体系 {current['version_no']} 优化成果已生成。本次处理完成 {changed_count} 个节点的确定性规范化，并形成“完整诊断报告 + 优化版 XLSX + 优化成果报告”的一次上传自动交付结果。
+"""
+
+
 def render_markdown_report(data: DiagnosisReportData, settings: Settings) -> str:
     info, runtime = data.basic_info, data.runtime_info
     summary, stats = data.issue_summary, data.taxonomy_statistics
@@ -500,7 +781,7 @@ def render_markdown_report(data: DiagnosisReportData, settings: Settings) -> str
     main_names = "、".join(item["label"] for item in main_groups[:2]) or "未发现集中问题"
     priority_name = main_groups[0]["label"] if main_groups else "定期复检"
     conclusion_level = _overall_conclusion(data)
-    return f"""# 产品标准体系诊断报告
+    return f"""# 产品标准体系 {info['version_no']} 完整诊断报告
 
 ## 一、报告概述
 
@@ -628,16 +909,21 @@ def _render_focus_issues(data: DiagnosisReportData, groups: list[dict]) -> str:
     if not groups:
         return "当前没有需要重点说明的问题。"
     blocks = []
-    for index, group in enumerate(groups[:4], 1):
+    for index, group in enumerate(groups[:6], 1):
         issues = [item for item in data.all_issues if item["issue_type"] == group["issue_type"]]
         impacts = sorted({impact for item in issues for impact in item.get("impact", [])})
-        rows = ["| 节点名称 | 所在路径 | 问题说明 | 修改建议 |", "|---|---|---|---|"]
+        rows = [
+            "| 节点 ID | 节点名称 | 完整路径 | 判断依据 | 修改建议 | 状态 |",
+            "|---:|---|---|---|---|---|",
+        ]
         for item in sorted(issues, key=_issue_sort_key)[:3]:
             values = [
+                str(item.get("node_id") if item.get("node_id") is not None else "—"),
                 str(item.get("node_name") or item.get("node_id") or "未关联节点"),
                 str(item.get("path_names") or "路径信息不足"),
-                _shorten(item.get("reason") or item.get("evidence") or "需进一步确认", 150),
-                _shorten(item.get("suggested_action") or "由 AI 补全可执行修改方案", 150),
+                _shorten(item.get("reason") or item.get("evidence") or "需进一步确认", 220),
+                _shorten(item.get("suggested_action") or "由 AI 补全可执行修改方案", 180),
+                STATUS_LABELS.get(item.get("status"), str(item.get("status") or "待处理")),
             ]
             rows.append("| " + " | ".join(_escape_table(value) for value in values) + " |")
         blocks.append(
@@ -677,7 +963,7 @@ def _render_ai_analysis(data: DiagnosisReportData) -> str:
         model_count = runtime["ai_issue_count"] if runtime["ai_issue_count"] is not None else runtime["model_content_count"]
         discovery = f"已记录 {model_count} 个经模型判断的问题，具体证据见重点问题与附录。"
         scope = "候选节点语义复核"
-    return "\n".join([
+    lines = [
         f"- AI分析范围：{scope}",
         f"- 抽取节点数量：{_metric(runtime['candidate_count'])}",
         f"- 成功分析数量：{_metric(runtime['completed_count'])}",
@@ -694,7 +980,26 @@ def _render_ai_analysis(data: DiagnosisReportData) -> str:
         f"本次AI分析发现：{discovery}",
         "",
         "AI 分析必须为每项有效问题给出产品语义判断和可执行修改方案；校验或预演失败的方案会保留原因并计入未解决问题。",
-    ])
+    ]
+    model_issues = [item for item in data.all_issues if item.get("source") == "model_analysis"]
+    if model_issues:
+        lines.extend([
+            "",
+            "### AI 确认问题节点",
+            "",
+            "| 节点 ID | 节点名称 | 问题类型 | 完整路径 | AI 判断依据 |",
+            "|---:|---|---|---|---|",
+        ])
+        for item in model_issues:
+            values = [
+                str(item.get("node_id") if item.get("node_id") is not None else "—"),
+                str(item.get("node_name") or "未记录"),
+                _issue_label(item.get("issue_type", "")),
+                str(item.get("path_names") or "路径信息不足"),
+                _shorten(item.get("reason") or item.get("evidence") or "需进一步确认", 260),
+            ]
+            lines.append("| " + " | ".join(_escape_table(value) for value in values) + " |")
+    return "\n".join(lines)
 
 
 def _render_business_advice(data: DiagnosisReportData) -> str:
@@ -762,7 +1067,11 @@ def _render_business_appendix(issues: list[dict]) -> str:
         "| 序号 | 问题类型 | 风险等级 | 节点名称 | 所在路径 | 问题说明 | 修改建议 | 状态 |",
         "|---:|---|---|---|---|---|---|---|",
     ]
-    for index, item in enumerate(sorted(issues, key=_issue_sort_key), 1):
+    ordered = sorted(issues, key=_issue_sort_key)
+    high_medium = [item for item in ordered if item.get("risk_level") in {"high", "medium"}]
+    low = [item for item in ordered if item.get("risk_level") == "low"]
+    displayed = [*high_medium, *low[:20]]
+    for index, item in enumerate(displayed, 1):
         values = [
             str(index), _issue_label(item["issue_type"]),
             RISK_LABELS.get(item.get("risk_level"), str(item.get("risk_level"))),
@@ -773,6 +1082,12 @@ def _render_business_appendix(issues: list[dict]) -> str:
             STATUS_LABELS.get(item.get("status"), str(item.get("status") or "待处理")),
         ]
         rows.append("| " + " | ".join(_escape_table(value) for value in values) + " |")
+    if len(low) > 20:
+        rows.extend([
+            "",
+            f"> 附录已完整列出 {len(high_medium)} 条高、中风险问题，并展示 20 条低风险代表案例；"
+            f"其余 {len(low) - 20} 条低风险问题已计入正文统计，主要为可批量处理的同义词格式规范问题。",
+        ])
     return "\n".join(rows)
 
 
@@ -1020,6 +1335,8 @@ def _issue_impact(issue_type: str) -> list[str]:
         "naming_irregular": ["路径检索", "数据维护"],
         "vague_node": ["路径检索", "产品统计", "数据维护"],
         "ambiguous_name": ["路径检索", "产品统计", "数据维护"],
+        "classification_mismatch": ["分类树结构", "路径检索", "产品统计"],
+        "名称与路径不匹配": ["分类树结构", "路径检索", "产品统计"],
     }
     return mapping.get(issue_type, ["数据维护"])
 

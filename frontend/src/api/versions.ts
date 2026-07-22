@@ -101,6 +101,20 @@ export function createVersionReviewBatch(versionId: number, issueIds: number[]) 
   return apiPost<{ review_batch_id: string; suggestion_count: number }>(`/versions/${versionId}/review-batches`, { issue_ids: issueIds })
 }
 
+export type ApplyFixesResult = {
+  source_version_id: number
+  new_version_id: number
+  new_version_no: string
+  executed_count: number
+  file_name: string
+  export_path: string
+  download_url: string
+}
+
+export function applyVersionFixes(versionId: number) {
+  return apiPost<ApplyFixesResult>(`/versions/${versionId}/apply-fixes`)
+}
+
 export function restoreVersion(versionId: number, supersedesVersionId?: number | null) {
   return apiPost<RestoredVersionResult>(`/versions/${versionId}/restore`, { supersedes_version_id: supersedesVersionId || null, operator: 'local_user' })
 }

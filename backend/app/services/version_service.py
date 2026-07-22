@@ -7,7 +7,9 @@ from backend.app.schemas.taxonomy import TaxonomyNodeRecord
 from backend.app.schemas.version import CreateVersionResult, SaveVersionResult, VersionDiff
 from backend.app.services.taxonomy_service import TaxonomyService
 from backend.app.db import connect
+from hashlib import sha256
 import json
+import re
 
 
 class VersionService:
@@ -114,6 +116,89 @@ class VersionService:
             node_count=len(recalculated),
             executed_count=executed_count,
             failed_count=failed_count,
+            quality_score=quality_score,
+            action_batch_id=action_batch_id,
+        )
+
+    def create_deterministic_optimized_version(
+        self,
+        *,
+        base_version_id: int,
+        source_workflow_id: str,
+        operator: str = "deterministic_optimizer",
+    ) -> SaveVersionResult:
+        """Create an idempotent v1.1 snapshot using safe synonym cleanup.
+
+        This is the delivery fallback when semantic suggestions do not pass the
+        execution gate.  It still creates a real, changed workbook instead of
+        ending the workflow at the v1.0 diagnosis report.
+        """
+        version_repo = VersionRepository(self.settings)
+        taxonomy_repo = TaxonomyRepository(self.settings)
+        base = version_repo.get_version(base_version_id)
+        if base is None:
+            raise ValueError(f"Taxonomy version {base_version_id} was not found.")
+        digest = sha256(f"{source_workflow_id}:{base_version_id}:synonym-cleanup-v1".encode()).hexdigest()[:16]
+        action_batch_id = f"deterministic_{digest}"
+        existing = version_repo.get_by_action_batch(action_batch_id)
+        if existing is not None:
+            return SaveVersionResult(
+                source_version_id=base_version_id,
+                new_version_id=int(existing["id"]),
+                new_version_no=str(existing["version_no"]),
+                node_count=taxonomy_repo.count_nodes(int(existing["id"])),
+                executed_count=_deterministic_change_count(self.settings, int(existing["id"])),
+                quality_score=existing.get("quality_score"),
+                action_batch_id=action_batch_id,
+                reused=True,
+            )
+
+        nodes = taxonomy_repo.list_node_records(base_version_id, include_deprecated=True)
+        optimized: list[TaxonomyNodeRecord] = []
+        changes: list[dict[str, object]] = []
+        for node in nodes:
+            cleaned, changed = _clean_synonym_payload(node.category_name, node.syn_list)
+            optimized.append(node.model_copy(update={"syn_list": cleaned}) if changed else node)
+            if changed:
+                changes.append({
+                    "category_id": node.category_id,
+                    "category_name": node.category_name,
+                    "before": node.syn_list,
+                    "after": cleaned,
+                })
+
+        new_version_no = self._next_version_no(int(base["file_id"]))
+        quality_score = _calc_quality_score(optimized)
+        new_version_id = version_repo.create_version(
+            file_id=int(base["file_id"]),
+            version_no=new_version_no,
+            description=f"基于 {base['version_no']} 的确定性同义词规范化优化版本",
+            quality_score=quality_score,
+            parent_version_id=base_version_id,
+            source_workflow_id=source_workflow_id,
+            action_batch_id=action_batch_id,
+        )
+        taxonomy_repo.bulk_insert_nodes(version_id=new_version_id, nodes=optimized)
+        OperationLogRepository(self.settings).create_log(
+            version_id=new_version_id,
+            operator=operator,
+            operation_type="deterministic_synonym_cleanup",
+            operation_detail={
+                "base_version_id": base_version_id,
+                "base_version_no": base["version_no"],
+                "source_workflow_id": source_workflow_id,
+                "changed_node_count": len(changes),
+                "examples": changes[:8],
+                "action_batch_id": action_batch_id,
+            },
+        )
+        return SaveVersionResult(
+            source_version_id=base_version_id,
+            new_version_id=new_version_id,
+            new_version_no=new_version_no,
+            node_count=len(optimized),
+            executed_count=len(changes),
+            failed_count=0,
             quality_score=quality_score,
             action_batch_id=action_batch_id,
         )
@@ -367,6 +452,49 @@ _recalculate_tree = recalculate_tree
 
 def _split_synonyms(syn_list: str) -> list[str]:
     return [item.strip() for item in syn_list.replace("，", ",").split(",") if item.strip()]
+
+
+def _clean_synonym_payload(node_name: str, raw: str | None) -> tuple[str, bool]:
+    text = str(raw or "").strip()
+    values: list[object]
+    encoded_as_list = text.startswith("[") and text.endswith("]")
+    try:
+        parsed = json.loads(text) if text else []
+        values = parsed if isinstance(parsed, list) else [parsed]
+    except (TypeError, json.JSONDecodeError):
+        quoted = [left or right for left, right in re.findall(r"'([^']*)'|\"([^\"]*)\"", text)]
+        values = quoted if quoted else re.split(r"[，,、;；|\r\n]+", text)
+
+    original = [str(item or "").strip() for item in values]
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for value in original:
+        if not value or value == node_name or value in seen:
+            continue
+        seen.add(value)
+        cleaned.append(value)
+    changed = cleaned != original
+    if not changed:
+        return text or "[]", False
+    if encoded_as_list:
+        return json.dumps(cleaned, ensure_ascii=False, separators=(",", ":")), True
+    return "、".join(cleaned), True
+
+
+def _deterministic_change_count(settings: Settings, version_id: int) -> int:
+    with connect(settings) as connection:
+        row = connection.execute(
+            """SELECT operation_detail FROM operation_log
+               WHERE version_id=? AND operation_type='deterministic_synonym_cleanup'
+               ORDER BY id DESC LIMIT 1""",
+            (version_id,),
+        ).fetchone()
+    if row is None:
+        return 0
+    try:
+        return int(json.loads(row[0]).get("changed_node_count", 0))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return 0
 
 
 def _calc_quality_score(nodes: list[TaxonomyNodeRecord]) -> float:

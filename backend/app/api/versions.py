@@ -14,6 +14,8 @@ from backend.app.repositories.review_batch_repo import ReviewBatchRepository
 from backend.app.services.suggestion_service import SuggestionAgent
 from backend.app.db import connect
 from backend.app.services.report_service import ReportService
+from backend.app.services.review_service import ReviewService
+from backend.app.services.execution_preview_service import ExecutionPreviewService
 
 router = APIRouter(prefix="/versions", tags=["versions"])
 
@@ -121,6 +123,64 @@ def create_version_review_batch(version_id: int, payload: CreateVersionReviewBat
     result = SuggestionAgent(settings, enable_ai=False, review_batch_id=batch_id).run(version_id, issue_ids=payload.issue_ids)
     batch = ReviewBatchRepository(settings).refresh_status(batch_id)
     return {"review_batch_id": batch_id, "suggestion_count": result.generated_count, "batch": batch}
+
+
+@router.post("/{version_id}/apply-fixes")
+def apply_version_fixes(version_id: int, request: Request) -> dict[str, Any]:
+    """Apply generated fixes immediately and create the next version."""
+    settings = request.app.state.settings
+    version = VersionRepository(settings).get_version(version_id)
+    if not version:
+        raise HTTPException(status_code=404, detail="Version not found.")
+
+    pending = DiagnosisRepository(settings).list_pending_issues(version_id)
+    if not pending:
+        raise HTTPException(status_code=400, detail="当前版本没有可修改的问题。")
+    pending.sort(key=lambda item: (
+        0 if str(item.get("issue_type_code") or item.get("issue_type")) in {
+            "synonym_format", "synonym_format_issue", "missing_parent"
+        } else 1,
+        int(item["id"]),
+    ))
+    issue_ids = [int(item["id"]) for item in pending[:50]]
+    batch_id = f"quick_apply_{uuid4().hex[:12]}"
+    ReviewBatchRepository(settings).create(
+        batch_id=batch_id,
+        file_id=int(version["file_id"]),
+        version_id=version_id,
+    )
+    generated = SuggestionAgent(
+        settings,
+        enable_ai=False,
+        review_batch_id=batch_id,
+    ).run(version_id, issue_ids=issue_ids)
+    if generated.generated_count == 0:
+        raise HTTPException(status_code=400, detail="没有生成可执行修改。")
+
+    review = ReviewService(settings)
+    approved = review.auto_complete_review(
+        batch_id,
+        operator="quick_apply",
+        complete_if_empty=False,
+    )
+    if not approved.get("approved_ids"):
+        raise HTTPException(status_code=400, detail="生成的修改无法执行。")
+    ExecutionPreviewService(settings).create(batch_id)
+    result = review.execute_approved_actions(batch_id, operator="quick_apply")
+    new_version_id = int(result["new_version_id"])
+    export_path = export_excel(new_version_id, settings)
+    new_version = VersionRepository(settings).get_version(new_version_id) or {}
+    VersionRepository(settings).update_verification(
+        new_version_id,
+        status=str(new_version.get("verification_status") or "passed"),
+        export_path=str(export_path),
+    )
+    return {
+        **result,
+        "file_name": export_path.name,
+        "export_path": str(export_path),
+        "download_url": f"/api/downloads/exports/{export_path.name}",
+    }
 
 
 @router.post("/{version_id}/release")

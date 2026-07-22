@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.app.api import (
     agent_runs,
     diagnosis,
+    downloads,
     evaluations,
     files,
     health,
@@ -43,6 +44,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(files.router, prefix="/api")
     app.include_router(taxonomy.router, prefix="/api")
     app.include_router(diagnosis.router, prefix="/api")
+    app.include_router(downloads.router, prefix="/api")
     app.include_router(suggestions.router, prefix="/api")
     app.include_router(reviews.router, prefix="/api")
     app.include_router(reports.router, prefix="/api")
