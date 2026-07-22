@@ -95,9 +95,10 @@ def test_workflow_rejects_local_qwen_provider(tmp_path):
     assert response.status_code == 400
 
 
-def test_explicit_high_coverage_request_overrides_planner_sample(tmp_path, monkeypatch):
+def test_explicit_high_coverage_request_is_capped_for_simple_delivery(tmp_path, monkeypatch):
     from backend.app.schemas.issue import DiagnosisPlan
-    from backend.app.services.content_diagnosis_service import ContentDiagnosisAgent, DiagnosisPlanningAgent
+    from backend.app.services.content_diagnosis_service import DiagnosisPlanningAgent
+    from backend.app.services.batch_content_diagnosis_service import BatchContentDiagnosisService, BatchDiagnosisResult
 
     captured = {}
     monkeypatch.setattr(
@@ -106,12 +107,12 @@ def test_explicit_high_coverage_request_overrides_planner_sample(tmp_path, monke
         lambda *args, **kwargs: DiagnosisPlan(estimated_candidates=10),
     )
 
-    def capture_plan(self, version_id, plan):
-        captured["estimated_candidates"] = plan.estimated_candidates
-        captured["wall_seconds"] = self.settings.diagnosis_ai_wall_seconds
-        return []
+    def capture_batch(self, candidates, **kwargs):
+        captured["candidate_count"] = len(candidates)
+        captured["max_calls"] = kwargs["max_calls"]
+        return BatchDiagnosisResult([], 0, 0)
 
-    monkeypatch.setattr(ContentDiagnosisAgent, "run", capture_plan)
+    monkeypatch.setattr(BatchContentDiagnosisService, "analyze", capture_batch)
     client = TestClient(create_app(_settings(tmp_path)))
     upload = client.post(
         "/upload",
@@ -131,23 +132,25 @@ def test_explicit_high_coverage_request_overrides_planner_sample(tmp_path, monke
     )
 
     assert response.status_code == 200
-    assert captured == {"estimated_candidates": 927, "wall_seconds": 14400}
-    assert response.json()["ai_candidate_limit"] == 927
-    assert response.json()["ai_wall_seconds"] == 14400
+    assert captured["candidate_count"] <= 50
+    assert captured["max_calls"] == 10
+    assert response.json()["ai_candidate_limit"] == 50
+    assert response.json()["ai_wall_seconds"] == 300
 
 
 def test_sampling_strategy_uses_fixed_project_sample_size(tmp_path, monkeypatch):
     from backend.app.schemas.issue import DiagnosisPlan
-    from backend.app.services.content_diagnosis_service import ContentDiagnosisAgent, DiagnosisPlanningAgent
+    from backend.app.services.content_diagnosis_service import DiagnosisPlanningAgent
+    from backend.app.services.batch_content_diagnosis_service import BatchContentDiagnosisService, BatchDiagnosisResult
 
     captured = {}
     monkeypatch.setattr(DiagnosisPlanningAgent, "run", lambda *args, **kwargs: DiagnosisPlan(estimated_candidates=10))
 
-    def capture_plan(self, version_id, plan):
-        captured["estimated_candidates"] = plan.estimated_candidates
-        return []
+    def capture_batch(self, candidates, **_kwargs):
+        captured["candidate_count"] = len(candidates)
+        return BatchDiagnosisResult([], 0, 0)
 
-    monkeypatch.setattr(ContentDiagnosisAgent, "run", capture_plan)
+    monkeypatch.setattr(BatchContentDiagnosisService, "analyze", capture_batch)
     client = TestClient(create_app(_settings(tmp_path)))
     upload = client.post(
         "/upload",
@@ -167,8 +170,8 @@ def test_sampling_strategy_uses_fixed_project_sample_size(tmp_path, monkeypatch)
     )
 
     assert response.status_code == 200
-    assert captured == {"estimated_candidates": 200}
-    assert response.json()["ai_candidate_limit"] == 200
+    assert captured["candidate_count"] <= 50
+    assert response.json()["ai_candidate_limit"] == 50
 
 
 def test_ai_budget_exhaustion_keeps_results_and_generates_report(tmp_path, monkeypatch):

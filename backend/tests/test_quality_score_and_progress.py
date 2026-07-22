@@ -7,6 +7,7 @@ from backend.app.services.quality_score_service import (
 )
 from backend.app.services.ai_review_service import AIReviewService
 from backend.app.schemas.suggestion import SuggestionRecord
+from backend.app.agents.states import TaxonomyGraphState
 
 
 def test_quality_score_deducts_risk_points_per_thousand_nodes():
@@ -163,3 +164,54 @@ def test_incomplete_independent_ai_review_is_not_an_execution_pass():
 
     assert result.completed is False
     assert "禁止自动执行" in (result.warning or "")
+
+
+def test_ai_review_node_uses_valid_uncertain_decision_when_nothing_is_approved(monkeypatch):
+    from types import SimpleNamespace
+
+    from backend.app.agents import nodes
+    from backend.app.services import model_service
+
+    class ReviewServiceStub:
+        def __init__(self, _settings):
+            pass
+
+        def list_review_batch(self, _review_batch_id):
+            return [SimpleNamespace(id=8)]
+
+        def auto_complete_review(self, *_args, **_kwargs):
+            return {"approved_ids": [], "ignored_ids": [8]}
+
+    class AIReviewServiceStub:
+        def __init__(self, _llm):
+            pass
+
+        def review(self, _suggestions):
+            return SimpleNamespace(
+                completed=True,
+                decisions=[{"suggestion_id": 8, "verdict": "concern"}],
+                warning=None,
+            )
+
+    class ModelServiceStub:
+        def __init__(self, _settings):
+            pass
+
+        def get_chat_model(self):
+            return object()
+
+    monkeypatch.setattr(nodes, "ReviewService", ReviewServiceStub)
+    monkeypatch.setattr(nodes, "AIReviewService", AIReviewServiceStub)
+    monkeypatch.setattr(model_service, "ModelService", ModelServiceStub)
+    state = TaxonomyGraphState(
+        workflow_id="workflow-test",
+        thread_id="thread-test",
+        review_batch_id="review-test",
+    )
+
+    update = nodes.ai_review_action_node(state)
+    next_state = TaxonomyGraphState.model_validate({**state.model_dump(), **update})
+
+    assert update["review_decision"] == "uncertain"
+    assert next_state.review_decision == "uncertain"
+    assert update["approved_action_count"] == 0

@@ -383,7 +383,7 @@ def ai_review_action_node(state: TaxonomyGraphState) -> StateUpdate:
         current_step="ai_review",
         progress=82,
         status="running",
-        review_decision="approve" if approved_ids else "defer",
+        review_decision="approve" if approved_ids else "uncertain",
         review_payload={
             "mode": "ai_auto_review",
             "ai_review_completed": ai_review.completed,

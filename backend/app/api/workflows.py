@@ -348,9 +348,9 @@ def _run_workflow(
     if options.get("enable_ai_analysis"):
         runtime_settings = settings.model_copy(
             update={
-                "llm_max_calls": options.get("ai_max_model_calls") or settings.llm_max_calls,
+                "llm_max_calls": min(options.get("ai_max_model_calls") or settings.llm_max_calls, 15),
                 "llm_max_tokens": options.get("ai_token_budget") or settings.llm_max_tokens,
-                "diagnosis_ai_wall_seconds": options.get("ai_wall_seconds") or settings.diagnosis_ai_wall_seconds,
+                "diagnosis_ai_wall_seconds": min(options.get("ai_wall_seconds") or settings.diagnosis_ai_wall_seconds, 300),
             }
         )
     state = create_initial_state(
@@ -363,10 +363,10 @@ def _run_workflow(
         priority_subtree_ids=options.get("priority_subtree_ids") or [],
         sample_strategy=options.get("sample_strategy") or "sampling",
         focus_issues=options.get("focus_issues") or [],
-        ai_candidate_limit=options.get("ai_candidate_limit"),
-        ai_max_model_calls=options.get("ai_max_model_calls"),
+        ai_candidate_limit=min(options.get("ai_candidate_limit") or settings.diagnosis_ai_candidate_limit, 50),
+        ai_max_model_calls=min(options.get("ai_max_model_calls") or settings.llm_max_calls, 15),
         ai_token_budget=options.get("ai_token_budget"),
-        ai_wall_seconds=options.get("ai_wall_seconds"),
+        ai_wall_seconds=min(options.get("ai_wall_seconds") or settings.diagnosis_ai_wall_seconds, 300),
     )
     task_repo = TaskRepository(settings)
     try:

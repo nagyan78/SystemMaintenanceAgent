@@ -94,7 +94,7 @@ class ContentIssue(DiagnosisIssueRecord):
 
 
 class ContentSampleAssessment(BaseModel):
-    conclusion: Literal["reasonable", "problem"]
+    conclusion: Literal["reasonable", "problem", "uncertain"]
     node_id: int
     node_name: str | None = None
     reason: str

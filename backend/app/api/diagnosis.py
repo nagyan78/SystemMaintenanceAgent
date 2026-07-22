@@ -17,6 +17,7 @@ from backend.app.services.content_diagnosis_service import (
     DiagnosisPlanningAgent,
     ModelConclusionError,
 )
+from backend.app.services.batch_content_diagnosis_service import BatchContentDiagnosisService
 from backend.app.services.diagnosis_service import DiagnosisService
 from backend.app.services.model_router import ModelBudgetExceededError, ModelUnavailableError
 from backend.app.services.report_service import ReportService
@@ -60,11 +61,13 @@ def _resolve_version(payload: RunDiagnosisRequest, request: Request) -> int:
 @router.post("/run")
 def run_diagnosis(payload: RunDiagnosisRequest, request: Request) -> dict[str, Any]:
     settings = request.app.state.settings
-    resolved_candidate_limit = (
+    resolved_candidate_limit = min(50, (
         settings.diagnosis_sample_size
         if payload.sample_strategy == "sampling"
         else payload.ai_candidate_limit or settings.diagnosis_ai_candidate_limit
-    )
+    ))
+    resolved_wall_seconds = min(payload.ai_wall_seconds or settings.diagnosis_ai_wall_seconds, 300)
+    resolved_max_calls = min(payload.ai_max_model_calls or settings.llm_max_calls, 15)
     version_id = _resolve_version(payload, request)
     if payload.model_provider != "deepseek" or payload.model_name != "deepseek-chat":
         raise HTTPException(status_code=400, detail="Only deepseek/deepseek-chat is supported.")
@@ -90,9 +93,9 @@ def run_diagnosis(payload: RunDiagnosisRequest, request: Request) -> dict[str, A
         version_id=version_id, model_profile=payload.model_name if payload.enable_ai_analysis else "rules",
         budget={
             "candidate_limit": resolved_candidate_limit,
-            "max_model_calls": payload.ai_max_model_calls or settings.llm_max_calls,
+            "max_model_calls": resolved_max_calls,
             "max_tokens": payload.ai_token_budget or settings.llm_max_tokens,
-            "max_wall_seconds": payload.ai_wall_seconds or settings.diagnosis_ai_wall_seconds,
+            "max_wall_seconds": resolved_wall_seconds,
             "sample_strategy": payload.sample_strategy,
             "focus_issues": payload.focus_issues,
             "priority_subtree_ids": payload.priority_subtree_ids,
@@ -125,8 +128,8 @@ def run_diagnosis(payload: RunDiagnosisRequest, request: Request) -> dict[str, A
         )
         if payload.enable_ai_analysis:
             run_settings = settings.model_copy(update={
-                "diagnosis_ai_wall_seconds": payload.ai_wall_seconds or settings.diagnosis_ai_wall_seconds,
-                "llm_max_calls": payload.ai_max_model_calls or settings.llm_max_calls,
+                "diagnosis_ai_wall_seconds": resolved_wall_seconds,
+                "llm_max_calls": resolved_max_calls,
                 "llm_max_tokens": payload.ai_token_budget or settings.llm_max_tokens,
             })
             task_repo.update_task(task_id=task_id, current_step="ai_analysis", progress=60)
@@ -150,6 +153,7 @@ def run_diagnosis(payload: RunDiagnosisRequest, request: Request) -> dict[str, A
                         plan.estimated_candidates,
                         settings.diagnosis_ai_candidate_limit,
                     )
+                plan.estimated_candidates = min(plan.estimated_candidates, 50)
                 progress_state = {"processed": 0, "total": 0}
 
                 def record_ai_progress(processed: int, total: int) -> None:
@@ -179,24 +183,32 @@ def run_diagnosis(payload: RunDiagnosisRequest, request: Request) -> dict[str, A
                         "ai_processed_count": 0,
                     },
                 )
-                agent.candidate_selector = lambda _version_id, _plan: candidates
-                ai_issues = agent.run(version_id, plan)
-                assessments = list(getattr(agent, "last_assessments", []) or [])
+                batch_result = BatchContentDiagnosisService(agent.llm).analyze(
+                    candidates,
+                    deadline=time.monotonic() + resolved_wall_seconds,
+                    max_calls=min(resolved_max_calls, 10),
+                )
+                assessments = batch_result.assessments
+                ai_issues = [item.issue for item in assessments if item.issue is not None]
+                diagnosis_repo = DiagnosisRepository(settings)
+                for issue in ai_issues:
+                    diagnosis_repo.create_issue(version_id=version_id, issue=issue)
                 reasonable_count = sum(item.conclusion == "reasonable" for item in assessments)
                 problem_count = sum(item.conclusion == "problem" for item in assessments)
-                assessed_count = len(assessments)
+                assessed_count = reasonable_count + problem_count
                 ai_content_sample_score = (
                     round(100 * reasonable_count / assessed_count, 2)
                     if assessed_count else None
                 )
                 sample_assessments = [item.model_dump() for item in assessments]
-                model_calls_used = int(getattr(agent, "model_calls_used", 0))
-                tokens_used = int(getattr(agent, "tokens_used", 0))
+                model_calls_used = batch_result.model_calls
+                tokens_used = batch_result.tokens_used
                 ai_issue_count = len(ai_issues)
                 content_count += ai_issue_count
-                ai_processed_count = progress_state["processed"]
+                ai_processed_count = assessed_count
                 suggestions = SuggestionAgent(settings, enable_ai=False).run(version_id)
-                ai_analysis_status = "completed"
+                ai_analysis_status = "partial" if assessed_count < candidate_count else "completed"
+                ai_warning = batch_result.warning
             except (
                 ModelBudgetExceededError,
                 ModelUnavailableError,
@@ -281,7 +293,7 @@ def run_diagnosis(payload: RunDiagnosisRequest, request: Request) -> dict[str, A
             "ai_content_sample_score": ai_content_sample_score,
             "sample_seed": settings.diagnosis_sample_seed if payload.enable_ai_analysis else None,
             "ai_candidate_limit": resolved_candidate_limit,
-            "ai_wall_seconds": payload.ai_wall_seconds or settings.diagnosis_ai_wall_seconds,
+            "ai_wall_seconds": resolved_wall_seconds,
             "suggestion_count": suggestions.generated_count,
             "review_batch_id": suggestions.review_batch_id,
             "enable_ai_analysis": payload.enable_ai_analysis,

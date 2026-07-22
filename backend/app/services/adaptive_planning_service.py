@@ -9,7 +9,7 @@ class AdaptivePlanningService:
         return MaintenancePlan(id=f"plan_{uuid4().hex[:12]}", workflow_id=workflow_id,
             base_version_id=version_id, revision=1, strategy="sampling",
             targets=[DiagnosisTarget(issue_type="synonym_pollution", candidate_budget=candidate_budget)],
-            max_model_calls=100, max_tokens=100000, max_wall_seconds=900, max_rounds=5,
+            max_model_calls=15, max_tokens=10000000, max_wall_seconds=300, max_rounds=1,
             target_quality_score=90)
 
     def revise(self, plan: MaintenancePlan, feedback: DiagnosisBatchFeedback) -> MaintenancePlan:

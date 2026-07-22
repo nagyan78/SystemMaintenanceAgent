@@ -11,6 +11,8 @@ from backend.app.repositories.taxonomy_repo import TaxonomyRepository
 from backend.app.schemas.agent_run import AgentRunRecord
 from backend.app.schemas.issue import DiagnosisPlan
 from backend.app.services.content_diagnosis_service import ContentDiagnosisAgent
+from backend.app.services.batch_content_diagnosis_service import BatchContentDiagnosisService
+from backend.app.services.model_service import ModelService
 from backend.app.services.retry_policy import RetryPolicy
 from backend.app.services.suggestion_service import SuggestionAgent
 from backend.app.services.tool_factory import AgentResourceLimits, AgentToolFactory, ToolScope
@@ -160,11 +162,71 @@ class AgentRunService:
             )
             return {"processed_count": 1, "issue_count": 0, "clean_count": 0, "inconclusive_count": 0, "failed_count": 1, "skipped_count": 0}
 
+    def execute_content_batches(self, run_id: str) -> dict[str, int]:
+        """Process up to 50 persisted candidates in compact batches of ten."""
+        run = self.repo.get_run(run_id)
+        if run is None:
+            return _zero_delta()
+        items = [item for item in self.repo.list_work_items(run_id) if self.repo.is_runnable(item.id)][:50]
+        if not items:
+            return _zero_delta()
+        claimed = [item for item in items if self.repo.claim_work_item(item.id, worker_id="local-batch-worker")]
+        if not claimed:
+            return _zero_delta()
+        budget = run.get("budget") or {}
+        max_wall = min(int(budget.get("max_wall_seconds") or self.settings.diagnosis_ai_wall_seconds), 300)
+        remaining_seconds = max(1.0, max_wall - _elapsed_seconds(run.get("created_time")))
+        max_calls = min(int(budget.get("max_model_calls") or self.settings.llm_max_calls), 10)
+        llm = self.llm or ModelService(self.settings).get_chat_model(temperature=0.1)
+        result = BatchContentDiagnosisService(llm, batch_size=10, max_attempts=2).analyze(
+            [item.input_payload for item in claimed],
+            deadline=time.monotonic() + remaining_seconds,
+            max_calls=max_calls,
+            event_sink=lambda usage: self.repo.record_event(
+                workflow_id=run["workflow_id"], run_id=run_id,
+                agent_name="content_diagnosis", event_type="model_call_completed",
+                phase="candidate_batch", status="completed", model=self.settings.deepseek_model,
+                token_usage={"total_tokens": usage["total_tokens"]},
+                summary={"model_calls": usage["model_calls"]},
+            ),
+        )
+        issue_count = clean_count = inconclusive_count = 0
+        diagnosis_repo = DiagnosisRepository(self.settings)
+        for item, assessment in zip(claimed, result.assessments, strict=False):
+            issues: list[dict[str, Any]] = []
+            if assessment.issue is not None:
+                issue_id = diagnosis_repo.create_issue(version_id=int(run["version_id"]), issue=assessment.issue)
+                persisted = assessment.issue.model_copy(update={"issue_id": f"issue_{issue_id}"})
+                assessment = assessment.model_copy(update={"issue": persisted})
+                issues.append(persisted.model_dump())
+                status = "succeeded"
+                issue_count += 1
+            elif assessment.conclusion == "reasonable":
+                status = "clean"
+                clean_count += 1
+            else:
+                status = "inconclusive"
+                inconclusive_count += 1
+            self.repo.complete_work_item(
+                item.id,
+                status=status,
+                result_payload={"assessment": assessment.model_dump(), "issues": issues},
+            )
+        return {
+            "processed_count": len(claimed),
+            "issue_count": issue_count,
+            "clean_count": clean_count,
+            "inconclusive_count": inconclusive_count,
+            "failed_count": 0,
+            "skipped_count": 0,
+        }
+
     def finalize_run(self, run_id: str) -> dict[str, int]:
         counts = self.repo.counts(run_id)
         unfinished = counts.get("pending", 0) + counts.get("running", 0) + counts.get("retryable_failed", 0)
         failed = counts.get("permanent_failed", 0)
-        status = "running" if unfinished else "completed_degraded" if failed or counts.get("skipped", 0) else "completed"
+        inconclusive_count = int(counts.get("inconclusive", 0))
+        status = "running" if unfinished else "completed_degraded" if failed or counts.get("skipped", 0) or inconclusive_count else "completed"
         run = self.repo.get_run(run_id) or {}
         budget = run.get("budget") or {}
         usage = self.repo.usage_totals(run_id)
@@ -178,19 +240,21 @@ class AgentRunService:
         sample_assessments = [
             dict(item.result_payload.get("assessment") or {})
             for item in self.repo.list_work_items(run_id)
-            if item.status in {"succeeded", "clean"} and item.result_payload.get("assessment")
+            if item.status in {"succeeded", "clean", "inconclusive"} and item.result_payload.get("assessment")
         ]
         reasons: dict[str, int] = {}
         for item in self.repo.list_work_items(run_id):
-            if item.status in {"skipped", "permanent_failed", "retryable_failed"}:
-                key = item.error_code or item.status
+            if item.status in {"skipped", "permanent_failed", "retryable_failed", "inconclusive"}:
+                key = item.error_code or ("AI_UNCERTAIN" if item.status == "inconclusive" else item.status)
                 reasons[key] = reasons.get(key, 0) + 1
-        completion = "partial" if failed_count or skipped_count or unfinished else "completed"
+        completion = "partial" if failed_count or skipped_count or unfinished or inconclusive_count else "completed"
         stop_reason = None
         if skipped_count:
             stop_reason = "模型调用、Token 或运行时间预算达到上限"
         elif failed_count:
             stop_reason = "部分候选深诊断失败"
+        elif inconclusive_count:
+            stop_reason = "部分候选证据不足或达到 AI 分析预算"
         coverage = {
             "total_nodes": int(budget.get("rule_scanned_nodes", 0)),
             "rule_scanned_nodes": int(budget.get("rule_scanned_nodes", 0)),
@@ -244,6 +308,7 @@ class AgentRunService:
                         issue_ids.append(int(raw_id.removeprefix("issue_")))
         if not issue_ids:
             issue_ids = [int(issue["id"]) for issue in DiagnosisRepository(self.settings).list_pending_issues(version_id)]
+        issue_ids = issue_ids[:50]
         batch_size = 10
         batches = [issue_ids[index:index + batch_size] for index in range(0, len(issue_ids), batch_size)]
         ids = [

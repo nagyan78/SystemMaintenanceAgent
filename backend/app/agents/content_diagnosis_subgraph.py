@@ -1,7 +1,6 @@
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Send
 
 from backend.app.agents.reducers import ContentDiagnosisSubgraphState
 from backend.app.config import Settings
@@ -24,14 +23,8 @@ def build_content_diagnosis_subgraph(*, settings: Settings, llm: Any | None = No
         )
         return prepared
 
-    def fan_out(state: ContentDiagnosisSubgraphState):
-        runnable = [item_id for item_id in state.get("work_item_ids", []) if service.repo.is_runnable(item_id)]
-        if not runnable:
-            return "reduce"
-        return [Send("diagnose_candidate", {"workflow_id": state["workflow_id"], "version_id": state["version_id"], "run_id": state["run_id"], "work_item_id": item_id}) for item_id in runnable]
-
     def diagnose(state: ContentDiagnosisSubgraphState) -> dict:
-        return service.execute_content_work_item(state["work_item_id"])
+        return service.execute_content_batches(state["run_id"])
 
     def reduce(state: ContentDiagnosisSubgraphState) -> dict:
         counts = service.finalize_run(state["run_id"])
@@ -39,10 +32,10 @@ def build_content_diagnosis_subgraph(*, settings: Settings, llm: Any | None = No
 
     graph = StateGraph(ContentDiagnosisSubgraphState)
     graph.add_node("prepare", prepare)
-    graph.add_node("diagnose_candidate", diagnose)
+    graph.add_node("diagnose_batches", diagnose)
     graph.add_node("reduce", reduce)
     graph.add_edge(START, "prepare")
-    graph.add_conditional_edges("prepare", fan_out, ["diagnose_candidate", "reduce"])
-    graph.add_edge("diagnose_candidate", "reduce")
+    graph.add_edge("prepare", "diagnose_batches")
+    graph.add_edge("diagnose_batches", "reduce")
     graph.add_edge("reduce", END)
     return graph.compile()

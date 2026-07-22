@@ -16,12 +16,11 @@ from backend.tests.test_m4_action_execution import _create_issue, _seed_version,
 from backend.tests.fixtures.golden_taxonomy import DATASET_VERSION
 
 
-def test_adaptive_planner_expands_then_stops_on_repeated_low_hit():
+def test_delivery_planner_stops_after_single_bounded_plan():
     service=AdaptivePlanningService(); plan=service.create(workflow_id="wf",version_id=1,candidate_budget=20)
-    expanded=service.revise(plan,DiagnosisBatchFeedback(batch_id="b1",plan_revision=1,processed=20,issues=9,clean=11,inconclusive=0,failed=0,model_calls=20,tokens=100,wall_seconds=2))
-    assert expanded.decision=="expand" and expanded.targets[0].candidate_budget==40
-    stopped=service.revise(expanded,DiagnosisBatchFeedback(batch_id="b2",plan_revision=2,processed=20,issues=0,clean=20,inconclusive=0,failed=0,model_calls=20,tokens=100,wall_seconds=2,previous_hit_rate=.01))
-    assert stopped.decision=="stop" and stopped.stop_reason=="consecutive_low_hit_rate"
+    assert plan.max_rounds == 1 and plan.max_model_calls == 15 and plan.max_wall_seconds == 300
+    stopped=service.revise(plan,DiagnosisBatchFeedback(batch_id="b1",plan_revision=1,processed=20,issues=9,clean=11,inconclusive=0,failed=0,model_calls=5,tokens=100,wall_seconds=2))
+    assert stopped.decision=="stop" and stopped.stop_reason=="max_rounds"
 
 
 class Failing:
